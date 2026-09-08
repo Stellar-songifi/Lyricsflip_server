@@ -243,10 +243,23 @@ provider resolves to:
 A wager row moves through `pending → awaiting_stakes → staked → settling →
 won | refunded`, with `failed` for settlement that needs operator attention.
 
-Two pieces of that flow are not reachable over HTTP yet, which matters if you
-are wiring up a client: `WagerService.confirmStake` — where a wallet returns
-its signed stake XDR — has no controller route, and `UsersService.getLeaderboard`
-is likewise service-only. Both are exercised by unit tests but not exposed.
+### The non-custodial handshake
+
+Because the backend cannot sign for a player, funding a pot takes two round
+trips:
+
+1. `POST /game-sessions` with `hasWager: true` — opens the pot on-chain and
+   returns the session plus `pendingSignatures`, one unsigned transaction per
+   player.
+2. Each player signs their `transaction` in their wallet and posts it back to
+   `POST /game-sessions/:id/stake`. The wager moves to `STAKED` once both have.
+
+In custodial mode the backend signs both stakes itself, so step 2 does not
+happen and `pendingSignatures` is absent.
+
+If a payout is interrupted between submission and being recorded, the wager
+stays in `SETTLING`; `POST /game-sessions/:id/wager/reconcile` (admin) settles
+what actually happened against the ledger.
 
 The rule the wager service exists to enforce: **no network call happens inside
 a database transaction.** A Postgres rollback cannot un-submit a Stellar
@@ -289,6 +302,41 @@ Release profile settings live in the **workspace** `Cargo.toml` — Cargo ignore
 `[profile.release]` in a member crate, so they must not be moved back down into
 `lyricsflip-escrow/`.
 
+### Deploying it
+
+There is no deploy script in the repo; the contract is deployed out of band and
+its ID handed to the backend. On testnet:
+
+```bash
+# 1. Accounts. The resolver settles pots; the admin can rotate the resolver
+#    and should be a multisig anywhere real value is at stake.
+stellar keys generate resolver --network testnet --fund
+stellar keys generate admin    --network testnet --fund
+
+# 2. Deploy.
+stellar contract deploy \
+  --wasm target/wasm32-unknown-unknown/release/lyricsflip_escrow.wasm \
+  --source admin --network testnet
+
+# 3. Initialize — callable exactly once. <token> is the LYRIC token contract,
+#    or the Stellar Asset Contract address of a classic asset.
+stellar contract invoke --id <contract-id> --source admin --network testnet \
+  -- initialize \
+  --admin <admin-address> --token <token-contract-id> \
+  --resolver <resolver-address>
+```
+
+Then set `STELLAR_ESCROW_CONTRACT_ID`, `STELLAR_TOKEN_CONTRACT_ID` and
+`STELLAR_RESOLVER_SECRET` in `.env` and switch
+`STELLAR_SETTLEMENT_MODE=stellar`. Boot validates all three, and
+`GET /stellar/info` echoes back what the running server actually resolved —
+check it against what you deployed before letting players in.
+
+Both players must have linked and verified a wallet (`POST
+/auth/stellar/challenge` → `/auth/stellar/link`) before they can join a
+wagered match; staking otherwise fails with a "has not linked a Stellar
+wallet" error rather than a balance error.
+
 ## Testing
 
 ```bash
@@ -308,8 +356,9 @@ work and is a type error in an old scaffold spec rather than a product bug:
   `npm run seed` compiling (`lyrics`, `rooms`, `seeds`, `game` specs)
 - `game.service` no longer exports `GameService`
 - `xp-level.service.spec` imports `../user/user.entity`, which does not exist
-- `UsersController` has no `getLeaderboard`, and there is no `leaderboard.controller.ts`
-  behind `leaderboard.controller.spec.ts`
+- `UsersController` has no `getLeaderboard`, and there is no
+  `leaderboard.controller.ts` behind `leaderboard.controller.spec.ts` —
+  `UsersService.getLeaderboard` exists but is not exposed over HTTP
 
 `npx tsc -p tsconfig.test.json --noEmit` lists them all. The auth, stellar,
 tokens, game-session, notification and common suites are green.

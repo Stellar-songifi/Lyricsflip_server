@@ -26,6 +26,24 @@ import {
   isPositive,
   toStroops,
 } from '../stellar/amount.util';
+import type { WagerResult } from '../tokens/services/wager.service';
+import type { UnsignedTransaction } from '../stellar/services/stellar-rpc.service';
+
+/**
+ * A created session, plus the wager handshake when there is one.
+ *
+ * `pendingSignatures` is the whole point of the extra fields: in non-custodial
+ * mode the backend cannot sign a player's stake, so the transactions the
+ * wallets have to sign are returned here. Without them the client has no way
+ * to fund a pot that has just been opened on-chain.
+ */
+export type CreateGameSessionResponse = GameSession & {
+  wager?: Wager;
+  pendingSignatures?: Array<{
+    userId: string;
+    transaction: UnsignedTransaction;
+  }>;
+};
 
 @Injectable()
 export class GameSessionsService {
@@ -42,7 +60,7 @@ export class GameSessionsService {
   async create(
     createGameSessionDto: CreateGameSessionDto,
     player: User,
-  ): Promise<GameSession> {
+  ): Promise<CreateGameSessionResponse> {
     const { mode, playerTwoId, wagerAmount, hasWager } = createGameSessionDto;
 
     // Validate multiplayer/wagered game requirements
@@ -141,6 +159,16 @@ export class GameSessionsService {
           `Failed to create wager: ${wagerResult.message}`,
         );
       }
+
+      // Returned alongside the session rather than discarded: a wager waiting
+      // on wallet signatures is unfundable unless the client receives them.
+      return {
+        ...savedGameSession,
+        wager: wagerResult.wager,
+        ...(wagerResult.pendingSignatures?.length
+          ? { pendingSignatures: wagerResult.pendingSignatures }
+          : {}),
+      };
     }
 
     return savedGameSession;
@@ -306,6 +334,32 @@ export class GameSessionsService {
   ): Promise<{ stroops: Stroops; display: string }> {
     const stroops = await this.tokenService.getUserBalance(userId);
     return { stroops, display: fromStroops(stroops) };
+  }
+
+  /**
+   * Submits a stake transaction the player signed in their wallet.
+   *
+   * This is the other half of the `pendingSignatures` returned by
+   * {@link create}: the client signs that XDR and posts it back here, and the
+   * wager becomes `STAKED` once both players have done so.
+   */
+  async confirmStake(
+    sessionId: string,
+    userId: string,
+    signedTransaction: string,
+  ): Promise<WagerResult> {
+    return this.wagerService.confirmStake(sessionId, userId, signedTransaction);
+  }
+
+  /**
+   * Re-checks a wager left mid-settlement against the ledger.
+   *
+   * Operator tooling rather than gameplay: a crash between submitting a payout
+   * and recording it leaves a row in `SETTLING`, and this decides what really
+   * happened rather than guessing.
+   */
+  async reconcileWager(sessionId: string): Promise<WagerResult> {
+    return this.wagerService.reconcileWager(sessionId);
   }
 
   /**

@@ -88,6 +88,8 @@ describe('GameSessionsService', () => {
 
   const mockWagerService = {
     createWager: jest.fn(),
+    confirmStake: jest.fn(),
+    reconcileWager: jest.fn(),
     resolveWagerWithWinner: jest.fn(),
     resolveWagerAsDraw: jest.fn(),
     getWagerBySessionId: jest.fn(),
@@ -172,14 +174,18 @@ describe('GameSessionsService', () => {
         .mockResolvedValueOnce(true);
       mockGameSessionRepository.create.mockReturnValue(mockGameSession);
       mockGameSessionRepository.save.mockResolvedValue(mockGameSession);
+      const wager = { id: 'wager-1', status: 'staked' };
       mockWagerService.createWager.mockResolvedValue({
         success: true,
-        wager: {},
+        wager,
       });
 
       const result = await service.create(createGameSessionDto, mockUser);
 
-      expect(result).toEqual(mockGameSession);
+      // The wager rides along with the session: a client that only gets the
+      // session back has no handle on the pot it just opened.
+      expect(result).toEqual({ ...mockGameSession, wager });
+      expect(result).not.toHaveProperty('pendingSignatures');
       expect(mockWagerService.createWager).toHaveBeenCalledWith({
         sessionId: mockGameSession.id,
         playerAId: mockUser.id,
@@ -192,6 +198,39 @@ describe('GameSessionsService', () => {
         mockUser.id,
         STAKE_STROOPS,
       );
+    });
+
+    it('hands back the transactions the players must sign', async () => {
+      const createGameSessionDto: CreateGameSessionDto = {
+        category: GameCategory.HIP_HOP,
+        mode: GameMode.WAGERED,
+        playerTwoId: mockPlayerTwo.id,
+        wagerAmount: STAKE_DISPLAY,
+        hasWager: true,
+      };
+
+      const pendingSignatures = [
+        { userId: mockUser.id, transaction: { xdr: 'AAAA...' } },
+        { userId: mockPlayerTwo.id, transaction: { xdr: 'BBBB...' } },
+      ];
+
+      mockUserRepository.findOne.mockResolvedValue(mockPlayerTwo);
+      mockTokenService.hasSufficientTokens
+        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce(true);
+      mockGameSessionRepository.create.mockReturnValue(mockGameSession);
+      mockGameSessionRepository.save.mockResolvedValue(mockGameSession);
+      mockWagerService.createWager.mockResolvedValue({
+        success: true,
+        wager: { id: 'wager-1' },
+        pendingSignatures,
+      });
+
+      const result = await service.create(createGameSessionDto, mockUser);
+
+      // Without these the pot is opened on-chain and can never be funded:
+      // in non-custodial mode the backend cannot sign a player's stake.
+      expect(result.pendingSignatures).toEqual(pendingSignatures);
     });
 
     it('should fail when player two not found for multiplayer game', async () => {
@@ -269,6 +308,32 @@ describe('GameSessionsService', () => {
       expect(mockGameSessionRepository.delete).toHaveBeenCalledWith(
         mockGameSession.id,
       );
+    });
+  });
+
+  describe('stake confirmation', () => {
+    it('passes a signed stake to the wager service as the caller', async () => {
+      const wagerResult = { success: true, message: 'Stake confirmed.' };
+      mockWagerService.confirmStake.mockResolvedValue(wagerResult);
+
+      await expect(
+        service.confirmStake('session-1', 'user-1', 'signed-xdr'),
+      ).resolves.toEqual(wagerResult);
+      expect(mockWagerService.confirmStake).toHaveBeenCalledWith(
+        'session-1',
+        'user-1',
+        'signed-xdr',
+      );
+    });
+
+    it('reconciles a wager left mid-settlement', async () => {
+      const wagerResult = { success: true, message: 'Nothing to reconcile' };
+      mockWagerService.reconcileWager.mockResolvedValue(wagerResult);
+
+      await expect(service.reconcileWager('session-1')).resolves.toEqual(
+        wagerResult,
+      );
+      expect(mockWagerService.reconcileWager).toHaveBeenCalledWith('session-1');
     });
   });
 

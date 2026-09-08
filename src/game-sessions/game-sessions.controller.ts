@@ -9,11 +9,16 @@ import {
   UseGuards,
   Query,
   Put,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
 import { GameSessionsService } from './game-sessions.service';
 import { CreateGameSessionDto } from './dto/create-game-session.dto';
 import { UpdateGameSessionDto } from './dto/update-game-session.dto';
+import { ConfirmStakeDto } from './dto/confirm-stake.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { Roles } from '../auth/decorators/roles.decorator';
+import { Role } from '../auth/roles/role.enum';
 import { GetUser } from '../auth/decorators/user.decorator';
 import { User } from '../users/entities/user.entity';
 import {
@@ -120,6 +125,45 @@ export class GameSessionsController {
       body.playerOneScore,
       body.playerTwoScore,
     );
+  }
+
+  @Post(':id/stake')
+  @ApiOperation({
+    summary: "Submit a stake transaction signed in the player's wallet",
+    description:
+      'Completes the handshake started by creating a wagered session: post ' +
+      "back the signed XDR from that response's `pendingSignatures`. The " +
+      'wager becomes STAKED once both players have done this.',
+  })
+  @ApiParam({ name: 'id', description: 'Game session ID' })
+  @ApiResponse({ status: 200, description: 'Stake submitted.' })
+  @ApiResponse({
+    status: 400,
+    description: 'Not a player in this wager, or it is not awaiting stakes.',
+  })
+  @HttpCode(HttpStatus.OK)
+  async confirmStake(
+    @Param('id') id: string,
+    @GetUser() user: User,
+    @Body() dto: ConfirmStakeDto,
+  ) {
+    return this.gameSessionsService.confirmStake(id, user.id, dto.transaction);
+  }
+
+  @Roles(Role.Admin)
+  @Post(':id/wager/reconcile')
+  @ApiOperation({
+    summary: 'Reconcile a wager left mid-settlement against the ledger',
+    description:
+      'Operator tooling. A crash between submitting a payout and recording it ' +
+      'leaves the wager in SETTLING; this establishes what actually happened ' +
+      'on-chain instead of guessing.',
+  })
+  @ApiParam({ name: 'id', description: 'Game session ID' })
+  @ApiResponse({ status: 200, description: 'Reconciled state.' })
+  @HttpCode(HttpStatus.OK)
+  async reconcileWager(@Param('id') id: string) {
+    return this.gameSessionsService.reconcileWager(id);
   }
 
   @Get('tokens/balance')

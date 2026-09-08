@@ -190,6 +190,17 @@ export class StellarTokenService implements ITokenService {
     try {
       return isAtLeast(await this.getUserBalance(userId), amount);
     } catch (error) {
+      // "You have not linked a wallet" is a different problem from "you cannot
+      // afford this", and reporting the first as the second sends the player
+      // off to buy tokens they may already hold. Only an unreadable balance —
+      // an RPC failure, say — is answered with a plain false.
+      if (
+        error instanceof BadRequestException ||
+        error instanceof NotFoundException
+      ) {
+        throw error;
+      }
+
       this.logger.warn(
         `Could not read balance for user ${userId}: ${(error as Error).message}`,
       );

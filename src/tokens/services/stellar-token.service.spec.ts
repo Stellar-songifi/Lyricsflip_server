@@ -1,4 +1,4 @@
-import { Logger } from '@nestjs/common';
+import { Logger, NotFoundException } from '@nestjs/common';
 import { Keypair } from '@stellar/stellar-sdk';
 import { Repository } from 'typeorm';
 import { Transaction } from '@stellar/stellar-sdk';
@@ -404,8 +404,18 @@ describe('StellarTokenService', () => {
       expect(await service.hasSufficientTokens('user-a', '1')).toBe(false);
     });
 
-    it('treats an unlinked wallet as insufficient rather than throwing', async () => {
-      expect(await service.hasSufficientTokens('ghost', '1')).toBe(false);
+    it('surfaces an unlinked wallet instead of reporting it as insufficient', async () => {
+      // "Link a wallet" and "you cannot afford this" call for different things
+      // from the player, so the first must not be flattened into the second.
+      await expect(service.hasSufficientTokens('ghost', '1')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+
+    it('reports a balance it simply could not read as insufficient', async () => {
+      escrow.getTokenBalance.mockRejectedValue(new Error('rpc unreachable'));
+
+      expect(await service.hasSufficientTokens('user-a', '1')).toBe(false);
     });
   });
 
