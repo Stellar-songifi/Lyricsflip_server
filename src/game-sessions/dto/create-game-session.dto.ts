@@ -3,6 +3,7 @@ import {
   IsNotEmpty,
   IsNumber,
   IsOptional,
+  Matches,
   Min,
   IsString,
   IsBoolean,
@@ -54,15 +55,21 @@ export class CreateGameSessionDto {
   status?: GameSessionStatus;
 
   @ApiProperty({
-    description: 'Wager amount for wagered games',
+    description:
+      'Amount each player stakes, as a decimal LYRIC string ("10", "2.5"). ' +
+      'Sent as a string rather than a number so that fractional stakes cannot ' +
+      'be mangled by floating-point rounding on the way in.',
     required: false,
-    minimum: 1,
-    type: Number,
+    example: '10',
+    type: String,
   })
   @IsOptional()
-  @IsNumber()
-  @Min(1)
-  wagerAmount?: number;
+  @IsString()
+  @Matches(/^\d+(\.\d{1,7})?$/, {
+    message:
+      'wagerAmount must be a non-negative decimal with at most 7 decimal places',
+  })
+  wagerAmount?: string;
 
   @ApiProperty({
     description: 'Whether this session has a wager',

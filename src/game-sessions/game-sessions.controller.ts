@@ -115,7 +115,6 @@ export class GameSessionsController {
     wagerResult?: any;
     message: string;
   }> {
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-call
     return await this.gameSessionsService.completeWageredGame(
       id,
       body.playerOneScore,
@@ -125,9 +124,14 @@ export class GameSessionsController {
 
   @Get('tokens/balance')
   @ApiOperation({ summary: 'Get user token balance' })
-  @ApiResponse({ status: 200, description: 'User token balance.' })
-  async getUserTokenBalance(@GetUser() user: User): Promise<number> {
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-call
+  @ApiResponse({
+    status: 200,
+    description:
+      'User token balance, as base units ("1000000000") and a display amount ("100.0").',
+  })
+  async getUserTokenBalance(
+    @GetUser() user: User,
+  ): Promise<{ stroops: string; display: string }> {
     return await this.gameSessionsService.getUserTokenBalance(user.id);
   }
 
@@ -136,7 +140,6 @@ export class GameSessionsController {
   @ApiParam({ name: 'id', description: 'Game session ID' })
   @ApiResponse({ status: 200, description: 'Wager information.' })
   async getSessionWager(@Param('id') id: string): Promise<any> {
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     return await this.gameSessionsService.getSessionWager(id);
   }
 
@@ -153,7 +156,6 @@ export class GameSessionsController {
     @GetUser() user: User,
     @Query('limit') limit: number,
   ): Promise<any[]> {
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-call
     return await this.gameSessionsService.getUserWagers(user.id, limit);
   }
 }

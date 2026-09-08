@@ -1,18 +1,61 @@
-import { Module } from '@nestjs/common';
-import { TypeOrmModule } from '@nestjs/typeorm';
+import { Logger, Module } from '@nestjs/common';
+import { TypeOrmModule, getRepositoryToken } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
 import { Wager } from './entities/wager.entity';
 import { User } from '../users/entities/user.entity';
 import { MockTokenService } from './services/mock-token.service';
+import { StellarTokenService } from './services/stellar-token.service';
 import { WagerService } from './services/wager.service';
 import { TOKEN_SERVICE } from './interfaces/token.interface';
+import { StellarModule } from '../stellar/stellar.module';
+import { EscrowContractService } from '../stellar/services/escrow-contract.service';
+import { StellarRpcService } from '../stellar/services/stellar-rpc.service';
+import { IKeyStore } from '../stellar/interfaces/key-store.interface';
+import { KEY_STORE, STELLAR_CONFIG } from '../stellar/stellar.constants';
+import type { StellarConfig } from '../stellar/stellar.config';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Wager, User])],
+  imports: [TypeOrmModule.forFeature([Wager, User]), StellarModule],
   providers: [
-    // Custom provider pattern - easily replaceable with real Starknet implementation later
+    MockTokenService,
+    StellarTokenService,
     {
+      // Which settlement backend the game runs on is a deployment decision, not
+      // a code one: the same wager flow drives Postgres rows in development and
+      // the Soroban escrow contract in production.
       provide: TOKEN_SERVICE,
-      useClass: MockTokenService,
+      inject: [
+        STELLAR_CONFIG,
+        getRepositoryToken(User),
+        KEY_STORE,
+        EscrowContractService,
+        StellarRpcService,
+      ],
+      useFactory: (
+        config: StellarConfig,
+        userRepository: Repository<User>,
+        keyStore: IKeyStore,
+        escrow: EscrowContractService,
+        rpc: StellarRpcService,
+      ) => {
+        const logger = new Logger('TokensModule');
+
+        if (config.settlementMode === 'stellar') {
+          logger.log(
+            `Settling wagers through the escrow contract ${config.escrowContractId} on ${config.network}`,
+          );
+          return new StellarTokenService(
+            userRepository,
+            config,
+            keyStore,
+            escrow,
+            rpc,
+          );
+        }
+
+        logger.log('Settling wagers in Postgres (mock mode)');
+        return new MockTokenService(userRepository);
+      },
     },
     WagerService,
   ],

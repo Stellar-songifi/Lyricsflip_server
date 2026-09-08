@@ -82,9 +82,14 @@ export class GameSession {
   @Column({ type: 'uuid', nullable: true })
   winnerId: string;
 
-  // Wager amount for wagered games
-  @Column({ type: 'int', nullable: true })
-  wagerAmount: number;
+  /**
+   * Amount each player stakes, in token base units (stroops) as a string.
+   *
+   * Mirrors `wagers.stakeStroops`: LYRIC has 7 decimals, so an `integer` column
+   * overflows at ~214 tokens and a JS `number` loses stroops past ~900 million.
+   */
+  @Column({ type: 'bigint', nullable: true })
+  wagerStroops: string | null;
 
   // Whether this session has an active wager
   @Column({ type: 'boolean', default: false })

@@ -20,6 +20,12 @@ import {
   TOKEN_SERVICE,
   ITokenService,
 } from '../tokens/interfaces/token.interface';
+import {
+  Stroops,
+  fromStroops,
+  isPositive,
+  toStroops,
+} from '../stellar/amount.util';
 
 @Injectable()
 export class GameSessionsService {
@@ -63,8 +69,12 @@ export class GameSessionsService {
     }
 
     // Validate wagered game requirements
+    // Parsed once here so that a malformed amount is rejected before a session
+    // row is written, and every downstream call works in stroops.
+    let stake: Stroops | undefined;
+
     if (mode === GameMode.WAGERED || hasWager) {
-      if (!wagerAmount || wagerAmount <= 0) {
+      if (!wagerAmount || !isPositive((stake = toStroops(wagerAmount)))) {
         throw new BadRequestException(
           'Wager amount must be greater than 0 for wagered games',
         );
@@ -78,13 +88,13 @@ export class GameSessionsService {
 
       // Check if both players have sufficient tokens
       const [playerOneBalance, playerTwoBalance] = await Promise.all([
-        this.tokenService.hasSufficientTokens(player.id, wagerAmount),
-        this.tokenService.hasSufficientTokens(playerTwoId, wagerAmount),
+        this.tokenService.hasSufficientTokens(player.id, stake),
+        this.tokenService.hasSufficientTokens(playerTwoId, stake),
       ]);
 
       if (!playerOneBalance) {
         throw new BadRequestException(
-          `You have insufficient tokens for this wager (${wagerAmount} required)`,
+          `You have insufficient tokens for this wager (${fromStroops(stake)} LYRIC required)`,
         );
       }
 
@@ -98,9 +108,15 @@ export class GameSessionsService {
       }
     }
 
+    // `wagerAmount` is the display amount on the wire; the column stores
+    // stroops, so it is replaced rather than carried through.
+    const sessionFields = { ...createGameSessionDto };
+    delete sessionFields.wagerAmount;
+
     const gameSession = this.gameSessionRepository.create({
-      ...createGameSessionDto,
+      ...sessionFields,
       player,
+      wagerStroops: stake ?? null,
       status:
         mode === GameMode.MULTIPLAYER || mode === GameMode.WAGERED
           ? GameSessionStatus.WAITING_FOR_PLAYER
@@ -110,12 +126,12 @@ export class GameSessionsService {
     const savedGameSession = await this.gameSessionRepository.save(gameSession);
 
     // Create wager if this is a wagered game
-    if ((mode === GameMode.WAGERED || hasWager) && wagerAmount && playerTwoId) {
+    if ((mode === GameMode.WAGERED || hasWager) && stake && playerTwoId) {
       const wagerResult = await this.wagerService.createWager({
         sessionId: savedGameSession.id,
         playerAId: player.id,
         playerBId: playerTwoId,
-        amount: wagerAmount,
+        stake,
       });
 
       if (!wagerResult.success) {
@@ -279,10 +295,17 @@ export class GameSessionsService {
   }
 
   /**
-   * Gets user's token balance
+   * Gets the user's token balance, in stroops alongside a display rendering.
+   *
+   * Both are returned because callers need different ones: the display string
+   * is what a UI shows, the stroop string is what has to be echoed back as a
+   * stake without losing precision.
    */
-  async getUserTokenBalance(userId: string): Promise<number> {
-    return this.tokenService.getUserBalance(userId);
+  async getUserTokenBalance(
+    userId: string,
+  ): Promise<{ stroops: Stroops; display: string }> {
+    const stroops = await this.tokenService.getUserBalance(userId);
+    return { stroops, display: fromStroops(stroops) };
   }
 
   /**

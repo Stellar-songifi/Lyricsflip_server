@@ -104,8 +104,31 @@ export class User {
   @Column({ type: 'boolean', default: true })
   isActive: boolean;
 
-  @Column({ type: 'int', default: 100 })
-  mockTokenBalance: number; // Starting balance of 100 mock tokens
+  /**
+   * The Stellar account (G...) this user stakes from and is paid out to.
+   *
+   * Null until the user links a wallet by signing a SEP-10 challenge; wagered
+   * matches are unavailable until then.
+   */
+  @Index()
+  @Column({ type: 'varchar', length: 56, nullable: true, unique: true })
+  stellarAddress?: string | null;
+
+  /** When wallet ownership was last proved via SEP-10. */
+  @Column({ type: 'timestamp', nullable: true })
+  stellarAddressVerifiedAt?: Date | null;
+
+  /**
+   * Balance used only by the mock settlement backend, in token base units
+   * (stroops) held as a string.
+   *
+   * When STELLAR_SETTLEMENT_MODE=stellar this column is ignored entirely and
+   * balances are read from the token contract instead. It is a bigint rather
+   * than an int because a 7-decimal token passes the safe-integer range at
+   * around 900 million tokens.
+   */
+  @Column({ type: 'bigint', default: '1000000000' })
+  mockBalance: string; // 100.0000000 LYRIC
 
   @Column({
     type: 'enum',

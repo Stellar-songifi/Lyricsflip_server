@@ -1,6 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { GameSessionsService } from './game-sessions.service';
 import {
@@ -11,18 +10,16 @@ import {
 } from './entities/game-session.entity';
 import { User } from '../users/entities/user.entity';
 import { WagerService } from '../tokens/services/wager.service';
-import {
-  TOKEN_SERVICE,
-  ITokenService,
-} from '../tokens/interfaces/token.interface';
+import { TOKEN_SERVICE } from '../tokens/interfaces/token.interface';
 import { CreateGameSessionDto } from './dto/create-game-session.dto';
+import { toStroops } from '../stellar/amount.util';
+
+/** 10 LYRIC per player, as the wire format and as base units. */
+const STAKE_DISPLAY = '10';
+const STAKE_STROOPS = toStroops(STAKE_DISPLAY);
 
 describe('GameSessionsService', () => {
   let service: GameSessionsService;
-  let gameSessionRepository: Repository<GameSession>;
-  let userRepository: Repository<User>;
-  let wagerService: WagerService;
-  let tokenService: ITokenService;
 
   const mockUser: User = {
     id: '123e4567-e89b-12d3-a456-426614174000',
@@ -30,7 +27,7 @@ describe('GameSessionsService', () => {
     username: 'testuser',
     name: 'Test User',
     passwordHash: 'hashedpassword',
-    mockTokenBalance: 100,
+    mockBalance: toStroops('100'),
     xp: 0,
     level: 1,
     levelTitle: 'Gossip Rookie' as any,
@@ -47,7 +44,7 @@ describe('GameSessionsService', () => {
     username: 'player2',
     name: 'Player Two',
     passwordHash: 'hashedpassword',
-    mockTokenBalance: 100,
+    mockBalance: toStroops('100'),
     xp: 0,
     level: 1,
     levelTitle: 'Gossip Rookie' as any,
@@ -70,7 +67,7 @@ describe('GameSessionsService', () => {
     status: GameSessionStatus.IN_PROGRESS,
     winner: null as any,
     winnerId: null as any,
-    wagerAmount: 10,
+    wagerStroops: STAKE_STROOPS,
     hasWager: true,
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -98,11 +95,15 @@ describe('GameSessionsService', () => {
   };
 
   const mockTokenService = {
+    settlementMode: 'mock' as const,
     hasSufficientTokens: jest.fn(),
     getUserBalance: jest.fn(),
+    openEscrow: jest.fn(),
     stakeTokens: jest.fn(),
+    confirmStake: jest.fn(),
     releaseToWinner: jest.fn(),
-    refundStake: jest.fn(),
+    refundEscrow: jest.fn(),
+    reconcile: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -129,12 +130,6 @@ describe('GameSessionsService', () => {
     }).compile();
 
     service = module.get<GameSessionsService>(GameSessionsService);
-    gameSessionRepository = module.get<Repository<GameSession>>(
-      getRepositoryToken(GameSession),
-    );
-    userRepository = module.get<Repository<User>>(getRepositoryToken(User));
-    wagerService = module.get<WagerService>(WagerService);
-    tokenService = module.get<ITokenService>(TOKEN_SERVICE);
   });
 
   afterEach(() => {
@@ -157,6 +152,7 @@ describe('GameSessionsService', () => {
       expect(mockGameSessionRepository.create).toHaveBeenCalledWith({
         ...createGameSessionDto,
         player: mockUser,
+        wagerStroops: null,
         status: GameSessionStatus.IN_PROGRESS,
       });
     });
@@ -166,7 +162,7 @@ describe('GameSessionsService', () => {
         category: GameCategory.HIP_HOP,
         mode: GameMode.WAGERED,
         playerTwoId: mockPlayerTwo.id,
-        wagerAmount: 10,
+        wagerAmount: STAKE_DISPLAY,
         hasWager: true,
       };
 
@@ -188,8 +184,14 @@ describe('GameSessionsService', () => {
         sessionId: mockGameSession.id,
         playerAId: mockUser.id,
         playerBId: mockPlayerTwo.id,
-        amount: 10,
+        stake: STAKE_STROOPS,
       });
+      // The stake reaches the settlement layer in base units, never as the
+      // display number that arrived on the wire.
+      expect(mockTokenService.hasSufficientTokens).toHaveBeenCalledWith(
+        mockUser.id,
+        STAKE_STROOPS,
+      );
     });
 
     it('should fail when player two not found for multiplayer game', async () => {
@@ -225,7 +227,7 @@ describe('GameSessionsService', () => {
         category: GameCategory.HIP_HOP,
         mode: GameMode.WAGERED,
         playerTwoId: mockPlayerTwo.id,
-        wagerAmount: 10,
+        wagerAmount: STAKE_DISPLAY,
         hasWager: true,
       };
 
@@ -244,7 +246,7 @@ describe('GameSessionsService', () => {
         category: GameCategory.HIP_HOP,
         mode: GameMode.WAGERED,
         playerTwoId: mockPlayerTwo.id,
-        wagerAmount: 10,
+        wagerAmount: STAKE_DISPLAY,
         hasWager: true,
       };
 
@@ -416,16 +418,24 @@ describe('GameSessionsService', () => {
   });
 
   describe('getUserTokenBalance', () => {
-    it('should return user token balance', async () => {
+    it('returns the balance as base units and a display amount', async () => {
       const userId = 'user-123';
-      const balance = 100;
 
-      mockTokenService.getUserBalance.mockResolvedValue(balance);
+      mockTokenService.getUserBalance.mockResolvedValue(toStroops('100'));
 
       const result = await service.getUserTokenBalance(userId);
 
-      expect(result).toBe(balance);
+      expect(result).toEqual({ stroops: '1000000000', display: '100.0' });
       expect(mockTokenService.getUserBalance).toHaveBeenCalledWith(userId);
+    });
+
+    it('does not lose precision on a fractional balance', async () => {
+      mockTokenService.getUserBalance.mockResolvedValue('1000000001');
+
+      await expect(service.getUserTokenBalance('user-123')).resolves.toEqual({
+        stroops: '1000000001',
+        display: '100.0000001',
+      });
     });
   });
 
