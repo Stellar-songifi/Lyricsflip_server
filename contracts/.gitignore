@@ -1,0 +1,5 @@
+target/
+
+# soroban-sdk rewrites these diagnostic snapshots on every `cargo test` run;
+# nothing asserts against them, so keeping them tracked is pure diff noise.
+test_snapshots/
