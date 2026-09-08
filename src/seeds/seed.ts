@@ -6,7 +6,7 @@ import { User } from 'src/users/entities/user.entity';
 import { Repository } from 'typeorm';
 import * as bcrypt from 'bcrypt';
 
-async function bootstrap() {
+export async function bootstrap() {
   const app = await NestFactory.createApplicationContext(AppModule);
 
   const userRepo = app.get<Repository<User>>('UserRepository');
@@ -195,4 +195,8 @@ async function bootstrap() {
   console.log('Seeding complete');
   await app.close();
 }
-bootstrap();
+// Only seed when the file is executed directly (`npm run seed`); importing it
+// — as the spec does — must not touch the database.
+if (require.main === module) {
+  void bootstrap();
+}

@@ -26,12 +26,12 @@ describe('RoomsController', () => {
   } as User;
 
   const mockLyric = {
-    id: '1',
+    id: 1,
     content: 'Test lyric text',
     artist: 'Test Artist',
     songTitle: 'Test Song',
     genre: Genre.Pop,
-    decade: 2020,
+    decade: '2020s',
     createdBy: mockUser,
     createdAt: new Date(),
   } as Lyrics;

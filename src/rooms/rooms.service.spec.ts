@@ -14,7 +14,7 @@ describe('RoomsService', () => {
   let lyricsRepository: Repository<Lyrics>;
 
   const mockLyric = {
-    id: '1',
+    id: 1,
     content: 'Test lyric text',
     artist: 'Test Artist',
     songTitle: 'Test Song',

@@ -27,12 +27,12 @@ describe('LyricsService', () => {
   } as User;
 
   const mockLyrics: Lyrics = {
-    id: '1',
+    id: 1,
     content: 'Test lyrics content',
     artist: 'Test Artist',
     songTitle: 'Test Song',
     genre: 'Pop' as any,
-    decade: 2020,
+    decade: '2020s',
     createdBy: mockUser,
     createdAt: new Date(),
   } as Lyrics;
@@ -45,6 +45,7 @@ describe('LyricsService', () => {
       findOne: jest.fn(),
       remove: jest.fn(),
       createQueryBuilder: jest.fn(() => ({
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
         where: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         getCount: jest.fn().mockResolvedValue(10),
@@ -97,7 +98,11 @@ describe('LyricsService', () => {
       const result = await service.create(createDto, mockUser);
 
       expect(result).toEqual(mockLyrics);
-      expect(mockRepository.create).toHaveBeenCalledWith({ ...createDto, createdBy: mockUser });
+      expect(mockRepository.create).toHaveBeenCalledWith({
+        ...createDto,
+        decade: '2023',
+        createdBy: mockUser,
+      });
       expect(mockRepository.save).toHaveBeenCalled();
     });
   });
@@ -106,7 +111,7 @@ describe('LyricsService', () => {
     it('should return lyrics from cache if available', async () => {
       mockCacheManager.get.mockResolvedValue(mockLyrics);
 
-      const result = await service.findOne('1');
+      const result = await service.findOne(1);
 
       expect(result).toEqual(mockLyrics);
       expect(mockCacheManager.get).toHaveBeenCalledWith('lyrics:1');
@@ -117,11 +122,14 @@ describe('LyricsService', () => {
       mockCacheManager.get.mockResolvedValue(null);
       mockRepository.findOne.mockResolvedValue(mockLyrics);
 
-      const result = await service.findOne('1');
+      const result = await service.findOne(1);
 
       expect(result).toEqual(mockLyrics);
       expect(mockCacheManager.get).toHaveBeenCalledWith('lyrics:1');
-      expect(mockRepository.findOne).toHaveBeenCalledWith({ where: { id: '1' } });
+      expect(mockRepository.findOne).toHaveBeenCalledWith({
+        where: { id: 1, isActive: true },
+        relations: ['createdBy'],
+      });
       expect(mockCacheManager.set).toHaveBeenCalledWith('lyrics:1', mockLyrics, cacheConfig.lyricsTTL);
     });
   });
@@ -143,7 +151,11 @@ describe('LyricsService', () => {
 
       expect(result).toEqual([mockLyrics]);
       expect(mockCacheManager.get).toHaveBeenCalledWith('random_lyrics:1:Pop:2020');
-      expect(mockCacheManager.set).toHaveBeenCalledWith('random_lyrics:1:Pop:2020', [mockLyrics], cacheConfig.lyricsTTL);
+      expect(mockCacheManager.set).toHaveBeenCalledWith(
+        'random_lyrics:1:Pop:2020',
+        [mockLyrics],
+        Math.floor(cacheConfig.lyricsTTL / 4),
+      );
     });
   });
 
@@ -164,7 +176,10 @@ describe('LyricsService', () => {
       const result = await service.getLyricsByCategory('genre', 'Pop');
 
       expect(result).toEqual([mockLyrics]);
-      expect(mockRepository.find).toHaveBeenCalledWith({ where: { genre: 'Pop' } });
+      expect(mockRepository.find).toHaveBeenCalledWith({
+        where: { genre: 'Pop', isActive: true },
+        relations: ['createdBy'],
+      });
       expect(mockCacheManager.set).toHaveBeenCalledWith('lyrics_by_genre:Pop', [mockLyrics], cacheConfig.lyricsTTL);
     });
   });
@@ -175,7 +190,9 @@ describe('LyricsService', () => {
       
       await service.clearCache();
 
-      expect(consoleSpy).toHaveBeenCalledWith('Cache cleared for lyrics');
+      expect(consoleSpy).toHaveBeenCalledWith(
+        'Cache clear requested - implement pattern-based deletion for production',
+      );
       consoleSpy.mockRestore();
     });
   });
@@ -187,6 +204,7 @@ describe('LyricsService', () => {
       expect(stats).toEqual({
         keys: 0,
         ttl: cacheConfig.lyricsTTL,
+        memoryUsage: 'Unknown',
       });
     });
   });

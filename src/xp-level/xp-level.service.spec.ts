@@ -1,6 +1,6 @@
 // xp-level.service.spec.ts
 import { XpLevelService } from './xp-level.service';
-import { UserLevel } from '../user/user.entity';
+import { UserLevel } from '../users/entities/user.entity';
 
 describe('XpLevelService', () => {
   let service: XpLevelService;

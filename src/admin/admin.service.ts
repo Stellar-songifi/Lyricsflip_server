@@ -13,7 +13,7 @@ export class AdminService {
     return this.usersService.findAll();
   }
 
-  async deleteUser(id: number) {
+  async deleteUser(id: string) {
     const result = await this.usersService.remove(id);
     return result.message || 'User deleted successfully';
   }

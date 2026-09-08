@@ -1,7 +1,7 @@
 import { NestFactory } from '@nestjs/core';
 import { Repository } from 'typeorm';
 import { User } from 'src/users/entities/user.entity';
-import { Lyrics, Genre } from 'src/lyrics/entities/lyrics.entity';
+import { Lyrics } from 'src/lyrics/entities/lyrics.entity';
 
 jest.mock('@nestjs/core', () => ({
   NestFactory: {
@@ -17,7 +17,7 @@ describe('Seed Script', () => {
   beforeEach(() => {
     mockUserRepo = {
       findOne: jest.fn(),
-      create: ((entity: any) => entity as User) as any,
+      create: jest.fn((entity: any) => entity as User) as any,
       save: (jest.fn(async (entity: any) => ({ id: 'user-1', ...entity })) as any)
     };
 
@@ -71,7 +71,7 @@ describe('Seed Script', () => {
         content: expect.any(String),
         createdBy: { id: 'user-1' },
         createdAt: expect.any(Date),
-        genre: expect.any(Genre),
+        genre: expect.any(String),
       }),
     );
 

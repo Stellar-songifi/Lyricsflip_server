@@ -7,6 +7,7 @@ import { UpdateUserPreferencesDto } from './dto/update-user-preferences.dto';
 import { Repository } from 'typeorm';
 import { Cache } from 'cache-manager';
 import { NotFoundException, BadRequestException } from '@nestjs/common';
+import { Role } from '../auth/roles/role.enum';
 
 describe('UsersService', () => {
   let service: UsersService;
@@ -67,7 +68,9 @@ describe('UsersService', () => {
       levelTitle: UserLevel.GOSSIP_ROOKIE,
       createdAt: new Date(),
       updatedAt: new Date(),
-      role: 'user',
+      role: Role.User,
+      isActive: true,
+      mockBalance: '1000000000',
       preferredGenre: undefined,
       preferredDecade: undefined,
       gameSessions: [],

@@ -5,6 +5,7 @@ import {
   Param,
   UseGuards,
   ParseUUIDPipe,
+  ParseIntPipe,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -25,7 +26,7 @@ export class AdminController {
   }
 
   @Delete('users/:id')
-  deleteUser(@Param('id', ParseUUIDPipe) id: number) {
+  deleteUser(@Param('id', ParseUUIDPipe) id: string) {
     return this.adminService.deleteUser(id);
   }
 
@@ -36,7 +37,7 @@ export class AdminController {
   }
 
   @Delete('lyrics/:id')
-  deleteLyric(@Param('id', ParseUUIDPipe) id: number) {
+  deleteLyric(@Param('id', ParseIntPipe) id: number) {
     return this.adminService.deleteLyric(id);
   }
 }

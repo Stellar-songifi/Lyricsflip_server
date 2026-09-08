@@ -40,6 +40,8 @@ export class GameLogicService {
   // Points system configuration
   private readonly CORRECT_GUESS_POINTS = 100;
   private readonly PARTIAL_MATCH_POINTS = 50;
+  // A substring this short matches almost any answer, so it is not a guess.
+  private readonly MIN_PARTIAL_MATCH_LENGTH = 3;
 
   constructor(
     @InjectRepository(Lyrics)
@@ -165,9 +167,12 @@ export class GameLogicService {
       // Check for exact match
       const isExactMatch = normalizedGuess === normalizedAnswer;
 
-      // Check for partial match (contains the correct answer or vice versa)
+      // Check for partial match (contains the correct answer or vice versa).
+      // Guesses below the minimum length are rejected outright rather than
+      // counted as correct for zero points.
       const isPartialMatch =
         !isExactMatch &&
+        normalizedGuess.length >= this.MIN_PARTIAL_MATCH_LENGTH &&
         (normalizedGuess.includes(normalizedAnswer) ||
           normalizedAnswer.includes(normalizedGuess));
 
@@ -175,7 +180,7 @@ export class GameLogicService {
       let points = 0;
       if (isExactMatch) {
         points = this.CORRECT_GUESS_POINTS;
-      } else if (isPartialMatch && normalizedGuess.length >= 3) {
+      } else if (isPartialMatch) {
         points = this.PARTIAL_MATCH_POINTS;
       }
 

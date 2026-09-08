@@ -11,6 +11,11 @@ import {
 import { User } from "../../users/entities/user.entity"
 import { Genre } from "./genre.enum"
 
+// Genre lives in its own module but is re-exported here because the entity is
+// what consumers reach for: a DTO or a fixture that types a `genre` field
+// wants the column's enum from the same import as the column.
+export { Genre }
+
 @Entity()
 @Unique(["artist", "songTitle"]) // Combination uniqueness
 export class Lyrics {
