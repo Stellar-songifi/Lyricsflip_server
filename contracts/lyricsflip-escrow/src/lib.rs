@@ -23,6 +23,19 @@
 //! | `resolve`      | `("resolve", session_id)`     | `(winner, payout)`                 |
 //! | `refund`       | `("refund", session_id)`      | `(player_a, player_b)`             |
 //! | `set_resolver` | `("resolver", ())`            | `(old_resolver, new_resolver)`     |
+//! | `claim_refund` | `("claim", session_id)`       | `(player, amount)`                 |
+//!
+//! ## Reclaiming a stuck stake
+//!
+//! If the resolver key is lost, or the backend that holds it is shut down,
+//! staked funds would otherwise be locked forever — rotating the resolver
+//! needs the admin, who may also be unavailable. Every pot therefore carries
+//! a `deadline_ledger`, set by `open_pot` to `CLAIM_WINDOW_LEDGERS` ledgers in
+//! the future. Once that deadline has passed, each player may call
+//! `claim_refund` themselves to recover their own stake, with no resolver or
+//! admin involved. `resolve` remains available up until a player claims;
+//! once any player has claimed, `resolve` is permanently blocked for that
+//! pot, since it no longer holds both stakes.
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, BytesN,
@@ -31,6 +44,12 @@ use soroban_sdk::{
 
 /// A game session ID: the 16 bytes of the backend's session UUID.
 pub type SessionId = BytesN<16>;
+
+/// How many ledgers after `open_pot` a pot's claim deadline falls. Roughly a
+/// week, assuming a five second average ledger close time. After this many
+/// ledgers have passed, players may reclaim their own stake themselves via
+/// `claim_refund`, even if the resolver never calls `resolve` or `refund`.
+pub const CLAIM_WINDOW_LEDGERS: u32 = 120_960;
 
 #[contracttype]
 #[derive(Clone)]
@@ -75,6 +94,9 @@ pub struct Pot {
     pub funded_a: bool,
     pub funded_b: bool,
     pub status: PotStatus,
+    /// The ledger sequence after which either player may reclaim their own
+    /// stake themselves via `claim_refund`, regardless of the resolver.
+    pub deadline_ledger: u32,
 }
 
 #[contracterror]
@@ -91,6 +113,11 @@ pub enum Error {
     NotAPlayer = 8,
     InvalidStake = 9,
     SamePlayer = 10,
+    /// `claim_refund` was called before the pot's claim deadline.
+    DeadlineNotReached = 11,
+    /// The calling player has no stake left in the pot to reclaim — either
+    /// they never staked, or they already claimed it back.
+    NothingToClaim = 12,
 }
 
 #[contract]
@@ -162,6 +189,8 @@ impl EscrowContract {
             return Err(Error::PotAlreadyExists);
         }
 
+        let deadline_ledger = env.ledger().sequence() + CLAIM_WINDOW_LEDGERS;
+
         env.storage().persistent().set(
             &DataKey::Pot(session_id.clone()),
             &Pot {
@@ -171,6 +200,7 @@ impl EscrowContract {
                 funded_a: false,
                 funded_b: false,
                 status: PotStatus::Open,
+                deadline_ledger,
             },
         );
 
@@ -239,7 +269,11 @@ impl EscrowContract {
 
         let mut pot = Self::pot(&env, &session_id)?;
 
-        if pot.status != PotStatus::Funded {
+        // `funded_a`/`funded_b` are also checked (not just `status`) because a
+        // player may have already reclaimed their stake via `claim_refund`
+        // after the deadline passed, which clears their funded flag but
+        // leaves `status` at `Funded` if the other player hasn't claimed.
+        if pot.status != PotStatus::Funded || !pot.funded_a || !pot.funded_b {
             return Err(Error::PotNotFunded);
         }
 
@@ -302,6 +336,74 @@ impl EscrowContract {
         );
 
         Ok(())
+    }
+
+    /// Lets a player reclaim their own stake once a pot's claim deadline has
+    /// passed, without needing the resolver at all. This is the player's
+    /// self-service escape hatch if the resolver key is lost or the backend
+    /// is shut down — see `CLAIM_WINDOW_LEDGERS`.
+    ///
+    /// Only the calling player's own stake is ever moved: `claim_refund`
+    /// authorises against the `player` argument, and only pays out (and
+    /// clears) that player's own `funded_a`/`funded_b` flag. A player can
+    /// never claim another player's stake, and cannot claim twice — the
+    /// second call fails with `NothingToClaim` because the flag is already
+    /// cleared.
+    ///
+    /// Once any player has claimed, `resolve` can no longer be called on
+    /// this pot (see the comment in `resolve`), so the resolver cannot pay
+    /// out a pot that no longer holds both stakes.
+    pub fn claim_refund(env: Env, session_id: SessionId, player: Address) -> Result<i128, Error> {
+        player.require_auth();
+
+        let config = Self::config(&env)?;
+        let mut pot = Self::pot(&env, &session_id)?;
+
+        if pot.status == PotStatus::Resolved || pot.status == PotStatus::Refunded {
+            return Err(Error::PotNotFunded);
+        }
+
+        if env.ledger().sequence() <= pot.deadline_ledger {
+            return Err(Error::DeadlineNotReached);
+        }
+
+        let is_a = player == pot.player_a;
+        let is_b = player == pot.player_b;
+
+        if !is_a && !is_b {
+            return Err(Error::NotAPlayer);
+        }
+
+        let has_stake = if is_a { pot.funded_a } else { pot.funded_b };
+        if !has_stake {
+            return Err(Error::NothingToClaim);
+        }
+
+        token::Client::new(&env, &config.token).transfer(
+            &env.current_contract_address(),
+            &player,
+            &pot.stake,
+        );
+
+        if is_a {
+            pot.funded_a = false;
+        } else {
+            pot.funded_b = false;
+        }
+
+        if !pot.funded_a && !pot.funded_b {
+            pot.status = PotStatus::Refunded;
+        }
+
+        let amount = pot.stake;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Pot(session_id.clone()), &pot);
+
+        env.events()
+            .publish((symbol_short!("claim"), session_id), (player, amount));
+
+        Ok(amount)
     }
 
     /// Reads a pot. Used by the backend to reconcile its database against the

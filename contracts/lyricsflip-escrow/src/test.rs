@@ -270,6 +270,102 @@ fn refund_emits_a_refund_event() {
     );
 }
 
+fn pass_the_claim_deadline(s: &Setup) {
+    s.env.ledger().with_mut(|li| {
+        li.sequence_number += CLAIM_WINDOW_LEDGERS + 1;
+    });
+}
+
+#[test]
+fn claim_before_the_deadline_fails() {
+    let s = setup(1_000);
+    let id = session(&s.env);
+
+    s.client.open_pot(&id, &s.player_a, &s.player_b, &100);
+    s.client.stake(&id, &s.player_a);
+
+    assert_eq!(
+        s.client.try_claim_refund(&id, &s.player_a),
+        Err(Ok(Error::DeadlineNotReached))
+    );
+}
+
+#[test]
+fn each_player_can_claim_their_own_stake_after_the_deadline() {
+    let s = setup(1_000);
+    let id = session(&s.env);
+
+    s.client.open_pot(&id, &s.player_a, &s.player_b, &100);
+    s.client.stake(&id, &s.player_a);
+    s.client.stake(&id, &s.player_b);
+
+    pass_the_claim_deadline(&s);
+
+    let amount_a = s.client.claim_refund(&id, &s.player_a);
+    assert_eq!(amount_a, 100);
+    assert_eq!(s.token.balance(&s.player_a), 1_000);
+
+    let amount_b = s.client.claim_refund(&id, &s.player_b);
+    assert_eq!(amount_b, 100);
+    assert_eq!(s.token.balance(&s.player_b), 1_000);
+
+    assert_eq!(s.client.get_pot(&id).status, PotStatus::Refunded);
+}
+
+#[test]
+fn a_player_cannot_claim_another_players_stake() {
+    let s = setup(1_000);
+    let id = session(&s.env);
+    let stranger = Address::generate(&s.env);
+
+    s.client.open_pot(&id, &s.player_a, &s.player_b, &100);
+    s.client.stake(&id, &s.player_a);
+
+    pass_the_claim_deadline(&s);
+
+    assert_eq!(
+        s.client.try_claim_refund(&id, &stranger),
+        Err(Ok(Error::NotAPlayer))
+    );
+}
+
+#[test]
+fn a_player_cannot_claim_twice() {
+    let s = setup(1_000);
+    let id = session(&s.env);
+
+    s.client.open_pot(&id, &s.player_a, &s.player_b, &100);
+    s.client.stake(&id, &s.player_a);
+
+    pass_the_claim_deadline(&s);
+
+    s.client.claim_refund(&id, &s.player_a);
+
+    assert_eq!(
+        s.client.try_claim_refund(&id, &s.player_a),
+        Err(Ok(Error::NothingToClaim))
+    );
+}
+
+#[test]
+fn resolve_is_blocked_once_a_player_has_claimed() {
+    let s = setup(1_000);
+    let id = session(&s.env);
+
+    s.client.open_pot(&id, &s.player_a, &s.player_b, &100);
+    s.client.stake(&id, &s.player_a);
+    s.client.stake(&id, &s.player_b);
+
+    pass_the_claim_deadline(&s);
+
+    s.client.claim_refund(&id, &s.player_a);
+
+    assert_eq!(
+        s.client.try_resolve(&id, &s.player_b),
+        Err(Ok(Error::PotNotFunded))
+    );
+}
+
 #[test]
 fn set_resolver_emits_a_resolver_event() {
     let s = setup(1_000);
