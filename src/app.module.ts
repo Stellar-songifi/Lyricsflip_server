@@ -4,6 +4,7 @@ import { AppService } from './app.service';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { CacheModule } from '@nestjs/cache-manager';
+import { ScheduleModule } from '@nestjs/schedule';
 import { UsersModule } from './users/users.module';
 import { LyricsModule } from './lyrics/lyrics.module';
 import { AuthModule } from './auth/auth.module';
@@ -28,6 +29,8 @@ import { APP_GUARD } from '@nestjs/core';
       isGlobal: true, // Makes ConfigModule available globally
       envFilePath: '.env',
     }),
+    // Drives periodic jobs such as RoomsService.checkAndCloseExpiredRooms.
+    ScheduleModule.forRoot(),
     // 2. Configure caching globally
     CacheModule.register({
       isGlobal: true,

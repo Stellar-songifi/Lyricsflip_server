@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   GoneException,
   Injectable,
@@ -7,6 +8,8 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Lyrics } from 'src/lyrics/entities/lyrics.entity';
+import { Genre, isGenre, toGenre } from 'src/lyrics/entities/genre.enum';
+import { Repository, SelectQueryBuilder } from 'typeorm';
 import { IsNull, Repository } from 'typeorm';
 import { GameRound } from './entities/game-round.entity';
 import { GAME_CONSTANTS } from './constants/game.constants';
@@ -155,24 +158,7 @@ export class GameLogicService {
           'lyrics.genre',
         ]);
 
-      // Apply filters if provided
-      if (options.category) {
-        queryBuilder.andWhere('LOWER(lyrics.category) = LOWER(:category)', {
-          category: options.category,
-        });
-      }
-
-      if (options.decade) {
-        queryBuilder.andWhere('lyrics.decade = :decade', {
-          decade: options.decade,
-        });
-      }
-
-      if (options.genre) {
-        queryBuilder.andWhere('LOWER(lyrics.genre) = LOWER(:genre)', {
-          genre: options.genre,
-        });
-      }
+      this.applyFilters(queryBuilder, options);
 
       // Exclude previously shown lyrics in the session
       if (options.excludeIds && options.excludeIds.length > 0) {
@@ -230,7 +216,8 @@ export class GameLogicService {
     try {
       // Fetch the lyric from database
       const lyric = await this.lyricsRepository.findOne({
-        where: { id: guessDto.lyricId },
+        // A deactivated lyric is treated as if it does not exist.
+        where: { id: guessDto.lyricId, isActive: true },
       });
 
       if (!lyric) {
@@ -339,25 +326,7 @@ export class GameLogicService {
 
     try {
       const queryBuilder = this.lyricsRepository.createQueryBuilder('lyrics');
-
-      // Apply filters if provided
-      if (options.category) {
-        queryBuilder.andWhere('LOWER(lyrics.category) = LOWER(:category)', {
-          category: options.category,
-        });
-      }
-
-      if (options.decade) {
-        queryBuilder.andWhere('lyrics.decade = :decade', {
-          decade: options.decade,
-        });
-      }
-
-      if (options.genre) {
-        queryBuilder.andWhere('LOWER(lyrics.genre) = LOWER(:genre)', {
-          genre: options.genre,
-        });
-      }
+      this.applyFilters(queryBuilder, options);
 
       const [totalCount, categories, decades, genres] = await Promise.all([
         queryBuilder.getCount(),
@@ -365,17 +334,20 @@ export class GameLogicService {
           .createQueryBuilder('lyrics')
           .select('DISTINCT lyrics.category', 'category')
           .where('lyrics.category IS NOT NULL')
+          .andWhere('lyrics.isActive = :isActive', { isActive: true })
           .getRawMany(),
         this.lyricsRepository
           .createQueryBuilder('lyrics')
           .select('DISTINCT lyrics.decade', 'decade')
           .where('lyrics.decade IS NOT NULL')
+          .andWhere('lyrics.isActive = :isActive', { isActive: true })
           .orderBy('lyrics.decade', 'ASC')
           .getRawMany(),
         this.lyricsRepository
           .createQueryBuilder('lyrics')
           .select('DISTINCT lyrics.genre', 'genre')
           .where('lyrics.genre IS NOT NULL')
+          .andWhere('lyrics.isActive = :isActive', { isActive: true })
           .getRawMany(),
       ]);
 
@@ -389,6 +361,52 @@ export class GameLogicService {
       this.logger.error('Error fetching lyric statistics', error.stack);
       throw error;
     }
+  }
+
+  /**
+   * Applies the shared gameplay filters. Deactivated lyrics are always
+   * excluded, so an admin removal takes effect for players immediately.
+   */
+  private applyFilters(
+    queryBuilder: SelectQueryBuilder<Lyrics>,
+    options: Partial<RandomLyricOptions>,
+  ): void {
+    queryBuilder.andWhere('lyrics.isActive = :isActive', { isActive: true });
+
+    if (options.category) {
+      queryBuilder.andWhere('LOWER(lyrics.category) = LOWER(:category)', {
+        category: options.category,
+      });
+    }
+
+    if (options.decade) {
+      queryBuilder.andWhere('lyrics.decade = :decade', {
+        decade: options.decade,
+      });
+    }
+
+    if (options.genre) {
+      // genre is a Postgres enum and LOWER() has no enum overload, so resolve
+      // the value to the enum here and compare the column directly.
+      queryBuilder.andWhere('lyrics.genre = :genre', {
+        genre: this.resolveGenre(options.genre),
+      });
+    }
+  }
+
+  /**
+   * Maps a genre case-insensitively onto the Genre enum. The HTTP DTO already
+   * validates it, but the WebSocket gateway does not, and an unknown value
+   * would otherwise reach Postgres as an invalid enum literal.
+   */
+  private resolveGenre(genre: string): Genre {
+    const resolved = toGenre(genre);
+    if (!isGenre(resolved)) {
+      throw new BadRequestException(
+        `genre must be one of: ${Object.values(Genre).join(', ')}`,
+      );
+    }
+    return resolved;
   }
 
   /**
