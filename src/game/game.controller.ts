@@ -127,7 +127,9 @@ export class GameController {
   @Get('stats')
   async getLyricStats(
     @Query(new ValidationPipe({ transform: true }))
-    options: Partial<RandomLyricOptionsDto>,
+    // Every field is optional already. Partial<> erases the class at runtime,
+    // which silently disables validation, so the DTO is used directly.
+    options: RandomLyricOptionsDto,
   ): Promise<GameStatsResponse> {
     this.logger.log('Getting lyric statistics');
 

@@ -1,7 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { Repository, SelectQueryBuilder } from 'typeorm';
-import { NotFoundException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { Genre, Lyrics } from 'src/lyrics/entities/lyrics.entity';
 import { GameLogicService } from './game.service';
 import { GuessDto, GuessType } from './dto/guess.dto';
@@ -124,9 +124,45 @@ describe('GameLogicService', () => {
 
       await service.getRandomLyric({ genre: 'Pop' });
 
+      // Postgres has no LOWER(enum), so the column must be compared directly.
       expect(queryBuilder.andWhere).toHaveBeenCalledWith(
-        'LOWER(lyrics.genre) = LOWER(:genre)',
-        { genre: 'Pop' },
+        'lyrics.genre = :genre',
+        { genre: Genre.Pop },
+      );
+      expect(queryBuilder.andWhere).not.toHaveBeenCalledWith(
+        expect.stringContaining('LOWER(lyrics.genre)'),
+        expect.anything(),
+      );
+    });
+
+    it('should resolve genre case-insensitively to the enum value', async () => {
+      queryBuilder.getCount.mockResolvedValue(5);
+      queryBuilder.getOne.mockResolvedValue(mockLyric);
+
+      await service.getRandomLyric({ genre: 'hip-hop' });
+
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith(
+        'lyrics.genre = :genre',
+        { genre: Genre.HipHop },
+      );
+    });
+
+    it('should reject an unknown genre before querying', async () => {
+      await expect(service.getRandomLyric({ genre: 'Polka' })).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(queryBuilder.getCount).not.toHaveBeenCalled();
+    });
+
+    it('should only ever select active lyrics', async () => {
+      queryBuilder.getCount.mockResolvedValue(5);
+      queryBuilder.getOne.mockResolvedValue(mockLyric);
+
+      await service.getRandomLyric();
+
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith(
+        'lyrics.isActive = :isActive',
+        { isActive: true },
       );
     });
 
@@ -184,7 +220,7 @@ describe('GameLogicService', () => {
       });
 
       expect(repository.findOne).toHaveBeenCalledWith({
-        where: { id: 1 },
+        where: { id: 1, isActive: true },
       });
     });
 
@@ -278,6 +314,17 @@ describe('GameLogicService', () => {
         new NotFoundException('Lyric with ID 1 not found'),
       );
     });
+
+    it('should return 404 for a deactivated lyric', async () => {
+      // findOne filters on isActive, so a deactivated row comes back as null.
+      repository.findOne.mockImplementation(async (opts: any) =>
+        opts.where.isActive === true ? null : { ...mockLyric, isActive: false },
+      );
+
+      await expect(service.checkGuess(mockGuessDto)).rejects.toThrow(
+        NotFoundException,
+      );
+    });
   });
 
   describe('getMultipleRandomLyrics', () => {
@@ -350,6 +397,23 @@ describe('GameLogicService', () => {
       const result = await service.getLyricStats();
 
       expect(result.availableCategories).toEqual(['Pop']);
+    });
+
+    it('should compare genre directly and count only active lyrics', async () => {
+      queryBuilder.getCount.mockResolvedValue(3);
+      queryBuilder.getRawMany.mockResolvedValue([]);
+
+      await service.getLyricStats({ genre: 'pop' });
+
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith(
+        'lyrics.genre = :genre',
+        { genre: Genre.Pop },
+      );
+      // One for the count query plus one for each DISTINCT list.
+      const activeFilters = queryBuilder.andWhere.mock.calls.filter(
+        ([sql]) => sql === 'lyrics.isActive = :isActive',
+      );
+      expect(activeFilters).toHaveLength(4);
     });
   });
 
