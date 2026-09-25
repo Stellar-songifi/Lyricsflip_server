@@ -1,4 +1,14 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import {
+  ArgumentMetadata,
+  BadRequestException,
+  ValidationPipe,
+} from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
+import { CompleteWageredGameDto } from './dto/complete-wagered-game.dto';
+import { UpdateGameSessionDto } from './dto/update-game-session.dto';
+import { Role } from '../auth/roles/role.enum';
+import { ROLES_KEY } from '../auth/roles/roles.decorator';
 import { GameSessionsController } from './game-sessions.controller';
 import { GameSessionsService } from './game-sessions.service';
 import { User } from '../users/entities/user.entity';
@@ -87,6 +97,72 @@ describe('GameSessionsController', () => {
         wagerResult,
       );
       expect(service.reconcileWager).toHaveBeenCalledWith('session-1');
+    });
+  });
+
+  describe('complete-wagered', () => {
+    // The same options main.ts registers globally.
+    const pipe = new ValidationPipe({
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      transform: true,
+    });
+    const bodyOf = (metatype: unknown): ArgumentMetadata => ({
+      type: 'body',
+      metatype: metatype as ArgumentMetadata['metatype'],
+    });
+
+    it('is admin only, so a player gets 403', () => {
+      const roles = new Reflector().get<Role[]>(
+        ROLES_KEY,
+        GameSessionsController.prototype.completeWageredGame,
+      );
+
+      expect(roles).toEqual([Role.Admin]);
+    });
+
+    it.each([
+      ['a negative score', { playerOneScore: -1, playerTwoScore: 0 }],
+      ['a fractional score', { playerOneScore: 1.5, playerTwoScore: 0 }],
+      ['a string score', { playerOneScore: '10', playerTwoScore: 0 }],
+      ['a missing score', { playerOneScore: 10 }],
+    ])('rejects %s with 400', async (_, body) => {
+      await expect(
+        pipe.transform(body, bodyOf(CompleteWageredGameDto)),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('accepts non-negative integer scores', async () => {
+      await expect(
+        pipe.transform(
+          { playerOneScore: 3, playerTwoScore: 0 },
+          bodyOf(CompleteWageredGameDto),
+        ),
+      ).resolves.toBeInstanceOf(CompleteWageredGameDto);
+    });
+  });
+
+  describe('PATCH /game-sessions/:id', () => {
+    const pipe = new ValidationPipe({
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      transform: true,
+    });
+
+    it.each([
+      'score',
+      'status',
+      'mode',
+      'hasWager',
+      'wagerAmount',
+      'playerTwoId',
+    ])('rejects a client setting %s', async (field) => {
+      await expect(
+        pipe.transform(
+          { [field]: 'x' },
+          { type: 'body', metatype: UpdateGameSessionDto },
+        ),
+      ).rejects.toThrow(BadRequestException);
     });
   });
 });

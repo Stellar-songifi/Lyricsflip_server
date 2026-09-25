@@ -74,11 +74,11 @@ export class WagerService {
   ) {}
 
   /**
-   * Opens an escrow pot for a session and stakes both players into it.
+   * Opens an escrow pot for a session and stakes player one into it.
    *
-   * In non-custodial mode this returns before the stakes have landed: the
-   * result carries one unsigned transaction per player, and the wager stays in
-   * `AWAITING_STAKES` until {@link confirmStake} has been called for both.
+   * Player two is only staked once they accept, through {@link acceptWager};
+   * until then the wager stays in `AWAITING_STAKES`. In non-custodial mode the
+   * result carries player one's unsigned transaction instead of a stake.
    */
   async createWager(createWagerDto: CreateWagerDto): Promise<WagerResult> {
     const { sessionId, playerAId, playerBId } = createWagerDto;
@@ -170,50 +170,34 @@ export class WagerService {
       wager.status = WagerStatus.AWAITING_STAKES;
       wager = await this.wagerRepository.save(wager);
 
-      // Step 3 — stake each player. Sequential rather than concurrent so that a
-      // failure on the second stake has an unambiguous first-stake outcome to
-      // roll back from.
+      // Step 3 — stake player one only. Player two has not agreed to anything
+      // yet, so their funds are not touched until they accept (acceptWager).
       const stakeA = await this.tokenService.stakeTokens(playerAId, context);
-      const stakeB = await this.tokenService.stakeTokens(playerBId, context);
 
-      wager.playerAStakeTxHash = stakeA.txHash ?? null;
-      wager.playerBStakeTxHash = stakeB.txHash ?? null;
-
-      const pendingSignatures = [
-        { userId: playerAId, result: stakeA },
-        { userId: playerBId, result: stakeB },
-      ]
-        .filter(
-          (entry) => entry.result.status === SettlementStatus.PENDING_SIGNATURE,
-        )
-        .map((entry) => ({
-          userId: entry.userId,
-          transaction: entry.result.unsignedTransaction as UnsignedTransaction,
-        }));
-
-      if (pendingSignatures.length > 0) {
+      if (stakeA.status === SettlementStatus.PENDING_SIGNATURE) {
         wager.resultMessage =
-          'Waiting for players to sign their stake transactions in their wallets.';
+          'Sign your stake transaction in your wallet. Player two stakes when they accept.';
         wager = await this.wagerRepository.save(wager);
 
         return {
           success: true,
           wager,
           message: wager.resultMessage,
-          pendingSignatures,
+          pendingSignatures: [
+            {
+              userId: playerAId,
+              transaction: stakeA.unsignedTransaction as UnsignedTransaction,
+            },
+          ],
         };
       }
 
-      const failed = [stakeA, stakeB].find((result) => !result.success);
-
-      if (failed) {
-        // One stake landed and the other did not. Refunding returns whatever is
-        // actually in the pot, so this is safe whether zero or one stake made it.
+      if (!stakeA.success) {
         const refund = await this.tokenService.refundEscrow(context);
 
         await this.markFailed(
           wager,
-          `Staking failed (${failed.message}). ` +
+          `Staking failed (${stakeA.message}). ` +
             (refund.success
               ? 'Any stake that landed has been refunded.'
               : `Refund also failed: ${refund.message}. Needs operator attention.`),
@@ -222,13 +206,9 @@ export class WagerService {
         return { success: false, wager, message: wager.resultMessage };
       }
 
-      wager.status = WagerStatus.STAKED;
-      wager.resultMessage = `Wager on! Each player staked ${fromStroops(stake)} LYRIC. Pot: ${fromStroops(wager.totalPotStroops)} LYRIC`;
+      wager.playerAStakeTxHash = stakeA.txHash ?? null;
+      wager.resultMessage = `You staked ${fromStroops(stake)} LYRIC. Waiting for your opponent to accept.`;
       wager = await this.wagerRepository.save(wager);
-
-      this.logger.debug(
-        `Wager ${wager.id} funded; pot is ${fromStroops(wager.totalPotStroops)} LYRIC`,
-      );
 
       return { success: true, wager, message: wager.resultMessage };
     } catch (error) {
@@ -238,6 +218,69 @@ export class WagerService {
         message: `Failed to create wager: ${(error as Error).message}`,
       };
     }
+  }
+
+  /**
+   * Stakes player two, who has just accepted the invitation.
+   *
+   * This is the only place player two's funds are moved from. In
+   * non-custodial mode it returns their unsigned transaction instead, to be
+   * submitted through {@link confirmStake}.
+   */
+  async acceptWager(sessionId: string, userId: string): Promise<WagerResult> {
+    const wager = await this.requireWager(sessionId);
+
+    if (userId !== wager.playerBId) {
+      throw new BadRequestException('Only the invited player can accept');
+    }
+
+    if (
+      wager.status !== WagerStatus.AWAITING_STAKES ||
+      wager.playerBStakeTxHash
+    ) {
+      return {
+        success: false,
+        wager,
+        message: `This wager is not awaiting your stake (status: ${wager.status})`,
+      };
+    }
+
+    const stakeB = await this.tokenService.stakeTokens(
+      userId,
+      this.contextFor(wager),
+    );
+
+    if (stakeB.status === SettlementStatus.PENDING_SIGNATURE) {
+      return {
+        success: true,
+        wager,
+        message: stakeB.message,
+        pendingSignatures: [
+          {
+            userId,
+            transaction: stakeB.unsignedTransaction as UnsignedTransaction,
+          },
+        ],
+      };
+    }
+
+    if (!stakeB.success) {
+      return { success: false, wager, message: stakeB.message };
+    }
+
+    wager.playerBStakeTxHash = stakeB.txHash ?? null;
+
+    if (wager.playerAStakeTxHash) {
+      wager.status = WagerStatus.STAKED;
+      wager.resultMessage = `Wager on! Pot: ${fromStroops(wager.totalPotStroops)} LYRIC`;
+    } else {
+      wager.resultMessage =
+        'Stake confirmed. Waiting for your opponent to sign theirs.';
+    }
+
+    const saved = await this.wagerRepository.save(wager);
+
+    return { success: true, wager: saved, message: saved.resultMessage };
   }
 
   /**
@@ -266,6 +309,7 @@ export class WagerService {
     }
 
     const result = await this.tokenService.confirmStake(
+      userId,
       signedXdr,
       this.contextFor(wager),
     );

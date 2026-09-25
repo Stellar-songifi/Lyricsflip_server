@@ -1,8 +1,8 @@
 import {
   IsEnum,
   IsNotEmpty,
-  IsNumber,
   IsString,
+  IsUUID,
   MaxLength,
   MinLength,
 } from 'class-validator';
@@ -14,9 +14,9 @@ export enum GuessType {
 }
 
 export class GuessDto {
-  @IsNumber()
-  @IsNotEmpty()
-  lyricId: number;
+  /** The round returned by `GET /game/lyric`. */
+  @IsUUID()
+  roundId: string;
 
   @IsEnum(GuessType)
   @IsNotEmpty()

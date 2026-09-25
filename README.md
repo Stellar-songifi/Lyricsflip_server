@@ -138,7 +138,7 @@ flowchart LR
 | `StellarModule`       | `src/stellar`         | Stellar config validation, Soroban RPC wrapper, typed escrow client, key stores, `/stellar` endpoints (global module) |
 | `NotificationsModule` | `src/notifications`   | Event-emitter notifications (level up, challenge, achievement), stored in memory                        |
 | `AdminModule`         | `src/admin`           | Admin-only user and lyric management                                                                    |
-| `xp-level`            | `src/xp-level`        | XP thresholds and level titles (`XpLevelService`)                                                       |
+| `xp-level`            | `src/xp-level`        | XP thresholds, level titles, and XP-gain calculation (`XpLevelService`) — provided and exported by `XpModule` |
 | `common`              | `src/common`          | Logging and error interceptors, and a Winston logger service                                            |
 | `config`              | `src/config`          | Cache TTLs and key prefixes                                                                             |
 
@@ -289,15 +289,18 @@ sequenceDiagram
     G->>L: getRandomLyric(options)
     L->>DB: COUNT(*) with filters, then random OFFSET, LIMIT 1
     L-->>G: lyric (with answers)
-    G-->>C: { id, lyricSnippet, genre, decade, category }  (answers stripped)
-    C->>G: POST /game/guess { lyricId, guessType, guessValue }
-    G->>L: validateGuess + checkGuess
-    L->>DB: find lyric by id
+    G->>L: issueRound(user, lyric)
+    L->>DB: insert game_rounds row (expires in 120 s)
+    G-->>C: { roundId, expiresAt, id, lyricSnippet, genre, decade, category }  (answers stripped)
+    C->>G: POST /game/guess { roundId, guessType, guessValue }
+    G->>L: validateGuess + guessRound
+    L->>DB: find the caller's round, close it, find lyric by id
     L-->>G: { isCorrect, correctAnswer, explanation, points }
     G-->>C: guess result
 ```
 
-- `GET /game/lyrics/multiple?count=N` returns up to 20 distinct snippets. Each pick excludes the ones already chosen.
+- `GET /game/lyrics/multiple?count=N` returns up to 20 distinct snippets. Each pick excludes the ones already chosen, and each gets its own round.
+- A round takes one guess. Guessing a round that is not yours (or does not exist) returns `404`, guessing it again returns `409`, and guessing after it expires returns `410`. The answer is only revealed once the round is closed.
 - `excludeIds` lets the client avoid lyrics it has already shown.
 - `GET /game/stats` reports how many lyrics exist and which categories, decades and genres are available.
 
@@ -318,7 +321,7 @@ A `GameSession` has a creator (`player`), an optional `playerTwo`, a `category`,
 - `multiplayer` / `wagered`: `playerTwoId` is required, you cannot play yourself, and the session starts as `waiting_for_player`.
 - If the session is `wagered` (or `hasWager: true`), a `wagerAmount` is also required. Before the session row is written, the server checks that **both** players can afford the stake. A wager is then opened (see [Wagers and settlement](#wagers-and-settlement)). If opening the wager fails, the session row is deleted again.
 
-When a wagered match ends, `PUT /game-sessions/:id/complete-wagered` records both scores. The higher score wins the pot, and a tie refunds both stakes. `GET /game-sessions/top-scores` and `/my-recent` list completed and recent sessions.
+When a wagered match ends, an admin calls `PUT /game-sessions/:id/complete-wagered` with both scores. The higher score wins the pot, and a tie refunds both stakes. Players cannot call it, because the scores decide who is paid. Every call is written to the `SettlementAudit` log with who triggered it, the scores, the winner and the settlement transaction hash. `GET /game-sessions/top-scores` and `/my-recent` list completed and recent sessions.
 
 ### Scoring
 
@@ -459,7 +462,13 @@ stateDiagram-v2
 1. Checks that both players exist, are different, have no existing wager for this session, and can afford the stake.
 2. **Writes the wager row as `pending` and commits it**, before anything touches the network.
 3. Opens the pot (`open_pot`, signed by the resolver) and moves the wager to `awaiting_stakes`, recording `escrowTxHash`.
-4. Stakes each player in turn. In mock and custodial modes this finishes immediately, and the wager becomes `staked`. If one stake fails, the pot is refunded and the wager is marked `failed`. In non-custodial mode the result is `pendingSignatures`, one unsigned transaction per player.
+4. Stakes **player one only**. If that stake fails, the pot is refunded and the wager is marked `failed`. In non-custodial mode the result is `pendingSignatures` with player one's unsigned transaction.
+
+Player two's funds are never touched until they accept. The session starts as `waiting_for_player`:
+
+- `POST /game-sessions/:id/accept` (player two only) calls `WagerService.acceptWager`, which stakes player two, or returns their unsigned transaction in `pendingSignatures`. The wager becomes `staked` once both stakes are in.
+- `POST /game-sessions/:id/decline` (player two only) abandons the session and refunds player one in full.
+- An invitation not answered within `INVITATION_TTL_MINUTES` (default 30) is abandoned and refunded the same way, by a sweep that runs every minute and on any late accept.
 
 At the end of the match, `resolveWagerWithWinner` or `resolveWagerAsDraw` runs through `settle()`:
 
@@ -479,20 +488,24 @@ sequenceDiagram
     participant E as Escrow contract
     A->>S: POST /game-sessions { mode: "wagered", playerTwoId, wagerAmount: "10" }
     S->>E: open_pot(session, A, B, stake)  (resolver-signed)
-    S-->>A: session + wager + pendingSignatures[A, B]
+    S-->>A: session + wager + pendingSignatures[A]
     A->>A: sign own XDR in wallet
     A->>S: POST /game-sessions/:id/stake { transaction }
     S->>E: submit stake(session, A)
+    B->>S: POST /game-sessions/:id/accept
+    S-->>B: session + wager + pendingSignatures[B]
     B->>B: sign own XDR in wallet
     B->>S: POST /game-sessions/:id/stake { transaction }
     S->>E: submit stake(session, B)
     Note over S,E: pot is Funded, wager is staked
-    A->>S: PUT /game-sessions/:id/complete-wagered { scores }
+    Note over A,S: admin calls PUT /game-sessions/:id/complete-wagered { scores }
     S->>E: resolve(session, winner)  (resolver-signed)
     E-->>S: pays 2 × stake to the winner
 ```
 
 Each `transaction` in `pendingSignatures` has the shape `{ xdr, networkPassphrase, hash }`. The `hash` does not change when the wallet adds a signature, which lets the server track the transaction before it is signed. An unsigned transaction expires after **180 seconds** (`TRANSACTION_TIMEOUT_SECONDS`).
+
+Before a signed envelope is submitted, the server decodes it and checks that it is exactly one call to `stake(sessionId, callerAddress)` on the configured escrow contract. Anything else, such as a payment, another player's stake or a stake for another session, is rejected with `400` and never reaches the network.
 
 ### Why no network call runs inside a database transaction
 
@@ -621,11 +634,12 @@ All configuration comes from environment variables, loaded from `.env` by `@nest
 | Variable         | Default                  | Notes                                                                 |
 | ---------------- | ------------------------ | --------------------------------------------------------------------- |
 | `PORT`           | `3000`                   | HTTP port                                                             |
-| `NODE_ENV`       | –                        | `production` hides validation messages and database error details     |
+| `NODE_ENV`       | –                        | `production` hides validation messages and database error details, and drops the mock notification endpoints |
 | `FRONTEND_URL`   | `http://localhost:3000`  | CORS origin                                                           |
 | `LOG_LEVEL`      | `info`                   | Used by the Winston `LoggerService`                                   |
 | `JWT_SECRET`     | **required**             | The app refuses to start without it. Use a long random value          |
 | `JWT_EXPIRES_IN` | `7d`                     | Any format accepted by `jsonwebtoken`                                 |
+| `INVITATION_TTL_MINUTES` | `30`             | How long player two has to accept a session invitation before it is abandoned and player one refunded |
 
 **Database**
 
@@ -664,7 +678,7 @@ Validation is deliberately strict. A mistyped contract ID or a key from the wron
 
 ## API reference
 
-Swagger at `/api/docs` has the request and response detail. In the tables below, `public` means no token is needed and `admin` means the admin role is required. Every other route needs a bearer token.
+Swagger at `/api/docs` has the request and response detail. In the tables below, `public` means no token is needed, `admin` means the admin role is required, and `participant` means the caller must be one of the session's players or an admin. Every other route needs a bearer token.
 
 **App and health**
 
@@ -709,7 +723,7 @@ Swagger at `/api/docs` has the request and response detail. In the tables below,
 | `GET /lyrics/random`              | auth   | `?count (1–100)&genre&decade`, cached               |
 | `GET /lyrics/genre/:genre`        | auth   | By genre, cached                                    |
 | `GET /lyrics/decade/:decade`      | auth   | By decade (e.g. `1990`), cached                     |
-| `GET /lyrics/artist/:artist`      | auth   | By artist, cached                                   |
+| `GET /lyrics/artist/:artist`      | admin  | By artist, cached                                   |
 | `GET /lyrics/:id`                 | auth   | One lyric, cached                                   |
 | `POST /lyrics`                    | admin  | Create                                              |
 | `PATCH /lyrics/:id`               | admin  | Update                                              |
@@ -717,13 +731,15 @@ Swagger at `/api/docs` has the request and response detail. In the tables below,
 | `POST /lyrics/cache/clear`        | admin  | Clear the lyrics cache                              |
 | `GET /lyrics/cache/stats`         | admin  | Cache statistics                                    |
 
+Non-admins get `{ id, lyricSnippet, genre, decade, category }` from every `/lyrics` read. `artist`, `songTitle` and `content` are only returned to admins, because they are the answers.
+
 **Solo game**: `/game`
 
 | Method & path                 | Access | Purpose                                                                  |
 | ----------------------------- | ------ | ------------------------------------------------------------------------ |
-| `GET /game/lyric`             | auth   | Random snippet (answers hidden). `?genre&decade&category&excludeIds`     |
-| `GET /game/lyrics/multiple`   | auth   | `?count (1–20)` plus the same filters                                    |
-| `POST /game/guess`            | auth   | `{ lyricId, guessType: "artist" \| "songTitle", guessValue }` returns `{ isCorrect, correctAnswer, explanation, points }` |
+| `GET /game/lyric`             | auth   | Random snippet with a `roundId` (answers hidden). `?genre&decade&category&excludeIds` |
+| `GET /game/lyrics/multiple`   | auth   | `?count (1–20)` plus the same filters, one round each                   |
+| `POST /game/guess`            | auth   | `{ roundId, guessType: "artist" \| "songTitle", guessValue }`, one per round, returns `{ isCorrect, correctAnswer, explanation, points }` |
 | `GET /game/stats`             | auth   | Totals and the available genres, decades and categories                  |
 
 **Rooms**: `/rooms`
@@ -740,16 +756,23 @@ Swagger at `/api/docs` has the request and response detail. In the tables below,
 | Method & path                                | Access | Purpose                                                                  |
 | -------------------------------------------- | ------ | ------------------------------------------------------------------------ |
 | `POST /game-sessions`                        | auth   | `{ category, mode?, playerTwoId?, wagerAmount? ("10.5"), hasWager? }`. Wagered sessions also return `wager` and, in non-custodial mode, `pendingSignatures` |
-| `GET /game-sessions`                         | auth   | All sessions                                                             |
+| `GET /game-sessions`                         | auth   | Your sessions (all sessions for admins)                                  |
 | `GET /game-sessions/top-scores`              | auth   | `?limit`, completed sessions by score                                    |
 | `GET /game-sessions/my-recent`               | auth   | `?limit`, your recent sessions                                           |
+| `GET /game-sessions/:id`                     | participant | One session                                                         |
+| `PATCH /game-sessions/:id`                   | participant | `{ category? }` only; score, status, players and wager fields are rejected |
+| `DELETE /game-sessions/:id`                  | participant | Delete; `409` while the session's wager is not `won`, `refunded` or `failed` |
+| `POST /game-sessions/:id/stake`              | auth   | `{ transaction }`: your wallet-signed stake XDR, verified as your stake for this session |
+| `PUT /game-sessions/:id/complete-wagered`    | admin  | `{ playerOneScore, playerTwoScore }` (non-negative integers): finish and settle, audit-logged (to be computed server-side, issue #30) |
 | `GET /game-sessions/:id`                     | auth   | One session                                                              |
 | `PATCH /game-sessions/:id`                   | auth   | Update                                                                   |
 | `DELETE /game-sessions/:id`                  | auth   | Delete                                                                   |
+| `POST /game-sessions/:id/accept`             | player two | Accept an invitation; for a wager, stakes you or returns `pendingSignatures` |
+| `POST /game-sessions/:id/decline`            | player two | Decline an invitation; player one is refunded                        |
 | `POST /game-sessions/:id/stake`              | auth   | `{ transaction }`: your wallet-signed stake XDR                          |
 | `PUT /game-sessions/:id/complete-wagered`    | auth   | `{ playerOneScore, playerTwoScore }`: finish and settle (to be made server-authoritative, issue #30) |
 | `POST /game-sessions/:id/wager/reconcile`    | admin  | Reconcile a wager stuck in `settling` with the ledger                    |
-| `GET /game-sessions/:id/wager`               | auth   | The wager for a session                                                  |
+| `GET /game-sessions/:id/wager`               | participant | The wager for a session                                             |
 | `GET /game-sessions/wagers/my-history`       | auth   | `?limit`, your wagers                                                    |
 | `GET /game-sessions/tokens/balance`          | auth   | `{ stroops, display }` from the active settlement backend                |
 
@@ -759,8 +782,8 @@ Swagger at `/api/docs` has the request and response detail. In the tables below,
 | -------------------------------------- | ------ | --------------------------------------------------------------------------- |
 | `GET /game-history/me`                 | auth   | Paginated. `?page&limit(≤100)&guessType&isCorrect&startDate&endDate&lyricId` |
 | `GET /game-history/me/stats`           | auth   | Totals, accuracy, best streak, average points                               |
-| `GET /game-history/:id`                | auth   | One record                                                                  |
-| `GET /game-history/users/:userId`      | auth   | Another user's history (to be restricted to admins, issue #33)              |
+| `GET /game-history/:id`                | auth   | One of your records (any record, for admins); no user entity is embedded     |
+| `GET /game-history/users/:userId`      | admin  | Another user's history                                                      |
 
 **Admin**: `/admin` (all routes are admin-only)
 
@@ -771,11 +794,11 @@ Swagger at `/api/docs` has the request and response detail. In the tables below,
 | `GET /admin/lyrics`          | List active lyrics   |
 | `DELETE /admin/lyrics/:id`   | Soft-delete a lyric  |
 
-**Notifications**: `/notifications` (in-memory development tooling)
+**Notifications**: `/notifications` (in-memory development tooling). Everything except `GET /notifications/me` is admin-only, and the `mock-*`, `test/*` and `generate-mock-data` endpoints are not registered when `NODE_ENV=production`.
 
 | Method & path                                         | Purpose                                   |
 | ----------------------------------------------------- | ----------------------------------------- |
-| `GET /notifications`                                  | All stored notifications                  |
+| `GET /notifications/me`                               | Your notifications                        |
 | `GET /notifications/user/:userId`                     | One user's notifications                  |
 | `DELETE /notifications`                               | Clear the store                           |
 | `POST /notifications/mock-level-up` / `mock-challenge-completed` / `mock-achievement` | Emit a custom event |
@@ -791,7 +814,7 @@ The gateway uses the `/game` namespace (Socket.IO) and serves solo play in real 
 | server → client | `connected`    | `{ message, sessionId }` on connect                         |
 | client → server | `requestLyric` | `{ genre?, decade?, category? }`                            |
 | server → client | `newLyric`     | `{ id, lyricSnippet, category, decade, genre }`             |
-| client → server | `submitGuess`  | `{ lyricId, guessType, guessValue }`                        |
+| client → server | `submitGuess`  | `{ guessType, guessValue }`, for the last `newLyric`, once  |
 | server → client | `guessResult`  | guess result plus `{ session: { score, streak } }`          |
 | client → server | `getSession`   | –                                                           |
 | server → client | `sessionInfo`  | `{ score, streak, playerId }`                               |

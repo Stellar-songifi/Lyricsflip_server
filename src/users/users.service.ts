@@ -13,6 +13,7 @@ import { UpdateUserPreferencesDto } from './dto/update-user-preferences.dto';
 import { User } from './entities/user.entity';
 import { Cache } from 'cache-manager';
 import { MAX_PAGE_SIZE } from '../common/dto/pagination-query.dto';
+import { cacheConfig } from '../config/cache.config';
 
 @Injectable()
 export class UsersService {
@@ -180,7 +181,11 @@ export class UsersService {
         order,
       },
     };
-    await this.cacheManager.set(cacheKey, result, 30); // cache for 30s
+    await this.cacheManager.set(
+      cacheKey,
+      result,
+      cacheConfig.leaderboardTtlMs,
+    );
     return result;
   }
 }
