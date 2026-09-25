@@ -23,6 +23,7 @@ import {
   multiplyStroops,
 } from '../../stellar/amount.util';
 import type { UnsignedTransaction } from '../../stellar/services/stellar-rpc.service';
+import { sanitizeForDisplay } from '../../common/utils/sanitize.util';
 
 export interface CreateWagerDto {
   sessionId: string;
@@ -128,14 +129,14 @@ export class WagerService {
       if (!playerAFunded) {
         return {
           success: false,
-          message: `${playerA.username} has insufficient LYRIC for this wager (${fromStroops(stake)} required)`,
+          message: `${sanitizeForDisplay(playerA.username)} has insufficient LYRIC for this wager (${fromStroops(stake)} required)`,
         };
       }
 
       if (!playerBFunded) {
         return {
           success: false,
-          message: `${playerB.username} has insufficient LYRIC for this wager (${fromStroops(stake)} required)`,
+          message: `${sanitizeForDisplay(playerB.username)} has insufficient LYRIC for this wager (${fromStroops(stake)} required)`,
         };
       }
 

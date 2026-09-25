@@ -28,6 +28,7 @@ import {
 } from '../stellar/amount.util';
 import type { WagerResult } from '../tokens/services/wager.service';
 import type { UnsignedTransaction } from '../stellar/services/stellar-rpc.service';
+import { sanitizeForDisplay } from '../common/utils/sanitize.util';
 
 /**
  * A created session, plus the wager handshake when there is one.
@@ -121,7 +122,7 @@ export class GameSessionsService {
           where: { id: playerTwoId },
         });
         throw new BadRequestException(
-          `${playerTwo?.username || 'Player Two'} has insufficient tokens for this wager`,
+          `${sanitizeForDisplay(playerTwo?.username) || 'Player Two'} has insufficient tokens for this wager`,
         );
       }
     }
@@ -259,6 +260,8 @@ export class GameSessionsService {
     gameSession: GameSession;
     wagerResult?: any;
     message: string;
+    winnerId?: string | null;
+    winnerUsername?: string | null;
   }> {
     const gameSession = await this.gameSessionRepository.findOne({
       where: { id: sessionId },
@@ -287,6 +290,8 @@ export class GameSessionsService {
 
     let wagerResult;
     let message: string;
+    let winnerId: string | null = null;
+    let winnerUsername: string | null = null;
 
     if (playerOneScore > playerTwoScore) {
       // Player One wins
@@ -296,7 +301,9 @@ export class GameSessionsService {
         sessionId,
         gameSession.player.id,
       );
-      message = `${gameSession.player.username} wins! ${wagerResult.message}`;
+      winnerId = gameSession.player.id;
+      winnerUsername = sanitizeForDisplay(gameSession.player.username);
+      message = `${winnerUsername} wins! ${wagerResult.message}`;
     } else if (playerTwoScore > playerOneScore) {
       // Player Two wins
       gameSession.winnerId = gameSession.playerTwoId;
@@ -305,7 +312,9 @@ export class GameSessionsService {
         sessionId,
         gameSession.playerTwoId,
       );
-      message = `${gameSession.playerTwo?.username} wins! ${wagerResult.message}`;
+      winnerId = gameSession.playerTwoId;
+      winnerUsername = sanitizeForDisplay(gameSession.playerTwo?.username);
+      message = `${winnerUsername} wins! ${wagerResult.message}`;
     } else {
       // It's a draw
       wagerResult = await this.wagerService.resolveWagerAsDraw(sessionId);
@@ -319,6 +328,10 @@ export class GameSessionsService {
       gameSession: updatedGameSession,
       wagerResult,
       message,
+      // Structured fields alongside the human-readable message, so clients
+      // do not have to parse the winner's name back out of prose.
+      winnerId,
+      winnerUsername,
     };
   }
 
