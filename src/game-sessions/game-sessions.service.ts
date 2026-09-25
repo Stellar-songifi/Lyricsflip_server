@@ -2,10 +2,15 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
+  GoneException,
   Inject,
+  Logger,
+  OnApplicationBootstrap,
+  OnApplicationShutdown,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { LessThan, Repository } from 'typeorm';
 import {
   GameSession,
   GameSessionStatus,
@@ -45,8 +50,20 @@ export type CreateGameSessionResponse = GameSession & {
   }>;
 };
 
+/** How long player two has to accept an invitation. */
+const INVITATION_TTL_MS =
+  Number(process.env.INVITATION_TTL_MINUTES ?? 30) * 60 * 1000;
+
+/** How often unanswered invitations are swept up and refunded. */
+const INVITATION_SWEEP_INTERVAL_MS = 60 * 1000;
+
 @Injectable()
-export class GameSessionsService {
+export class GameSessionsService
+  implements OnApplicationBootstrap, OnApplicationShutdown
+{
+  private readonly logger = new Logger(GameSessionsService.name);
+  private expirySweep?: NodeJS.Timeout;
+
   constructor(
     @InjectRepository(GameSession)
     private readonly gameSessionRepository: Repository<GameSession>,
@@ -172,6 +189,143 @@ export class GameSessionsService {
     }
 
     return savedGameSession;
+  }
+
+  onApplicationBootstrap(): void {
+    this.expirySweep = setInterval(() => {
+      this.expireInvitations().catch((error: Error) =>
+        this.logger.error('Error expiring invitations', error.stack),
+      );
+    }, INVITATION_SWEEP_INTERVAL_MS);
+    this.expirySweep.unref();
+  }
+
+  onApplicationShutdown(): void {
+    clearInterval(this.expirySweep);
+  }
+
+  /**
+   * Player two accepts an invitation. For a wager this is when, and the only
+   * way, their stake is taken (or handed back to them to sign).
+   */
+  async accept(
+    sessionId: string,
+    user: User,
+  ): Promise<CreateGameSessionResponse> {
+    const gameSession = await this.requireInvitation(sessionId, user);
+
+    if (this.isExpired(gameSession)) {
+      await this.abandonInvitation(gameSession);
+      throw new GoneException('This invitation has expired');
+    }
+
+    if (!this.isWagered(gameSession)) {
+      gameSession.status = GameSessionStatus.IN_PROGRESS;
+      return this.gameSessionRepository.save(gameSession);
+    }
+
+    const wagerResult = await this.wagerService.acceptWager(sessionId, user.id);
+
+    if (!wagerResult.success) {
+      throw new BadRequestException(
+        `Failed to accept wager: ${wagerResult.message}`,
+      );
+    }
+
+    gameSession.status = GameSessionStatus.IN_PROGRESS;
+    const saved = await this.gameSessionRepository.save(gameSession);
+
+    return {
+      ...saved,
+      wager: wagerResult.wager,
+      ...(wagerResult.pendingSignatures?.length
+        ? { pendingSignatures: wagerResult.pendingSignatures }
+        : {}),
+    };
+  }
+
+  /** Player two declines an invitation; player one's stake is refunded. */
+  async decline(
+    sessionId: string,
+    user: User,
+  ): Promise<{ gameSession: GameSession; wagerResult?: WagerResult }> {
+    const gameSession = await this.requireInvitation(sessionId, user);
+    return this.abandonInvitation(gameSession);
+  }
+
+  /** Abandons invitations left unanswered too long, refunding player one. */
+  async expireInvitations(): Promise<number> {
+    const expired = await this.gameSessionRepository.find({
+      where: {
+        status: GameSessionStatus.WAITING_FOR_PLAYER,
+        createdAt: LessThan(new Date(Date.now() - INVITATION_TTL_MS)),
+      },
+    });
+
+    for (const gameSession of expired) {
+      await this.abandonInvitation(gameSession);
+    }
+
+    return expired.length;
+  }
+
+  private async requireInvitation(
+    sessionId: string,
+    user: User,
+  ): Promise<GameSession> {
+    const gameSession = await this.gameSessionRepository.findOne({
+      where: { id: sessionId },
+    });
+
+    if (!gameSession) {
+      throw new NotFoundException(
+        `Game session with ID "${sessionId}" not found`,
+      );
+    }
+
+    if (gameSession.playerTwoId !== user.id) {
+      throw new ForbiddenException('You were not invited to this session');
+    }
+
+    if (gameSession.status !== GameSessionStatus.WAITING_FOR_PLAYER) {
+      throw new BadRequestException(
+        `This invitation is no longer open (status: ${gameSession.status})`,
+      );
+    }
+
+    return gameSession;
+  }
+
+  private async abandonInvitation(
+    gameSession: GameSession,
+  ): Promise<{ gameSession: GameSession; wagerResult?: WagerResult }> {
+    gameSession.status = GameSessionStatus.ABANDONED;
+    const saved = await this.gameSessionRepository.save(gameSession);
+
+    if (!this.isWagered(gameSession)) {
+      return { gameSession: saved };
+    }
+
+    // Only player one can have staked, so this returns their stake in full.
+    const wagerResult = await this.wagerService.resolveWagerAsDraw(
+      gameSession.id,
+    );
+
+    if (!wagerResult.success) {
+      this.logger.error(
+        `Refund for abandoned invitation ${gameSession.id} failed: ${wagerResult.message}`,
+      );
+    }
+
+    return { gameSession: saved, wagerResult };
+  }
+
+  private isWagered(gameSession: GameSession): boolean {
+    return gameSession.mode === GameMode.WAGERED || gameSession.hasWager;
+  }
+
+  private isExpired(gameSession: GameSession): boolean {
+    return gameSession.createdAt.getTime() <= Date.now() - INVITATION_TTL_MS;
   }
 
   async findAll(): Promise<GameSession[]> {

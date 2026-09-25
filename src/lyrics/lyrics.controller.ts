@@ -25,6 +25,19 @@ import type { User } from '../users/entities/user.entity';
 import { Roles } from 'src/auth/decorators/roles.decorator';
 import { Role } from 'src/auth/roles/role.enum';
 import { GetUser } from 'src/auth/decorators/user.decorator';
+import type { Lyrics } from './entities/lyrics.entity';
+import { AdminLyricDto, PlayerLyricDto } from './dto/lyric-response.dto';
+
+/**
+ * Only admins see a lyric's answer. Every other caller gets the playable
+ * fields, so these endpoints cannot be used to look up what `/game/lyric`
+ * deliberately hides.
+ */
+function forCaller(lyric: Lyrics, user?: User): PlayerLyricDto | AdminLyricDto {
+  return user?.role === Role.Admin
+    ? AdminLyricDto.from(lyric)
+    : PlayerLyricDto.from(lyric);
+}
 
 @ApiTags('lyrics')
 @Controller('lyrics')
@@ -58,9 +71,14 @@ export class LyricsController {
   @ApiResponse({ status: 200, description: 'Array of filtered lyrics.' })
   @ApiResponse({ status: 404, description: 'No data matches your search.' })
   @Get()
-  findAll(@Query('genre') genre?: string, @Query('decade') decade?: string) {
+  async findAll(
+    @GetUser() user: User,
+    @Query('genre') genre?: string,
+    @Query('decade') decade?: string,
+  ) {
     const decadeNum = decade ? Number.parseInt(decade, 10) : undefined;
-    return this.lyricsService.findAll(genre, decadeNum);
+    const lyrics = await this.lyricsService.findAll(genre, decadeNum);
+    return lyrics.map((lyric) => forCaller(lyric, user));
   }
 
   @ApiOperation({ summary: 'Get random lyrics' })
@@ -76,14 +94,20 @@ export class LyricsController {
     description: 'Filter by decade',
   })
   @Get('random')
-  getRandomLyrics(
+  async getRandomLyrics(
+    @GetUser() user: User,
     @Query('count') count?: string,
     @Query('genre') genre?: string,
     @Query('decade') decade?: string,
   ) {
     const countNum = count ? Number.parseInt(count, 10) : 1;
     const decadeNum = decade ? Number.parseInt(decade, 10) : undefined;
-    return this.lyricsService.getRandomLyrics(countNum, genre, decadeNum);
+    const lyrics = await this.lyricsService.getRandomLyrics(
+      countNum,
+      genre,
+      decadeNum,
+    );
+    return lyrics.map((lyric) => forCaller(lyric, user));
   }
 
   @ApiOperation({ summary: 'Get lyrics by genre' })
@@ -93,8 +117,9 @@ export class LyricsController {
     description: 'Genre to filter by',
   })
   @Get('genre/:genre')
-  getLyricsByGenre(@Param('genre') genre: string) {
-    return this.lyricsService.getLyricsByCategory('genre', genre);
+  async getLyricsByGenre(@Param('genre') genre: string, @GetUser() user: User) {
+    const lyrics = await this.lyricsService.getLyricsByCategory('genre', genre);
+    return lyrics.map((lyric) => forCaller(lyric, user));
   }
 
   @ApiOperation({ summary: 'Get lyrics by decade' })
@@ -104,17 +129,28 @@ export class LyricsController {
     description: 'Decade to filter by',
   })
   @Get('decade/:decade')
-  getLyricsByDecade(@Param('decade') decade: string) {
+  async getLyricsByDecade(
+    @Param('decade') decade: string,
+    @GetUser() user: User,
+  ) {
     const decadeNum = Number.parseInt(decade, 10);
-    return this.lyricsService.getLyricsByCategory('decade', decadeNum);
+    const lyrics = await this.lyricsService.getLyricsByCategory(
+      'decade',
+      decadeNum,
+    );
+    return lyrics.map((lyric) => forCaller(lyric, user));
   }
 
-  @ApiOperation({ summary: 'Get lyrics by artist' })
+  // Searching by artist is searching by answer, so it is admin tooling only.
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get lyrics by artist (Admin only)' })
   @ApiQuery({
     name: 'artist',
     required: true,
     description: 'Artist to filter by',
   })
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.Admin)
   @Get('artist/:artist')
   getLyricsByArtist(@Param('artist') artist: string) {
     return this.lyricsService.getLyricsByCategory('artist', artist);
@@ -122,8 +158,8 @@ export class LyricsController {
 
   @ApiOperation({ summary: 'Get lyrics by ID' })
   @Get(':id')
-  findOne(@Param('id') id: number) {
-    return this.lyricsService.findOne(id);
+  async findOne(@Param('id') id: number, @GetUser() user: User) {
+    return forCaller(await this.lyricsService.findOne(id), user);
   }
 
   @ApiBearerAuth()

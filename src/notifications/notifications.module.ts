@@ -1,11 +1,15 @@
 import { Module } from '@nestjs/common';
 import { EventEmitterModule } from '@nestjs/event-emitter';
-import { NotificationsController } from './notifications.controller';
+import { NotificationsController, NotificationsDevController } from './notifications.controller';
 import { NotificationsService } from './notifications.service';
 
 @Module({
   imports: [EventEmitterModule.forRoot()],
-  controllers: [NotificationsController],
+  // Mock and test endpoints do not exist in production builds.
+  controllers:
+    process.env.NODE_ENV === 'production'
+      ? [NotificationsController]
+      : [NotificationsController, NotificationsDevController],
   providers: [NotificationsService],
   exports: [NotificationsService],
 })
