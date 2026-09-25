@@ -21,6 +21,7 @@ import { TokensModule } from './tokens/tokens.module';
 import { GameHistoryModule } from './game-history/game-history.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { XpModule } from './xp-level/xp.module';
+import { AuditModule } from './audit/audit.module';
 import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 
 @Module({
@@ -117,6 +118,7 @@ import { APP_FILTER, APP_GUARD } from '@nestjs/core';
     GameHistoryModule,
     NotificationsModule,
     XpModule,
+    AuditModule,
   ],
   controllers: [AppController],
   providers: [

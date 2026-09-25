@@ -844,9 +844,21 @@ Writes update the per-ID entry. Broader invalidation (`clearCache`) is currently
 ## Logging and errors
 
 - `LoggingInterceptor` logs every request and response, with method, URL, status and duration. Top-level `password`, `token`, `secret`, `key` and `authorization` fields are redacted.
-- `ErrorInterceptor` gives errors the shape shown in [Request lifecycle](#request-lifecycle) and logs them with context.
+- `AllExceptionsFilter` gives errors the shape shown in [Request lifecycle](#request-lifecycle) and logs them with context.
 - TypeORM logs queries and errors, and warns about queries slower than 250 ms.
 - `src/common/services/logger.service.ts` provides a Winston logger with daily-rotating files, but it is not yet registered as the app logger (issue #114).
+
+## Audit logging
+
+Admin and settlement actions leave a durable row in `audit_logs` (actor, action, target type/ID, a sanitized request payload, IP and timestamp), so disputes over a deletion or a settlement can be resolved against a record instead of guesswork.
+
+A handler opts in with `@Audited({ action, targetType })`, on a controller that also has `@UseInterceptors(AuditInterceptor)`; `AuditInterceptor` writes the row after the handler succeeds (never on a failed request) and never blocks or fails the response if the write itself fails. Currently applied to:
+
+- `DELETE /admin/users/:id`, `DELETE /admin/lyrics/:id`
+- `PUT /game-sessions/:id/complete-wagered`, `POST /game-sessions/:id/wager/reconcile`
+- `POST /auth/stellar/link`, `DELETE /auth/stellar/wallet`
+
+`GET /admin/audit-logs` (admin-only) lists rows with `actorId`, `action`, `targetType`, `targetId`, `limit` and `offset` filters. There is no write or delete endpoint - the table is append-only from the API's perspective; only direct database access can alter a row.
 
 ## Testing
 
