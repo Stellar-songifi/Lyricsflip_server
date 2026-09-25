@@ -1,15 +1,21 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { Repository, SelectQueryBuilder } from 'typeorm';
-import { NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  GoneException,
+  NotFoundException,
+} from '@nestjs/common';
 import { Genre, Lyrics } from 'src/lyrics/entities/lyrics.entity';
-import { GameLogicService } from './game.service';
-import { GuessDto, GuessType } from './dto/guess.dto';
+import { GameLogicService, GuessDto } from './game.service';
+import { GuessType } from './dto/guess.dto';
+import { GameRound } from './entities/game-round.entity';
 import { User } from 'src/users/entities/user.entity';
 
 describe('GameLogicService', () => {
   let service: GameLogicService;
   let repository: jest.Mocked<Repository<Lyrics>>;
+  let roundRepository: jest.Mocked<Repository<GameRound>>;
   let queryBuilder: jest.Mocked<SelectQueryBuilder<Lyrics>>;
 
   const mockLyric: Lyrics = {
@@ -60,11 +66,23 @@ describe('GameLogicService', () => {
           provide: getRepositoryToken(Lyrics),
           useValue: mockRepository,
         },
+        {
+          provide: getRepositoryToken(GameRound),
+          useValue: {
+            create: jest.fn((round) => round),
+            save: jest.fn((round) =>
+              Promise.resolve({ id: 'round-1', ...round }),
+            ),
+            findOne: jest.fn(),
+            update: jest.fn(),
+          },
+        },
       ],
     }).compile();
 
     service = module.get<GameLogicService>(GameLogicService);
     repository = module.get(getRepositoryToken(Lyrics));
+    roundRepository = module.get(getRepositoryToken(GameRound));
   });
 
   afterEach(() => {
@@ -159,6 +177,97 @@ describe('GameLogicService', () => {
       await expect(service.getRandomLyric()).rejects.toThrow(
         new NotFoundException('Failed to fetch random lyric'),
       );
+    });
+  });
+
+  describe('rounds', () => {
+    const userId = 'player-1';
+
+    const openRound = (overrides: Partial<GameRound> = {}): GameRound => ({
+      id: 'round-1',
+      userId,
+      lyricId: 1,
+      issuedAt: new Date(),
+      expiresAt: new Date(Date.now() + 60_000),
+      closedAt: null,
+      ...overrides,
+    });
+
+    const guess = {
+      roundId: 'round-1',
+      guessType: GuessType.ARTIST,
+      guessValue: 'Test Artist',
+    };
+
+    beforeEach(() => {
+      repository.findOne.mockResolvedValue(mockLyric);
+    });
+
+    it('issues a round for the player and lyric with an expiry', async () => {
+      const round = await service.issueRound(userId, 1);
+
+      expect(round).toMatchObject({ id: 'round-1', userId, lyricId: 1 });
+      expect(round.expiresAt.getTime()).toBeGreaterThan(Date.now());
+    });
+
+    it('scores a guess against the served lyric and closes the round', async () => {
+      roundRepository.findOne.mockResolvedValue(openRound());
+      roundRepository.update.mockResolvedValue({ affected: 1 } as any);
+
+      const result = await service.guessRound(userId, guess);
+
+      expect(result.points).toBe(100);
+      expect(roundRepository.findOne).toHaveBeenCalledWith({
+        where: { id: 'round-1', userId },
+      });
+      expect(repository.findOne).toHaveBeenCalledWith({ where: { id: 1 } });
+    });
+
+    it('rejects a replayed guess on a closed round without revealing the answer', async () => {
+      roundRepository.findOne.mockResolvedValue(
+        openRound({ closedAt: new Date() }),
+      );
+
+      await expect(service.guessRound(userId, guess)).rejects.toThrow(
+        ConflictException,
+      );
+      expect(repository.findOne).not.toHaveBeenCalled();
+    });
+
+    it('scores only one of two concurrent guesses on the same round', async () => {
+      roundRepository.findOne.mockResolvedValue(openRound());
+      roundRepository.update.mockResolvedValue({ affected: 0 } as any);
+
+      await expect(service.guessRound(userId, guess)).rejects.toThrow(
+        ConflictException,
+      );
+      expect(repository.findOne).not.toHaveBeenCalled();
+    });
+
+    it('rejects a guess on a round that was not served to the caller', async () => {
+      // The lookup is scoped to the caller, so another player's round, or a
+      // lyric never served, finds nothing.
+      roundRepository.findOne.mockResolvedValue(null);
+
+      await expect(service.guessRound('player-2', guess)).rejects.toThrow(
+        NotFoundException,
+      );
+      expect(roundRepository.findOne).toHaveBeenCalledWith({
+        where: { id: 'round-1', userId: 'player-2' },
+      });
+      expect(repository.findOne).not.toHaveBeenCalled();
+    });
+
+    it('rejects and closes an expired round', async () => {
+      roundRepository.findOne.mockResolvedValue(
+        openRound({ expiresAt: new Date(Date.now() - 1) }),
+      );
+
+      await expect(service.guessRound(userId, guess)).rejects.toThrow(
+        GoneException,
+      );
+      expect(roundRepository.update).toHaveBeenCalled();
+      expect(repository.findOne).not.toHaveBeenCalled();
     });
   });
 

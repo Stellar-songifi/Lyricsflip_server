@@ -127,6 +127,32 @@ export class GameSessionsController {
     );
   }
 
+  @Post(':id/accept')
+  @ApiOperation({
+    summary: 'Accept an invitation to a session',
+    description:
+      'Only the invited player two can accept. For a wager this is when their ' +
+      'stake is taken, or returned in `pendingSignatures` for their wallet to sign.',
+  })
+  @ApiParam({ name: 'id', description: 'Game session ID' })
+  @ApiResponse({ status: 200, description: 'Invitation accepted.' })
+  @ApiResponse({ status: 410, description: 'Invitation expired.' })
+  @HttpCode(HttpStatus.OK)
+  accept(@Param('id') id: string, @GetUser() user: User) {
+    return this.gameSessionsService.accept(id, user);
+  }
+
+  @Post(':id/decline')
+  @ApiOperation({
+    summary: "Decline an invitation to a session; refunds player one's stake",
+  })
+  @ApiParam({ name: 'id', description: 'Game session ID' })
+  @ApiResponse({ status: 200, description: 'Invitation declined.' })
+  @HttpCode(HttpStatus.OK)
+  decline(@Param('id') id: string, @GetUser() user: User) {
+    return this.gameSessionsService.decline(id, user);
+  }
+
   @Post(':id/stake')
   @ApiOperation({
     summary: "Submit a stake transaction signed in the player's wallet",
