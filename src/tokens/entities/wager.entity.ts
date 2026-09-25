@@ -140,6 +140,17 @@ export class Wager {
   @Column({ type: 'text', nullable: true })
   resultMessage: string;
 
+  /**
+   * When a wager still `AWAITING_STAKES` past this point is refunded
+   * automatically.
+   *
+   * Set once, when the pot opens, so a player who never signs cannot leave
+   * the other player's stake locked indefinitely: {@link WagerRefundJob}
+   * sweeps past-deadline wagers and refunds whatever staked.
+   */
+  @Column({ type: 'timestamp', nullable: true })
+  stakeDeadline?: Date | null;
+
   @CreateDateColumn()
   createdAt: Date;
 

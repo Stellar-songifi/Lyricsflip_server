@@ -6,6 +6,7 @@ import {
   Inject,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { ConfigService } from '@nestjs/config';
 import { Repository } from 'typeorm';
 import { Wager, WagerStatus } from '../entities/wager.entity';
 import { User } from '../../users/entities/user.entity';
@@ -72,7 +73,18 @@ export class WagerService {
     private readonly userRepository: Repository<User>,
     @Inject(TOKEN_SERVICE)
     private readonly tokenService: ITokenService,
+    private readonly configService: ConfigService,
   ) {}
+
+  /**
+   * How long a wager may sit `AWAITING_STAKES` before {@link WagerRefundJob}
+   * refunds it. Configurable via `WAGER_STAKE_DEADLINE_MINUTES`, default 15.
+   */
+  private get stakeDeadlineMs(): number {
+    const minutes =
+      this.configService.get<number>('WAGER_STAKE_DEADLINE_MINUTES') ?? 15;
+    return minutes * 60_000;
+  }
 
   /**
    * Opens an escrow pot for a session and stakes both players into it.
@@ -200,6 +212,10 @@ export class WagerService {
             wager.playerBLatestStakeHash = entry.transaction.hash;
           }
         }
+
+        // A player who never signs would otherwise leave the other player's
+        // stake locked in the pot forever; WagerRefundJob sweeps past this.
+        wager.stakeDeadline = new Date(Date.now() + this.stakeDeadlineMs);
 
         wager.resultMessage =
           'Waiting for players to sign their stake transactions in their wallets.';

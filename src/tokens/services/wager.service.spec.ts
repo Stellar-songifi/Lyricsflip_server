@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
+import { ConfigService } from '@nestjs/config';
 import { NotFoundException, BadRequestException } from '@nestjs/common';
 import { WagerService, CreateWagerDto } from './wager.service';
 import { Wager, WagerStatus } from '../entities/wager.entity';
@@ -106,6 +107,10 @@ describe('WagerService', () => {
         { provide: getRepositoryToken(Wager), useValue: mockWagerRepository },
         { provide: getRepositoryToken(User), useValue: mockUserRepository },
         { provide: TOKEN_SERVICE, useValue: mockTokenService },
+        {
+          provide: ConfigService,
+          useValue: { get: jest.fn().mockReturnValue(undefined) },
+        },
       ],
     }).compile();
 
