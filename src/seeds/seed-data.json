@@ -1,0 +1,182 @@
+﻿[
+  {
+    "artist": "The Weeknd",
+    "songTitle": "Can't Feel My Face",
+    "genre": "Pop",
+    "decade": "2010s",
+    "difficulty": 2,
+    "content": "I can't feel my face when I'm with you, but I love it",
+    "lyricSnippet": "I can't feel my face when I'm with you"
+  },
+  {
+    "artist": "The Beatles",
+    "songTitle": "I Want to Hold Your Hand",
+    "genre": "Pop",
+    "decade": "1960s",
+    "difficulty": 1,
+    "content": "I want to hold your hand, I want to hold your hand",
+    "lyricSnippet": "I want to hold your hand"
+  },
+  {
+    "artist": "Drake",
+    "songTitle": "Hotline Bling",
+    "genre": "Hip-Hop",
+    "decade": "2010s",
+    "difficulty": 1,
+    "content": "You used to call me on my cell phone, late night when you need my love",
+    "lyricSnippet": "You used to call me on my cell phone"
+  },
+  {
+    "artist": "Katy Perry",
+    "songTitle": "Firework",
+    "genre": "Pop",
+    "decade": "2010s",
+    "difficulty": 1,
+    "content": "Baby, you're a firework, come on show 'em what you're worth",
+    "lyricSnippet": "Baby, you're a firework"
+  },
+  {
+    "artist": "Green Day",
+    "songTitle": "Boulevard of Broken Dreams",
+    "genre": "Pop",
+    "decade": "2000s",
+    "difficulty": 2,
+    "content": "I walk a lonely road, the only one that I have ever known",
+    "lyricSnippet": "I walk a lonely road, the only one that I have ever known"
+  },
+  {
+    "artist": "Coldplay",
+    "songTitle": "Fix You",
+    "genre": "Pop",
+    "decade": "2000s",
+    "difficulty": 2,
+    "content": "When you try your best but you don't succeed",
+    "lyricSnippet": "When you try your best but you don't succeed"
+  },
+  {
+    "artist": "Pink Floyd",
+    "songTitle": "Another Brick in the Wall",
+    "genre": "Pop",
+    "decade": "1970s",
+    "difficulty": 2,
+    "content": "We don't need no education, we don't need no thought control",
+    "lyricSnippet": "We don't need no education"
+  },
+  {
+    "artist": "Drake",
+    "songTitle": "Started From the Bottom",
+    "genre": "Hip-Hop",
+    "decade": "2010s",
+    "difficulty": 1,
+    "content": "Started from the bottom, now we're here",
+    "lyricSnippet": "Started from the bottom, now we're here"
+  },
+  {
+    "artist": "Rihanna",
+    "songTitle": "We Found Love",
+    "genre": "Pop",
+    "decade": "2010s",
+    "difficulty": 2,
+    "content": "We found love in a hopeless place",
+    "lyricSnippet": "We found love in a hopeless place"
+  },
+  {
+    "artist": "Queen",
+    "songTitle": "We Will Rock You",
+    "genre": "Pop",
+    "decade": "1970s",
+    "difficulty": 1,
+    "content": "We will, we will rock you",
+    "lyricSnippet": "We will, we will rock you"
+  },
+  {
+    "artist": "Beyonce",
+    "songTitle": "Halo",
+    "genre": "Pop",
+    "decade": "2000s",
+    "difficulty": 2,
+    "content": "Remember those walls I built? Baby, they're tumbling down",
+    "lyricSnippet": "Remember those walls I built"
+  },
+  {
+    "artist": "Burna Boy",
+    "songTitle": "Ye",
+    "genre": "Afrobeats",
+    "decade": "2010s",
+    "difficulty": 2,
+    "content": "Pray for me, I cannot pray for myself",
+    "lyricSnippet": "Pray for me, I cannot pray for myself"
+  },
+  {
+    "artist": "Wizkid",
+    "songTitle": "Essence",
+    "genre": "Afrobeats",
+    "decade": "2020s",
+    "difficulty": 2,
+    "content": "You don't need no other body, just love me",
+    "lyricSnippet": "You don't need no other body"
+  },
+  {
+    "artist": "Davido",
+    "songTitle": "Fall",
+    "genre": "Afrobeats",
+    "decade": "2010s",
+    "difficulty": 2,
+    "content": "I know it's been a long time coming",
+    "lyricSnippet": "I know it's been a long time coming"
+  },
+  {
+    "artist": "Notorious B.I.G.",
+    "songTitle": "Juicy",
+    "genre": "Hip-Hop",
+    "decade": "1990s",
+    "difficulty": 2,
+    "content": "It was all a dream, I used to read Word Up magazine",
+    "lyricSnippet": "It was all a dream"
+  },
+  {
+    "artist": "Tupac",
+    "songTitle": "California Love",
+    "genre": "Hip-Hop",
+    "decade": "1990s",
+    "difficulty": 2,
+    "content": "California knows how to party",
+    "lyricSnippet": "California knows how to party"
+  },
+  {
+    "artist": "Eminem",
+    "songTitle": "Lose Yourself",
+    "genre": "Hip-Hop",
+    "decade": "2000s",
+    "difficulty": 2,
+    "content": "Look, if you had one shot, or one opportunity",
+    "lyricSnippet": "Look, if you had one shot, or one opportunity"
+  },
+  {
+    "artist": "Michael Jackson",
+    "songTitle": "Billie Jean",
+    "genre": "Pop",
+    "decade": "1980s",
+    "difficulty": 1,
+    "content": "Billie Jean is not my lover",
+    "lyricSnippet": "Billie Jean is not my lover"
+  },
+  {
+    "artist": "Whitney Houston",
+    "songTitle": "I Will Always Love You",
+    "genre": "Pop",
+    "decade": "1990s",
+    "difficulty": 1,
+    "content": "And I will always love you",
+    "lyricSnippet": "And I will always love you"
+  },
+  {
+    "artist": "Marvin Gaye",
+    "songTitle": "What's Going On",
+    "genre": "Other",
+    "decade": "1970s",
+    "difficulty": 3,
+    "content": "Mother, mother, there's too many of you crying",
+    "lyricSnippet": "Mother, mother, there's too many of you crying"
+  }
+]

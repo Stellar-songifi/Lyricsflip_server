@@ -138,7 +138,7 @@ flowchart LR
 | `StellarModule`       | `src/stellar`         | Stellar config validation, Soroban RPC wrapper, typed escrow client, key stores, `/stellar` endpoints (global module) |
 | `NotificationsModule` | `src/notifications`   | Event-emitter notifications (level up, challenge, achievement), stored in memory                        |
 | `AdminModule`         | `src/admin`           | Admin-only user and lyric management                                                                    |
-| `xp-level`            | `src/xp-level`        | XP thresholds and level titles (`XpLevelService`)                                                       |
+| `xp-level`            | `src/xp-level`        | XP thresholds, level titles, and XP-gain calculation (`XpLevelService`) — provided and exported by `XpModule` |
 | `common`              | `src/common`          | Logging and error interceptors, and a Winston logger service                                            |
 | `config`              | `src/config`          | Cache TTLs and key prefixes                                                                             |
 
