@@ -26,18 +26,24 @@ export class AuthService {
   async signup(
     signupDto: SignupDto,
   ): Promise<{ accessToken: string; user: Partial<User> }> {
-    const { username, email, password } = signupDto;
+    // Normalize again here (not just in the DTO) so any caller that bypasses
+    // the DTO's @Transform still gets consistent, case-insensitive identity.
+    const email = signupDto.email.trim().toLowerCase();
+    const username = signupDto.username.trim();
+    const { password } = signupDto;
 
     // Check if user already exists
-    const existingUser = await this.userRepository.findOne({
-      where: [{ email }, { username }],
-    });
+    const existingUser = await this.userRepository
+      .createQueryBuilder('user')
+      .where('LOWER(user.email) = LOWER(:email)', { email })
+      .orWhere('LOWER(user.username) = LOWER(:username)', { username })
+      .getOne();
 
     if (existingUser) {
-      if (existingUser.email === email) {
+      if (existingUser.email.toLowerCase() === email) {
         throw new ConflictException('Email already exists');
       }
-      if (existingUser.username === username) {
+      if (existingUser.username.toLowerCase() === username.toLowerCase()) {
         throw new ConflictException('Username already exists');
       }
     }
@@ -84,10 +90,14 @@ export class AuthService {
   async login(
     loginDto: LoginDto,
   ): Promise<{ accessToken: string; user: Partial<User> }> {
-    const { email, password } = loginDto;
+    const email = loginDto.email.trim().toLowerCase();
+    const { password } = loginDto;
 
-    // Find user by email
-    const user = await this.userRepository.findOne({ where: { email } });
+    // Find user by email (case-insensitive)
+    const user = await this.userRepository
+      .createQueryBuilder('user')
+      .where('LOWER(user.email) = LOWER(:email)', { email })
+      .getOne();
 
     if (!user) {
       throw new UnauthorizedException('Invalid credentials');
