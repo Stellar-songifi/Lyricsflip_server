@@ -5,6 +5,8 @@ import {
   ConflictException,
   ForbiddenException,
   Logger,
+  ForbiddenException,
+  GoneException,
   NotFoundException,
 } from '@nestjs/common';
 import { GameSessionsService } from './game-sessions.service';
@@ -108,6 +110,7 @@ describe('GameSessionsService', () => {
 
   const mockWagerService = {
     createWager: jest.fn(),
+    acceptWager: jest.fn(),
     confirmStake: jest.fn(),
     reconcileWager: jest.fn(),
     resolveWagerWithWinner: jest.fn(),
@@ -218,6 +221,15 @@ describe('GameSessionsService', () => {
         mockUser.id,
         STAKE_STROOPS,
       );
+      // Player two has not accepted: the session waits for them and nothing
+      // is staked on their behalf.
+      expect(mockGameSessionRepository.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: GameSessionStatus.WAITING_FOR_PLAYER,
+        }),
+      );
+      expect(mockWagerService.acceptWager).not.toHaveBeenCalled();
+      expect(mockTokenService.stakeTokens).not.toHaveBeenCalled();
     });
 
     it('hands back the transactions the players must sign', async () => {
@@ -616,6 +628,15 @@ describe('GameSessionsService', () => {
       mockGameSessionRepository.findOne.mockResolvedValue({
         ...mockGameSession,
       });
+  describe('invitations', () => {
+    const invitation = (overrides: Partial<GameSession> = {}): GameSession => ({
+      ...mockGameSession,
+      status: GameSessionStatus.WAITING_FOR_PLAYER,
+      createdAt: new Date(),
+      ...overrides,
+    });
+
+    beforeEach(() => {
       mockGameSessionRepository.save.mockImplementation((session) =>
         Promise.resolve(session),
       );
@@ -719,6 +740,84 @@ describe('GameSessionsService', () => {
       expect(mockGameSessionRepository.find).toHaveBeenCalledWith({
         relations: ['player'],
       });
+    it('stakes player two only when they accept', async () => {
+      mockGameSessionRepository.findOne.mockResolvedValue(invitation());
+      mockWagerService.acceptWager.mockResolvedValue({
+        success: true,
+        wager: { id: 'wager-123' },
+      });
+
+      const result = await service.accept('session-123', mockPlayerTwo);
+
+      expect(mockWagerService.acceptWager).toHaveBeenCalledWith(
+        'session-123',
+        mockPlayerTwo.id,
+      );
+      expect(result.status).toBe(GameSessionStatus.IN_PROGRESS);
+    });
+
+    it('lets only the invited player accept, and moves no funds otherwise', async () => {
+      mockGameSessionRepository.findOne.mockResolvedValue(invitation());
+
+      await expect(service.accept('session-123', mockUser)).rejects.toThrow(
+        ForbiddenException,
+      );
+      expect(mockWagerService.acceptWager).not.toHaveBeenCalled();
+      expect(mockTokenService.stakeTokens).not.toHaveBeenCalled();
+    });
+
+    it('rejects accepting a session that is not waiting for a player', async () => {
+      mockGameSessionRepository.findOne.mockResolvedValue(
+        invitation({ status: GameSessionStatus.ABANDONED }),
+      );
+
+      await expect(
+        service.accept('session-123', mockPlayerTwo),
+      ).rejects.toThrow(BadRequestException);
+      expect(mockWagerService.acceptWager).not.toHaveBeenCalled();
+    });
+
+    it('declining abandons the session and refunds player one', async () => {
+      mockGameSessionRepository.findOne.mockResolvedValue(invitation());
+      mockWagerService.resolveWagerAsDraw.mockResolvedValue({ success: true });
+
+      const result = await service.decline('session-123', mockPlayerTwo);
+
+      expect(result.gameSession.status).toBe(GameSessionStatus.ABANDONED);
+      expect(mockWagerService.resolveWagerAsDraw).toHaveBeenCalledWith(
+        'session-123',
+      );
+      expect(mockWagerService.acceptWager).not.toHaveBeenCalled();
+    });
+
+    it('an expired invitation cannot be accepted and refunds player one', async () => {
+      mockGameSessionRepository.findOne.mockResolvedValue(
+        invitation({ createdAt: new Date(Date.now() - 24 * 60 * 60 * 1000) }),
+      );
+      mockWagerService.resolveWagerAsDraw.mockResolvedValue({ success: true });
+
+      await expect(
+        service.accept('session-123', mockPlayerTwo),
+      ).rejects.toThrow(GoneException);
+      expect(mockWagerService.acceptWager).not.toHaveBeenCalled();
+      expect(mockWagerService.resolveWagerAsDraw).toHaveBeenCalledWith(
+        'session-123',
+      );
+    });
+
+    it('expires stale invitations and refunds player one', async () => {
+      mockGameSessionRepository.find.mockResolvedValue([invitation()]);
+      mockWagerService.resolveWagerAsDraw.mockResolvedValue({ success: true });
+
+      const expired = await service.expireInvitations();
+
+      expect(expired).toBe(1);
+      expect(mockGameSessionRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({ status: GameSessionStatus.ABANDONED }),
+      );
+      expect(mockWagerService.resolveWagerAsDraw).toHaveBeenCalledWith(
+        'session-123',
+      );
     });
   });
 });

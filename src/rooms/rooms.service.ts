@@ -1,11 +1,13 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
   BadRequestException,
   ConflictException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Cron, CronExpression } from '@nestjs/schedule';
+import { LessThanOrEqual, Repository } from 'typeorm';
 import { Room } from './entities/room.entity';
 import { RoomUser } from './entities/room-user.entity';
 import { Lyrics } from '../lyrics/entities/lyrics.entity';
@@ -15,6 +17,8 @@ import * as stringSimilarity from 'string-similarity';
 
 @Injectable()
 export class RoomsService {
+  private readonly logger = new Logger(RoomsService.name);
+
   constructor(
     @InjectRepository(Room)
     private roomRepository: Repository<Room>,
@@ -29,7 +33,7 @@ export class RoomsService {
 
     if (createRoomDto.lyricId) {
       const foundLyric = await this.lyricsRepository.findOne({
-        where: { id: Number(createRoomDto.lyricId) },
+        where: { id: createRoomDto.lyricId, isActive: true },
       });
       if (!foundLyric) {
         throw new NotFoundException('Lyric not found');
@@ -39,6 +43,7 @@ export class RoomsService {
       // Get a random lyric
       const foundLyric = await this.lyricsRepository
         .createQueryBuilder('lyrics')
+        .where('lyrics.isActive = :isActive', { isActive: true })
         .orderBy('RANDOM()')
         .getOne();
       if (!foundLyric) {
@@ -60,16 +65,14 @@ export class RoomsService {
   async join(roomId: string, userId: string) {
     const room = await this.roomRepository.findOne({
       where: { id: roomId },
-      relations: ['roomUsers'],
+      relations: ['roomUsers', 'lyric'],
     });
 
     if (!room) {
       throw new NotFoundException('Room not found');
     }
 
-    if (room.isClosed) {
-      throw new BadRequestException('Room is closed');
-    }
+    this.assertPlayable(room);
 
     // Check if user already joined
     const existingRoomUser = await this.roomUserRepository.findOne({
@@ -104,14 +107,13 @@ export class RoomsService {
       throw new NotFoundException('User has not joined this room');
     }
 
-    // Don't send actual lyrics if user hasn't guessed yet
+    // Don't send actual lyrics if user hasn't guessed yet, or if the lyric
+    // has since been deactivated by an admin.
     const response = { ...room };
-    if (!roomUser.hasGuessed) {
+    if (!roomUser.hasGuessed || room.lyric?.isActive === false) {
       response.lyric = { ...room.lyric, content: '' };
     }
     return response;
-
-    return room;
   }
 
   async submitGuess(roomId: string, userId: string, guessDto: GuessLyricDto) {
@@ -128,9 +130,7 @@ export class RoomsService {
       throw new ConflictException('User has already submitted a guess');
     }
 
-    if (roomUser.room.isClosed) {
-      throw new BadRequestException('Room is closed');
-    }
+    this.assertPlayable(roomUser.room);
 
     // Calculate score based on string similarity
     const similarity = stringSimilarity.compareTwoStrings(
@@ -146,17 +146,35 @@ export class RoomsService {
     return this.roomUserRepository.save(roomUser);
   }
 
-  async checkAndCloseExpiredRooms() {
-    const expiredRooms = await this.roomRepository.find({
-      where: {
-        isClosed: false,
-        expiresAt: new Date(),
-      },
-    });
+  /**
+   * Closes every open room whose expiresAt has passed, in a single UPDATE.
+   * Runs every minute; join and submitGuess also check expiresAt themselves,
+   * so a room is unplayable the moment it expires even between sweeps.
+   */
+  @Cron(CronExpression.EVERY_MINUTE)
+  async checkAndCloseExpiredRooms(): Promise<number> {
+    const result = await this.roomRepository.update(
+      { isClosed: false, expiresAt: LessThanOrEqual(new Date()) },
+      { isClosed: true },
+    );
+    const closed = result.affected ?? 0;
+    if (closed > 0) {
+      this.logger.log(`Closed ${closed} expired room(s)`);
+    }
+    return closed;
+  }
 
-    for (const room of expiredRooms) {
-      room.isClosed = true;
-      await this.roomRepository.save(room);
+  private assertPlayable(room: Room): void {
+    if (room.isClosed) {
+      throw new BadRequestException('Room is closed');
+    }
+
+    if (room.expiresAt && room.expiresAt.getTime() <= Date.now()) {
+      throw new BadRequestException('Room has expired');
+    }
+
+    if (room.lyric && room.lyric.isActive === false) {
+      throw new BadRequestException('Room lyric is no longer available');
     }
   }
 }

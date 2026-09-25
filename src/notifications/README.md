@@ -36,6 +36,9 @@ A mock notification system for LyricFlip using NestJS Event Emitters to simulate
 
 ## API Endpoints
 
+All endpoints except `GET /notifications/me` are admin-only. The test, custom
+and `generate-mock-data` endpoints are not registered when `NODE_ENV=production`.
+
 ### Test Endpoints (Quick Testing)
 - `POST /notifications/test/level-up` - Emit test level up notification
 - `POST /notifications/test/challenge` - Emit test challenge notification
@@ -48,7 +51,7 @@ A mock notification system for LyricFlip using NestJS Event Emitters to simulate
 
 ### Data Management Endpoints
 - `POST /notifications/generate-mock-data` - Generate sample notifications
-- `GET /notifications` - Get all stored notifications
+- `GET /notifications/me` - Get your own notifications
 - `GET /notifications/user/:userId` - Get notifications for specific user
 - `DELETE /notifications` - Clear all stored notifications
 
