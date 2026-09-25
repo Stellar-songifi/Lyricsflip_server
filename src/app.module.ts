@@ -34,7 +34,7 @@ import { APP_GUARD } from '@nestjs/core';
     // 2. Configure caching globally
     CacheModule.register({
       isGlobal: true,
-      ttl: cacheConfig.lyricsTTL,
+      ttl: cacheConfig.defaultTtlMs,
       max: cacheConfig.maxItems,
     }),
     // 3. Configure TypeORM using the loaded environment variables

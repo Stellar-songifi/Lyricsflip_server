@@ -13,7 +13,48 @@ import { RoomUser } from './entities/room-user.entity';
 import { Lyrics } from '../lyrics/entities/lyrics.entity';
 import { CreateRoomDto } from './dto/create-room.dto';
 import { GuessLyricDto } from './dto/guess-lyric.dto';
-import * as stringSimilarity from 'string-similarity';
+import { GuessType } from '../game/dto/guess.dto';
+import { matchGuess } from '../game/guess-matcher';
+
+/** Lyric fields that are safe to show before a player has guessed. */
+export interface RoomLyricView {
+  id: number;
+  lyricSnippet: string;
+  category?: string;
+  genre?: string;
+  decade?: string;
+  // Only present once the requesting player has guessed.
+  artist?: string;
+  songTitle?: string;
+}
+
+/** Public summary of a player. Never carries other User fields. */
+export interface RoomPlayerView {
+  id: string;
+  username: string | null;
+  hasGuessed: boolean;
+  score: number;
+}
+
+export interface RoomStatusView {
+  id: string;
+  name: string;
+  createdAt: Date;
+  expiresAt: Date;
+  isClosed: boolean;
+  lyric: RoomLyricView;
+  players: RoomPlayerView[];
+}
+
+export interface RoomGuessResult {
+  roomId: string;
+  guessType: GuessType;
+  guess: string;
+  isCorrect: boolean;
+  score: number;
+  correctAnswer: string;
+  lyric: RoomLyricView;
+}
 
 @Injectable()
 export class RoomsService {
@@ -91,7 +132,10 @@ export class RoomsService {
     return this.roomUserRepository.save(roomUser);
   }
 
-  async getRoomStatus(roomId: string, userId: string) {
+  async getRoomStatus(
+    roomId: string,
+    userId: string,
+  ): Promise<RoomStatusView> {
     const room = await this.roomRepository.findOne({
       where: { id: roomId },
       relations: ['lyric', 'roomUsers', 'roomUsers.user'],
@@ -107,6 +151,16 @@ export class RoomsService {
       throw new NotFoundException('User has not joined this room');
     }
 
+    return {
+      id: room.id,
+      name: room.name,
+      createdAt: room.createdAt,
+      expiresAt: room.expiresAt,
+      isClosed: room.isClosed,
+      // The answers stay hidden until this player has guessed.
+      lyric: this.toLyricView(room.lyric, roomUser.hasGuessed),
+      players: room.roomUsers.map((ru) => this.toPlayerView(ru)),
+    };
     // Don't send actual lyrics if user hasn't guessed yet, or if the lyric
     // has since been deactivated by an admin.
     const response = { ...room };
@@ -116,7 +170,11 @@ export class RoomsService {
     return response;
   }
 
-  async submitGuess(roomId: string, userId: string, guessDto: GuessLyricDto) {
+  async submitGuess(
+    roomId: string,
+    userId: string,
+    guessDto: GuessLyricDto,
+  ): Promise<RoomGuessResult> {
     const roomUser = await this.roomUserRepository.findOne({
       where: { roomId, userId },
       relations: ['room', 'room.lyric'],
@@ -132,18 +190,52 @@ export class RoomsService {
 
     this.assertPlayable(roomUser.room);
 
-    // Calculate score based on string similarity
-    const similarity = stringSimilarity.compareTwoStrings(
-      guessDto.guess.toLowerCase(),
-      roomUser.room.lyric.content.toLowerCase(),
-    );
+    // Score against the artist or title, the same way solo play does.
+    const { lyric } = roomUser.room;
+    const correctAnswer =
+      guessDto.guessType === GuessType.ARTIST ? lyric.artist : lyric.songTitle;
+    const { isCorrect, points } = matchGuess(guessDto.guess, correctAnswer);
 
     roomUser.hasGuessed = true;
     roomUser.guess = guessDto.guess;
-    roomUser.score = similarity;
+    roomUser.score = points;
     roomUser.guessedAt = new Date();
 
-    return this.roomUserRepository.save(roomUser);
+    await this.roomUserRepository.save(roomUser);
+
+    return {
+      roomId,
+      guessType: guessDto.guessType,
+      guess: guessDto.guess,
+      isCorrect,
+      score: points,
+      correctAnswer,
+      lyric: this.toLyricView(lyric, true),
+    };
+  }
+
+  private toLyricView(lyric: Lyrics, revealAnswer: boolean): RoomLyricView {
+    const view: RoomLyricView = {
+      id: lyric.id,
+      lyricSnippet: lyric.lyricSnippet,
+      category: lyric.category,
+      genre: lyric.genre,
+      decade: lyric.decade,
+    };
+    if (revealAnswer) {
+      view.artist = lyric.artist;
+      view.songTitle = lyric.songTitle;
+    }
+    return view;
+  }
+
+  private toPlayerView(roomUser: RoomUser): RoomPlayerView {
+    return {
+      id: roomUser.user?.id ?? roomUser.userId,
+      username: roomUser.user?.username ?? null,
+      hasGuessed: roomUser.hasGuessed,
+      score: roomUser.score,
+    };
   }
 
   /**
