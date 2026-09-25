@@ -1,0 +1,17 @@
+name: Soroban Contract
+
+on:
+  pull_request:
+    paths:
+      - "contracts/**"
+      - ".github/workflows/soroban-contract.yml"
+
+jobs:
+  contract-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - run: cargo check --manifest-path contracts/lyricsflip-escrow/Cargo.toml
