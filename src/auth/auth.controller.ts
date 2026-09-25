@@ -124,6 +124,10 @@ export class AuthController {
     summary: 'Unlink the Stellar wallet from the signed-in account',
   })
   @ApiResponse({ status: 200, description: 'Wallet unlinked.' })
+  @ApiResponse({
+    status: 409,
+    description: 'User has a wager in progress.',
+  })
   @HttpCode(HttpStatus.OK)
   async unlinkWallet(@GetUser() user: User) {
     await this.stellarAuthService.unlinkWallet(user.id);
