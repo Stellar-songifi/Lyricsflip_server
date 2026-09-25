@@ -437,6 +437,18 @@ Both backends follow the same escrow model: open a pot, both players fund it, th
 
 Using `custodial` together with `STELLAR_NETWORK=public` is **refused at boot**, because it would let the backend spend real player funds. In every mode the server holds the **resolver** key, which can settle pots but only in the ways the contract allows (see [The escrow contract](#the-escrow-contract)).
 
+### Key stores
+
+`STELLAR_KEY_STORE` decides which `IKeyStore` implementation the `KEY_STORE` provider resolves to - i.e. where the resolver's signing key actually lives:
+
+| Value            | Implementation                    | Behaviour                                                                                          |
+| ---------------- | ---------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `env` (default)  | `EnvKeyStore`/`NonCustodialKeyStore` | Resolver key (and, in custodial mode, the player-key seed) read from `STELLAR_RESOLVER_SECRET`/`STELLAR_CUSTODIAL_MASTER_SEED`. Fine for local development and testnet demos. |
+| `kms`            | `KmsKeyStore` + `AwsKmsSigner`     | Resolver signatures come from an AWS KMS asymmetric ed25519 signing key. No Stellar secret is ever read into this process's environment. Requires `STELLAR_KMS_KEY_ID` and `STELLAR_KMS_REGION`, and the `@aws-sdk/client-kms` package installed. |
+| `vault`          | `KmsKeyStore` + `VaultTransitSigner` | Resolver signatures come from a HashiCorp Vault Transit ed25519 key. Requires `STELLAR_VAULT_ADDR`, `STELLAR_VAULT_TOKEN` and `STELLAR_VAULT_TRANSIT_KEY`. |
+
+With `kms` or `vault`, `KmsKeyStore.getResolverKeypair()` throws rather than returning a keyless `Keypair` - callers that need to sign should move to `signHash(hash)` on the key store, which delegates to the remote signer. That migration is not yet complete for every `signAndSubmit` call site in `EscrowContractService`; today `kms`/`vault` are wired up end-to-end for key resolution and remote signing, but `EscrowContractService` still expects a `Keypair` for the resolver at its existing call sites, so pot settlement itself still needs the migration to `signHash` to run with `STELLAR_KEY_STORE=kms|vault`. See `KmsKeyStore` for provider setup and key-rotation steps, coordinated with the escrow contract's `set_resolver`.
+
 ### The wager lifecycle
 
 ```mermaid
