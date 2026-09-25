@@ -8,11 +8,13 @@ import {
   UseGuards,
   Query,
   ParseIntPipe,
+  Body,
 } from '@nestjs/common';
-// A value import: `import type` erases the class, so Nest cannot inject it.
+// Value imports: `import type` erases these classes from the decorator
+// metadata, so Nest could neither inject the service nor validate the DTOs.
 import { LyricsService } from './lyrics.service';
-import type { CreateLyricsDto } from './dto/create-lyrics.dto';
-import type { UpdateLyricsDto } from './dto/update-lyrics.dto';
+import { CreateLyricsDto } from './dto/create-lyrics.dto';
+import { UpdateLyricsDto } from './dto/update-lyrics.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import {
@@ -21,12 +23,16 @@ import {
   ApiOperation,
   ApiResponse,
   ApiQuery,
+  ApiBody,
+  ApiCreatedResponse,
+  ApiOkResponse,
+  ApiBadRequestResponse,
 } from '@nestjs/swagger';
-import type { User } from '../users/entities/user.entity';
+import { User } from '../users/entities/user.entity';
 import { Roles } from 'src/auth/decorators/roles.decorator';
 import { Role } from 'src/auth/roles/role.enum';
 import { GetUser } from 'src/auth/decorators/user.decorator';
-import type { Lyrics } from './entities/lyrics.entity';
+import { Lyrics } from './entities/lyrics.entity';
 import { AdminLyricDto, PlayerLyricDto } from './dto/lyric-response.dto';
 
 /**
@@ -47,12 +53,19 @@ export class LyricsController {
 
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Create new lyrics' })
-  @ApiResponse({ status: 201, description: 'Lyrics created.' })
+  @ApiBody({ type: CreateLyricsDto })
+  @ApiCreatedResponse({ description: 'Lyrics created.', type: AdminLyricDto })
+  @ApiBadRequestResponse({ description: 'The payload failed validation.' })
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.Admin)
   @Post()
-  create(createLyricsDto: CreateLyricsDto, @GetUser() user: User) {
-    return this.lyricsService.create(createLyricsDto, user);
+  async create(
+    @Body() createLyricsDto: CreateLyricsDto,
+    @GetUser() user: User,
+  ): Promise<AdminLyricDto> {
+    return AdminLyricDto.from(
+      await this.lyricsService.create(createLyricsDto, user),
+    );
   }
 
   @ApiOperation({ summary: 'Get filtered lyrics' })
@@ -161,24 +174,27 @@ export class LyricsController {
   @ApiResponse({ status: 400, description: 'The ID is not an integer.' })
   @ApiResponse({ status: 404, description: 'Lyrics not found.' })
   @Get(':id')
-  findOne(@Param('id', ParseIntPipe) id: number) {
-    return this.lyricsService.findOne(id);
-  async findOne(@Param('id') id: number, @GetUser() user: User) {
+  async findOne(@Param('id', ParseIntPipe) id: number, @GetUser() user: User) {
     return forCaller(await this.lyricsService.findOne(id), user);
   }
 
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Update lyrics' })
-  @ApiResponse({ status: 200, description: 'Lyrics updated.' })
+  @ApiBody({ type: UpdateLyricsDto })
+  @ApiOkResponse({ description: 'Lyrics updated.', type: AdminLyricDto })
+  @ApiBadRequestResponse({ description: 'The payload failed validation.' })
+  @ApiResponse({ status: 404, description: 'Lyrics not found.' })
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.Admin)
   @Patch(':id')
-  update(
+  async update(
     @Param('id', ParseIntPipe) id: number,
-    updateLyricsDto: UpdateLyricsDto,
+    @Body() updateLyricsDto: UpdateLyricsDto,
     @GetUser() user: User,
-  ) {
-    return this.lyricsService.update(id, updateLyricsDto, user);
+  ): Promise<AdminLyricDto> {
+    return AdminLyricDto.from(
+      await this.lyricsService.update(id, updateLyricsDto, user),
+    );
   }
 
   @ApiBearerAuth()
