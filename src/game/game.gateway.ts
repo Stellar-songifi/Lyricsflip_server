@@ -8,7 +8,9 @@ import {
   OnGatewayDisconnect,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
-import { Logger, ValidationPipe } from '@nestjs/common';
+import { Logger, UsePipes, ValidationPipe } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { JwtService } from '@nestjs/jwt';
 import { GameLogicService } from './game.service';
 import { RandomLyricOptionsDto } from './dto/random-lyrics-option.dto';
 import { GuessDto } from './dto/guess.dto';
@@ -20,9 +22,18 @@ interface GameSession {
   currentLyric?: any;
 }
 
+@UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
 @WebSocketGateway({
   cors: {
-    origin: '*',
+    // Same allow-list as the HTTP API (FRONTEND_URL), evaluated per request.
+    origin: (
+      origin: string | undefined,
+      callback: (err: Error | null, allow?: boolean) => void,
+    ) => {
+      const allowed = process.env.FRONTEND_URL || 'http://localhost:3000';
+      callback(null, !origin || origin === allowed);
+    },
+    credentials: true,
   },
   namespace: '/game',
 })
@@ -33,27 +44,60 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
   private readonly logger = new Logger(GameGateway.name);
   private sessions = new Map<string, GameSession>();
 
-  constructor(private readonly gameLogicService: GameLogicService) {}
+  constructor(
+    private readonly gameLogicService: GameLogicService,
+    private readonly jwtService: JwtService,
+    private readonly configService: ConfigService,
+  ) {}
 
-  handleConnection(client: Socket) {
-    this.logger.log(`Client connected: ${client.id}`);
+  private extractToken(client: Socket): string | undefined {
+    const authToken = client.handshake.auth?.token;
+    if (typeof authToken === 'string' && authToken) {
+      return authToken.replace(/^Bearer\s+/i, '');
+    }
+    const header = client.handshake.headers?.authorization;
+    if (typeof header === 'string' && /^Bearer\s+/i.test(header)) {
+      return header.replace(/^Bearer\s+/i, '');
+    }
+    return undefined;
+  }
 
-    // Initialize session
-    this.sessions.set(client.id, {
-      playerId: client.id,
+  async handleConnection(client: Socket) {
+    const token = this.extractToken(client);
+    let userId: string;
+    try {
+      if (!token) throw new Error('missing token');
+      const payload = await this.jwtService.verifyAsync<{ sub: string }>(
+        token,
+        { secret: this.configService.get<string>('JWT_SECRET') },
+      );
+      userId = payload.sub;
+    } catch {
+      this.logger.warn(`Rejected unauthenticated connection: ${client.id}`);
+      client.emit('error', { message: 'Unauthorized' });
+      client.disconnect(true);
+      return;
+    }
+    client.data.userId = userId;
+    this.logger.log(`Client connected: ${client.id} (user ${userId})`);
+
+    // Initialize session, keyed by user ID (replaces any stale one)
+    this.sessions.set(userId, {
+      playerId: userId,
       score: 0,
       streak: 0,
     });
 
     client.emit('connected', {
       message: 'Connected to LyricFlip game!',
-      sessionId: client.id,
+      sessionId: userId,
     });
   }
 
   handleDisconnect(client: Socket) {
     this.logger.log(`Client disconnected: ${client.id}`);
-    this.sessions.delete(client.id);
+    const userId = client.data?.userId;
+    if (userId) this.sessions.delete(userId);
   }
 
   @SubscribeMessage('requestLyric')
@@ -64,7 +108,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.logger.log(`Lyric requested by ${client.id}`);
 
     try {
-      const session = this.sessions.get(client.id);
+      const session = this.sessions.get(client.data.userId);
       if (!session) {
         client.emit('error', { message: 'Session not found' });
         return;
@@ -103,7 +147,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.logger.log(`Guess submitted by ${client.id}`);
 
     try {
-      const session = this.sessions.get(client.id);
+      const session = this.sessions.get(client.data.userId);
       if (!session) {
         client.emit('error', { message: 'Session not found' });
         return;
@@ -144,7 +188,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   @SubscribeMessage('getSession')
   handleGetSession(@ConnectedSocket() client: Socket) {
-    const session = this.sessions.get(client.id);
+    const session = this.sessions.get(client.data.userId);
 
     if (session) {
       client.emit('sessionInfo', {
