@@ -369,6 +369,47 @@ fn resolve_is_blocked_once_a_player_has_claimed() {
 }
 
 #[test]
+fn the_admin_can_rotate_itself() {
+    let s = setup(1_000);
+    let new_admin = Address::generate(&s.env);
+
+    s.client.set_admin(&new_admin);
+
+    // The old admin can no longer act as admin: rotating the resolver again
+    // still succeeds here because `mock_all_auths` mocks every auth check,
+    // but `get_config` shows the rotation took effect.
+    assert_eq!(s.client.get_config().admin, new_admin);
+}
+
+#[test]
+fn set_admin_emits_an_admin_event() {
+    let s = setup(1_000);
+    let new_admin = Address::generate(&s.env);
+
+    s.client.set_admin(&new_admin);
+
+    let events = s.env.events().all();
+    let (_, topics, _) = events.last().unwrap();
+    assert_eq!(
+        topics.get_unchecked(0),
+        soroban_sdk::symbol_short!("admin").into_val(&s.env)
+    );
+}
+
+#[test]
+fn the_storage_version_starts_at_current_version() {
+    let s = setup(1_000);
+    assert_eq!(s.client.get_version(), 1);
+}
+
+#[test]
+fn migrate_is_a_no_op_when_already_current() {
+    let s = setup(1_000);
+    s.client.migrate();
+    assert_eq!(s.client.get_version(), 1);
+}
+
+#[test]
 fn set_resolver_emits_a_resolver_event() {
     let s = setup(1_000);
     let new_resolver = Address::generate(&s.env);

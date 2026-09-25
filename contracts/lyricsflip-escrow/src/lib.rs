@@ -24,6 +24,28 @@
 //! | `refund`       | `("refund", session_id)`      | `(player_a, player_b)`             |
 //! | `set_resolver` | `("resolver", ())`            | `(old_resolver, new_resolver)`     |
 //! | `claim_refund` | `("claim", session_id)`       | `(player, amount)`                 |
+//! | `set_admin`    | `("admin", ())`               | `(old_admin, new_admin)`           |
+//! | `upgrade`      | `("upgrade", ())`             | `new_wasm_hash`                    |
+//!
+//! ## Admin rotation and upgrades
+//!
+//! The admin can rotate itself via `set_admin`, and can upgrade the
+//! contract's WASM in place via `upgrade` (using
+//! `env.deployer().update_current_contract_wasm`), so fixing a bug no
+//! longer requires a redeploy to a new contract ID that strands in-flight
+//! pots. Storage carries a version key, bumped by the `migrate` hook, which
+//! an operator calls after `upgrade` to run any storage transformation the
+//! new WASM needs — see the deploy/upgrade procedure below.
+//!
+//! ### Upgrade procedure
+//!
+//! 1. `stellar contract build` the new WASM and `stellar contract upload`
+//!    it to get its hash.
+//! 2. Call `upgrade(new_wasm_hash)`, authorised by the admin.
+//! 3. Call `migrate()`, authorised by the admin, so any storage
+//!    transformation the new version needs runs exactly once.
+//! 4. Confirm `get_version` reports `CURRENT_VERSION` and `get_pot` still
+//!    reads existing pots correctly.
 //!
 //! ## Reclaiming a stuck stake
 //!
@@ -42,6 +64,10 @@ use soroban_sdk::{
     Env,
 };
 
+/// The current storage layout version. Bumped whenever `migrate` needs to
+/// transform existing storage after an `upgrade`.
+pub const CURRENT_VERSION: u32 = 1;
+
 /// A game session ID: the 16 bytes of the backend's session UUID.
 pub type SessionId = BytesN<16>;
 
@@ -58,6 +84,8 @@ pub enum DataKey {
     Config,
     /// The pot for one game session.
     Pot(SessionId),
+    /// The storage layout version, checked and updated by `migrate`.
+    Version,
 }
 
 #[contracttype]
@@ -144,6 +172,76 @@ impl EscrowContract {
                 resolver,
             },
         );
+        env.storage().instance().set(&DataKey::Version, &CURRENT_VERSION);
+    }
+
+    /// Rotates the admin. Only the current admin may call this, so losing
+    /// the admin key is still unrecoverable, but a routine key rotation —
+    /// or handing the contract to a new multisig or DAO — no longer needs a
+    /// redeploy.
+    pub fn set_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        let mut config = Self::config(&env)?;
+        config.admin.require_auth();
+        let old_admin = config.admin.clone();
+        config.admin = new_admin.clone();
+        env.storage().instance().set(&DataKey::Config, &config);
+
+        env.events()
+            .publish((symbol_short!("admin"), ()), (old_admin, new_admin));
+
+        Ok(())
+    }
+
+    /// Upgrades the contract's WASM in place, keeping the same contract ID
+    /// and all existing storage (pots, config) intact. Only the admin may
+    /// call this. Fixing a bug no longer strands in-flight pots on the old
+    /// contract ID — callers keep using the same address after an upgrade.
+    ///
+    /// `new_wasm_hash` must already be installed on the network (uploaded
+    /// via `stellar contract upload`) before calling this.
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
+        let config = Self::config(&env)?;
+        config.admin.require_auth();
+
+        env.deployer()
+            .update_current_contract_wasm(new_wasm_hash.clone());
+
+        env.events()
+            .publish((symbol_short!("upgrade"), ()), new_wasm_hash);
+
+        Ok(())
+    }
+
+    /// Migration hook, run after `upgrade` to bring existing storage up to
+    /// `CURRENT_VERSION`. A no-op today since the layout hasn't changed yet,
+    /// but this is where a future upgrade adds its storage transformation,
+    /// gated on the stored version so it only runs once. Only the admin may
+    /// call this.
+    pub fn migrate(env: Env) -> Result<(), Error> {
+        let config = Self::config(&env)?;
+        config.admin.require_auth();
+
+        let stored_version: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::Version)
+            .unwrap_or(0);
+
+        if stored_version < CURRENT_VERSION {
+            // Future storage transformations go here, gated on
+            // `stored_version`, before bumping it to `CURRENT_VERSION`.
+            env.storage().instance().set(&DataKey::Version, &CURRENT_VERSION);
+        }
+
+        Ok(())
+    }
+
+    /// Reads the storage layout version.
+    pub fn get_version(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::Version)
+            .unwrap_or(0)
     }
 
     /// Rotates the resolver key. Only the admin may call this, which is what
