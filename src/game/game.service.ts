@@ -1,5 +1,7 @@
 import {
   BadRequestException,
+  ConflictException,
+  GoneException,
   Injectable,
   Logger,
   NotFoundException,
@@ -8,6 +10,9 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Lyrics } from 'src/lyrics/entities/lyrics.entity';
 import { Genre, isGenre, toGenre } from 'src/lyrics/entities/genre.enum';
 import { Repository, SelectQueryBuilder } from 'typeorm';
+import { IsNull, Repository } from 'typeorm';
+import { GameRound } from './entities/game-round.entity';
+import { GAME_CONSTANTS } from './constants/game.constants';
 
 export interface RandomLyricOptions {
   category?: string;
@@ -18,6 +23,12 @@ export interface RandomLyricOptions {
 
 export interface GuessDto {
   lyricId: number;
+  guessType: 'artist' | 'songTitle';
+  guessValue: string;
+}
+
+export interface RoundGuessDto {
+  roundId: string;
   guessType: 'artist' | 'songTitle';
   guessValue: string;
 }
@@ -52,7 +63,76 @@ export class GameLogicService {
   constructor(
     @InjectRepository(Lyrics)
     private lyricsRepository: Repository<Lyrics>,
+    @InjectRepository(GameRound)
+    private roundRepository: Repository<GameRound>,
   ) {}
+
+  /**
+   * Records that a lyric has been served to a player, opening the one round
+   * that player can guess it in.
+   */
+  async issueRound(userId: string, lyricId: number): Promise<GameRound> {
+    const expiresAt = new Date(
+      Date.now() + GAME_CONSTANTS.LIMITS.ROUND_TIMEOUT_SECONDS * 1000,
+    );
+
+    return this.roundRepository.save(
+      this.roundRepository.create({
+        userId,
+        lyricId,
+        expiresAt,
+        closedAt: null,
+      }),
+    );
+  }
+
+  /**
+   * Scores a guess against a round served to this player, and closes it.
+   *
+   * The round is closed with a conditional update before the answer is looked
+   * at, so two concurrent guesses cannot both be scored and the answer the
+   * first one reveals cannot be replayed.
+   */
+  async guessRound(userId: string, dto: RoundGuessDto): Promise<GuessResult> {
+    const round = await this.roundRepository.findOne({
+      where: { id: dto.roundId, userId },
+    });
+
+    // Someone else's round is reported the same as a missing one, so round IDs
+    // cannot be probed.
+    if (!round) {
+      throw new NotFoundException('Round not found');
+    }
+
+    if (round.closedAt) {
+      throw new ConflictException('This round has already been guessed');
+    }
+
+    const now = new Date();
+
+    if (round.expiresAt.getTime() <= now.getTime()) {
+      await this.roundRepository.update(
+        { id: round.id, closedAt: IsNull() },
+        { closedAt: now },
+      );
+      throw new GoneException('This round has expired');
+    }
+
+    const closed = await this.roundRepository.update(
+      { id: round.id, closedAt: IsNull() },
+      { closedAt: now },
+    );
+
+    if (!closed.affected) {
+      throw new ConflictException('This round has already been guessed');
+    }
+
+    return this.checkGuess({
+      lyricId: round.lyricId,
+      guessType: dto.guessType,
+      guessValue: dto.guessValue,
+    });
+  }
 
   /**
    * Fetches a random lyric from the database with optional filtering

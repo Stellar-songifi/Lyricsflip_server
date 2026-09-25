@@ -6,10 +6,51 @@ import {
   CreateChallengeNotificationDto, 
   CreateAchievementNotificationDto 
 } from './dto/create-notification.dto';
+import { Roles } from '../auth/decorators/roles.decorator';
+import { Role } from '../auth/roles/role.enum';
+import { GetUser } from '../auth/decorators/user.decorator';
+import { User } from '../users/entities/user.entity';
 
 @ApiTags('notifications')
 @Controller('notifications')
 export class NotificationsController {
+  constructor(private readonly notificationsService: NotificationsService) {}
+
+  @Get('me')
+  @ApiOperation({ summary: "Get the caller's notifications" })
+  @ApiResponse({ status: 200, description: "Returns the caller's notifications" })
+  async getMyNotifications(@GetUser() user: User): Promise<{ notifications: any[] }> {
+    const notifications = this.notificationsService.getNotificationsForUser(user.id);
+    return { notifications };
+  }
+
+  @Roles(Role.Admin)
+  @Get('user/:userId')
+  @ApiOperation({ summary: 'Get notifications for a specific user' })
+  @ApiResponse({ status: 200, description: 'Returns user notifications' })
+  async getUserNotifications(@Param('userId') userId: string): Promise<{ notifications: any[] }> {
+    const notifications = this.notificationsService.getNotificationsForUser(userId);
+    return { notifications };
+  }
+
+  @Roles(Role.Admin)
+  @Delete()
+  @ApiOperation({ summary: 'Clear all stored notifications' })
+  @ApiResponse({ status: 200, description: 'All notifications cleared' })
+  async clearNotifications(): Promise<{ message: string }> {
+    this.notificationsService.clearNotifications();
+    return { message: 'All notifications cleared' };
+  }
+}
+
+/**
+ * Endpoints that emit arbitrary notifications to any user ID. Admin only, and
+ * only registered outside production (see NotificationsModule).
+ */
+@ApiTags('notifications')
+@Roles(Role.Admin)
+@Controller('notifications')
+export class NotificationsDevController {
   constructor(private readonly notificationsService: NotificationsService) {}
 
   @Post('mock-level-up')
@@ -49,30 +90,6 @@ export class NotificationsController {
   async generateMockData(): Promise<{ message: string }> {
     this.notificationsService.generateMockNotifications();
     return { message: 'Mock notifications generated successfully' };
-  }
-
-  @Get()
-  @ApiOperation({ summary: 'Get all stored notifications' })
-  @ApiResponse({ status: 200, description: 'Returns all notifications' })
-  async getAllNotifications(): Promise<{ notifications: any[] }> {
-    const notifications = this.notificationsService.getAllNotifications();
-    return { notifications };
-  }
-
-  @Get('user/:userId')
-  @ApiOperation({ summary: 'Get notifications for a specific user' })
-  @ApiResponse({ status: 200, description: 'Returns user notifications' })
-  async getUserNotifications(@Param('userId') userId: string): Promise<{ notifications: any[] }> {
-    const notifications = this.notificationsService.getNotificationsForUser(userId);
-    return { notifications };
-  }
-
-  @Delete()
-  @ApiOperation({ summary: 'Clear all stored notifications' })
-  @ApiResponse({ status: 200, description: 'All notifications cleared' })
-  async clearNotifications(): Promise<{ message: string }> {
-    this.notificationsService.clearNotifications();
-    return { message: 'All notifications cleared' };
   }
 
   // Quick test endpoints with predefined data

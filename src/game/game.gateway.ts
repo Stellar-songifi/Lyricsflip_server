@@ -97,7 +97,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   @SubscribeMessage('submitGuess')
   async handleSubmitGuess(
-    @MessageBody() guessDto: GuessDto,
+    @MessageBody() guessDto: Omit<GuessDto, 'roundId'>,
     @ConnectedSocket() client: Socket,
   ) {
     this.logger.log(`Guess submitted by ${client.id}`);
@@ -118,7 +118,20 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         return;
       }
 
-      const result = await this.gameLogicService.checkGuess(guessDto);
+      // Guess against the lyric this socket was served, once, rather than a
+      // client-supplied ID that could be replayed after the answer is shown.
+      const lyric = session.currentLyric;
+      if (!lyric) {
+        client.emit('error', { message: 'Request a lyric before guessing' });
+        return;
+      }
+      session.currentLyric = undefined;
+
+      const result = await this.gameLogicService.checkGuess({
+        lyricId: lyric.id,
+        guessType: guessDto.guessType,
+        guessValue: guessDto.guessValue,
+      });
 
       // Update session stats
       if (result.isCorrect) {
