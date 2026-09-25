@@ -508,8 +508,14 @@ export class WagerService {
   }
 
   /** Gets all wagers for a user. */
-  async getUserWagers(userId: string, limit: number = 10): Promise<Wager[]> {
+  async getUserWagers(
+    userId: string,
+    limit: number = 10,
+    offset: number = 0,
+  ): Promise<Wager[]> {
     try {
+      // take/skip rather than limit/offset: with joins, .limit() caps joined
+      // rows, not wagers.
       return await this.wagerRepository
         .createQueryBuilder('wager')
         .leftJoinAndSelect('wager.playerA', 'playerA')
@@ -519,7 +525,8 @@ export class WagerService {
           userId,
         })
         .orderBy('wager.createdAt', 'DESC')
-        .limit(limit)
+        .take(limit)
+        .skip(offset)
         .getMany();
     } catch (error) {
       this.logger.error(

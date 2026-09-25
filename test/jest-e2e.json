@@ -6,6 +6,9 @@
   "transform": {
     "^.+\\.(t|j)s$": "ts-jest"
   },
+  "transformIgnorePatterns": [
+    "/node_modules/(?!.*(@exodus/bytes|@noble/curves|@noble/ed25519|@noble/hashes|eventsource|smol-toml|uint8array-extras)/)"
+  ],
   "moduleNameMapper": {
     "^src/(.*)$": "<rootDir>/../src/$1"
   }

@@ -7,12 +7,10 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { SignupDto } from './dto/signup.dto';
 import { LoginDto } from './dto/login.dto';
-import { JwtPayload } from './interfaces/jwt-payload.interface';
-import { Role } from './roles/role.enum';
+import { AuthResult, AuthTokenService } from './services/auth-token.service';
 import { User } from 'src/users/entities/user.entity';
 
 @Injectable()
@@ -20,12 +18,10 @@ export class AuthService {
   constructor(
     @InjectRepository(User)
     private userRepository: Repository<User>,
-    private jwtService: JwtService,
+    private authTokenService: AuthTokenService,
   ) {}
 
-  async signup(
-    signupDto: SignupDto,
-  ): Promise<{ accessToken: string; user: Partial<User> }> {
+  async signup(signupDto: SignupDto): Promise<AuthResult> {
     const { username, email, password } = signupDto;
 
     // Check if user already exists
@@ -63,31 +59,18 @@ export class AuthService {
       throw new BadRequestException('Failed to create user');
     }
 
-    // Generate JWT
-    const payload: JwtPayload = {
-      sub: user.id,
-      email: user.email,
-      username: user.username,
-      role: user.role as Role,
-    };
-    const accessToken = this.jwtService.sign(payload);
-
-    // Return user without password
-    const { passwordHash: _, ...userWithoutPassword } = user;
-
-    return {
-      accessToken,
-      user: userWithoutPassword,
-    };
+    return this.authTokenService.issueToken(user);
   }
 
-  async login(
-    loginDto: LoginDto,
-  ): Promise<{ accessToken: string; user: Partial<User> }> {
+  async login(loginDto: LoginDto): Promise<AuthResult> {
     const { email, password } = loginDto;
 
-    // Find user by email
-    const user = await this.userRepository.findOne({ where: { email } });
+    // passwordHash is select: false, so it must be requested explicitly
+    const user = await this.userRepository
+      .createQueryBuilder('user')
+      .addSelect('user.passwordHash')
+      .where('user.email = :email', { email })
+      .getOne();
 
     if (!user) {
       throw new UnauthorizedException('Invalid credentials');
@@ -108,26 +91,15 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials');
     }
 
+    // Checked after the password so account status is not revealed to
+    // someone who does not know it. Same message as the wallet flow.
+    this.authTokenService.assertActive(user);
+
     // Update last login timestamp
     user.lastLoginAt = new Date();
     await this.userRepository.save(user);
 
-    // Generate JWT
-    const payload: JwtPayload = {
-      sub: user.id,
-      email: user.email,
-      username: user.username,
-      role: user.role as Role,
-    };
-    const accessToken = this.jwtService.sign(payload);
-
-    // Return user without password
-    const { passwordHash: _, ...userWithoutPassword } = user;
-
-    return {
-      accessToken: this.jwtService.sign(payload),
-      user: userWithoutPassword,
-    };
+    return this.authTokenService.issueToken(user);
   }
   // Hash a plaintext password using bcrypt
 

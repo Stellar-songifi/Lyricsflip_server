@@ -6,6 +6,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { JwtPayload } from '../interfaces/jwt-payload.interface';
 import { User } from 'src/users/entities/user.entity';
+import { INACTIVE_USER_MESSAGE } from '../services/auth-token.service';
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
@@ -33,7 +34,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       throw new UnauthorizedException('Token is invalid');
     }
     if (!user.isActive) {
-      throw new UnauthorizedException('User is inactive');
+      throw new UnauthorizedException(INACTIVE_USER_MESSAGE);
     }
 
     return user;

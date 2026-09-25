@@ -207,6 +207,7 @@ export class GameSessionsService
     return savedGameSession;
   }
 
+  async findAll(limit: number = 20, offset: number = 0): Promise<GameSession[]> {
   /** Admins see every session; everyone else sees the ones they play in. */
   async findAll(user: User): Promise<GameSession[]> {
     if (user.role === Role.Admin) {
@@ -356,6 +357,9 @@ export class GameSessionsService
     return this.gameSessionRepository.find({
       where: [{ player: { id: user.id } }, { playerTwoId: user.id }],
       relations: ['player'],
+      order: { createdAt: 'DESC' },
+      take: limit,
+      skip: offset,
     });
   }
 
@@ -412,6 +416,10 @@ export class GameSessionsService
     }
   }
 
+  async getTopScores(
+    limit: number = 10,
+    offset: number = 0,
+  ): Promise<GameSession[]> {
   private assertParticipant(gameSession: GameSession, user: User): void {
     const isParticipant =
       gameSession.player?.id === user.id || gameSession.playerTwoId === user.id;
@@ -426,6 +434,7 @@ export class GameSessionsService
       where: { status: GameSessionStatus.COMPLETED },
       order: { score: 'DESC' },
       take: limit,
+      skip: offset,
       relations: ['player'],
     });
   }
@@ -433,11 +442,13 @@ export class GameSessionsService
   async getRecentGames(
     userId: string,
     limit: number = 5,
+    offset: number = 0,
   ): Promise<GameSession[]> {
     return this.gameSessionRepository.find({
       where: { player: { id: userId } },
       order: { createdAt: 'DESC' },
       take: limit,
+      skip: offset,
       relations: ['player'],
     });
   }
@@ -603,7 +614,11 @@ export class GameSessionsService
   /**
    * Gets user's wager history
    */
-  async getUserWagers(userId: string, limit: number = 10): Promise<Wager[]> {
-    return this.wagerService.getUserWagers(userId, limit);
+  async getUserWagers(
+    userId: string,
+    limit: number = 10,
+    offset: number = 0,
+  ): Promise<Wager[]> {
+    return this.wagerService.getUserWagers(userId, limit, offset);
   }
 }

@@ -10,13 +10,13 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { Keypair, WebAuth } from '@stellar/stellar-sdk';
 import { JwtService } from '@nestjs/jwt';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import type { Cache } from 'cache-manager';
 import { Keypair, StrKey, WebAuth } from '@stellar/stellar-sdk';
 import { User } from '../../users/entities/user.entity';
-import { JwtPayload } from '../interfaces/jwt-payload.interface';
-import { Role } from '../roles/role.enum';
+import { AuthResult, AuthTokenService } from './auth-token.service';
 import {
   STELLAR_CONFIG,
   CHALLENGE_TIMEOUT_SECONDS,
@@ -51,7 +51,7 @@ export class StellarAuthService {
   constructor(
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
-    private readonly jwtService: JwtService,
+    private readonly authTokenService: AuthTokenService,
     private readonly configService: ConfigService,
     @Inject(STELLAR_CONFIG) private readonly stellarConfig: StellarConfig,
     @Optional() @Inject(CACHE_MANAGER) private readonly cache?: Cache,
@@ -232,7 +232,7 @@ export class StellarAuthService {
    */
   async loginWithWallet(
     signedTransaction: string,
-  ): Promise<{ accessToken: string; user: Partial<User> }> {
+  ): Promise<AuthResult> {
     const address = this.verifyChallenge(signedTransaction);
     await this.consumeChallenge(signedTransaction);
 
@@ -247,27 +247,13 @@ export class StellarAuthService {
       );
     }
 
-    if (!user.isActive) {
-      throw new UnauthorizedException('User is inactive');
-    }
+    this.authTokenService.assertActive(user);
 
     user.lastLoginAt = new Date();
     user.stellarAddressVerifiedAt = new Date();
     await this.userRepository.save(user);
 
-    const payload: JwtPayload = {
-      sub: user.id,
-      email: user.email,
-      username: user.username,
-      role: user.role,
-    };
-
-    const { passwordHash: _passwordHash, ...userWithoutPassword } = user;
-
-    return {
-      accessToken: this.jwtService.sign(payload),
-      user: userWithoutPassword,
-    };
+    return this.authTokenService.issueToken(user);
   }
 
   /** Removes the wallet link, e.g. when a player rotates keys. */

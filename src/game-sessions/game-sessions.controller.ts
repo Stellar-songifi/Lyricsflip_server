@@ -16,6 +16,7 @@ import { GameSessionsService } from './game-sessions.service';
 import { CreateGameSessionDto } from './dto/create-game-session.dto';
 import { UpdateGameSessionDto } from './dto/update-game-session.dto';
 import { ConfirmStakeDto } from './dto/confirm-stake.dto';
+import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
 import { CompleteWageredGameDto } from './dto/complete-wagered-game.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -26,7 +27,6 @@ import {
   ApiTags,
   ApiOperation,
   ApiResponse,
-  ApiQuery,
   ApiParam,
 } from '@nestjs/swagger';
 
@@ -51,24 +51,30 @@ export class GameSessionsController {
     summary: 'Get your game sessions (every session, for admins)',
   })
   @ApiResponse({ status: 200, description: 'List of game sessions.' })
+  @ApiResponse({ status: 400, description: 'Invalid pagination values.' })
+  findAll(@Query() { limit, offset }: PaginationQueryDto) {
+    return this.gameSessionsService.findAll(limit, offset);
   findAll(@GetUser() user: User) {
     return this.gameSessionsService.findAll(user);
   }
 
   @Get('top-scores')
   @ApiOperation({ summary: 'Get top scores' })
-  @ApiQuery({ name: 'limit', required: false, type: Number })
   @ApiResponse({ status: 200, description: 'Top scores.' })
-  getTopScores(@Query('limit') limit: number) {
-    return this.gameSessionsService.getTopScores(limit);
+  @ApiResponse({ status: 400, description: 'Invalid pagination values.' })
+  getTopScores(@Query() { limit, offset }: PaginationQueryDto) {
+    return this.gameSessionsService.getTopScores(limit, offset);
   }
 
   @Get('my-recent')
   @ApiOperation({ summary: 'Get recent games for user' })
-  @ApiQuery({ name: 'limit', required: false, type: Number })
   @ApiResponse({ status: 200, description: 'Recent games for user.' })
-  getRecentGames(@GetUser() user: User, @Query('limit') limit: number) {
-    return this.gameSessionsService.getRecentGames(user.id, limit);
+  @ApiResponse({ status: 400, description: 'Invalid pagination values.' })
+  getRecentGames(
+    @GetUser() user: User,
+    @Query() { limit, offset }: PaginationQueryDto,
+  ) {
+    return this.gameSessionsService.getRecentGames(user.id, limit, offset);
   }
 
   @Get(':id')
@@ -224,17 +230,16 @@ export class GameSessionsController {
 
   @Get('wagers/my-history')
   @ApiOperation({ summary: 'Get user wager history' })
-  @ApiQuery({
-    name: 'limit',
-    required: false,
-    type: Number,
-    description: 'Limit number of results',
-  })
   @ApiResponse({ status: 200, description: 'User wager history.' })
+  @ApiResponse({ status: 400, description: 'Invalid pagination values.' })
   async getUserWagers(
     @GetUser() user: User,
-    @Query('limit') limit: number,
+    @Query() { limit, offset }: PaginationQueryDto,
   ): Promise<any[]> {
-    return await this.gameSessionsService.getUserWagers(user.id, limit);
+    return await this.gameSessionsService.getUserWagers(
+      user.id,
+      limit,
+      offset,
+    );
   }
 }

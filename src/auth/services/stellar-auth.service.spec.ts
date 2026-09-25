@@ -9,6 +9,7 @@ import { JwtService } from '@nestjs/jwt';
 import { Keypair, Networks, Transaction, WebAuth } from '@stellar/stellar-sdk';
 import { Repository } from 'typeorm';
 import { StellarAuthService } from './stellar-auth.service';
+import { AuthTokenService } from './auth-token.service';
 import { User } from '../../users/entities/user.entity';
 import type { StellarConfig } from '../../stellar/stellar.config';
 
@@ -48,7 +49,7 @@ describe('StellarAuthService', () => {
 
     service = new StellarAuthService(
       userRepository as unknown as Repository<User>,
-      jwtService as unknown as JwtService,
+      new AuthTokenService(jwtService as unknown as JwtService),
       configOf({ STELLAR_WEB_AUTH_SECRET: serverSecret }),
       stellarConfig,
     );
@@ -80,7 +81,7 @@ describe('StellarAuthService', () => {
       const resolverSecret = Keypair.random().secret();
       const fallback = new StellarAuthService(
         userRepository as unknown as Repository<User>,
-        jwtService as unknown as JwtService,
+        new AuthTokenService(jwtService as unknown as JwtService),
         configOf({ STELLAR_RESOLVER_SECRET: resolverSecret }),
         stellarConfig,
       );
@@ -95,7 +96,7 @@ describe('StellarAuthService', () => {
 
       new StellarAuthService(
         userRepository as unknown as Repository<User>,
-        jwtService as unknown as JwtService,
+        new AuthTokenService(jwtService as unknown as JwtService),
         configOf({}),
         stellarConfig,
       );
@@ -177,7 +178,7 @@ describe('StellarAuthService', () => {
     it('rejects a challenge issued by a different server', () => {
       const otherServer = new StellarAuthService(
         userRepository as unknown as Repository<User>,
-        jwtService as unknown as JwtService,
+        new AuthTokenService(jwtService as unknown as JwtService),
         configOf({ STELLAR_WEB_AUTH_SECRET: Keypair.random().secret() }),
         stellarConfig,
       );
