@@ -150,6 +150,29 @@ export class GameSessionsController {
     return this.gameSessionsService.confirmStake(id, user.id, dto.transaction);
   }
 
+  @Post(':id/stake/transaction')
+  @ApiOperation({
+    summary: "Rebuild the caller's stake transaction",
+    description:
+      'Use this when the transaction from POST /game-sessions expired before ' +
+      'it was signed. Only valid while the wager is awaiting stakes and the ' +
+      "caller has not already staked; the new transaction's hash replaces the " +
+      'old one, so only the fresh transaction is accepted by POST :id/stake.',
+  })
+  @ApiParam({ name: 'id', description: 'Game session ID' })
+  @ApiResponse({ status: 200, description: 'New unsigned stake transaction.' })
+  @ApiResponse({
+    status: 400,
+    description: 'Not a player in this wager, already staked, or not awaiting stakes.',
+  })
+  @HttpCode(HttpStatus.OK)
+  async requestFreshStakeTransaction(
+    @Param('id') id: string,
+    @GetUser() user: User,
+  ) {
+    return this.gameSessionsService.requestFreshStakeTransaction(id, user.id);
+  }
+
   @Roles(Role.Admin)
   @Post(':id/wager/reconcile')
   @ApiOperation({

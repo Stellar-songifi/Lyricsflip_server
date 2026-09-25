@@ -107,6 +107,22 @@ export class Wager {
   playerBStakeTxHash?: string | null;
 
   /**
+   * Hash of the most recently built (but not necessarily signed) stake
+   * transaction offered to player A.
+   *
+   * A player's original stake transaction expires — its timeout runs out, or
+   * the account's sequence number moves — long before the wager does.
+   * `POST /game-sessions/:id/stake/transaction` rebuilds it and records the
+   * new hash here so a stale signature can be told apart from a current one.
+   */
+  @Column({ type: 'varchar', length: 128, nullable: true })
+  playerALatestStakeHash?: string | null;
+
+  /** Hash of the most recently built stake transaction offered to player B. */
+  @Column({ type: 'varchar', length: 128, nullable: true })
+  playerBLatestStakeHash?: string | null;
+
+  /**
    * Hash of the payout or refund transaction.
    *
    * Written *before* the outcome is known, so that a crash between submission

@@ -365,6 +365,18 @@ export class GameSessionsService {
   }
 
   /**
+   * Rebuilds the caller's stake transaction after the first one expired —
+   * either its 180-second-plus timeout ran out, or another transaction from
+   * that account moved the sequence number it was built against.
+   */
+  async requestFreshStakeTransaction(
+    sessionId: string,
+    userId: string,
+  ): Promise<WagerResult> {
+    return this.wagerService.requestFreshStakeTransaction(sessionId, userId);
+  }
+
+  /**
    * Re-checks a wager left mid-settlement against the ledger.
    *
    * Operator tooling rather than gameplay: a crash between submitting a payout

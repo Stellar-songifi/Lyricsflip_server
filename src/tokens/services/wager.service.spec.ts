@@ -416,6 +416,94 @@ describe('WagerService', () => {
         service.confirmStake(SESSION_ID, 'outsider-id', 'signed-xdr'),
       ).rejects.toThrow(BadRequestException);
     });
+
+    it('refuses a signature over a stake transaction that has been superseded', async () => {
+      mockWagerRepository.findOne.mockResolvedValue(
+        wagerRow({
+          status: WagerStatus.AWAITING_STAKES,
+          playerALatestStakeHash: 'hash-fresh',
+        }),
+      );
+      // The wallet signed and submitted the *original* (now stale) transaction.
+      mockTokenService.confirmStake.mockResolvedValue(
+        confirmed({ txHash: 'hash-stale' }),
+      );
+
+      const result = await service.confirmStake(
+        SESSION_ID,
+        mockPlayerA.id,
+        'signed-stale-xdr',
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.message).toContain('expired');
+      expect(mockWagerRepository.save).not.toHaveBeenCalledWith(
+        expect.objectContaining({ playerAStakeTxHash: 'hash-stale' }),
+      );
+    });
+  });
+
+  describe('requestFreshStakeTransaction', () => {
+    it('rebuilds the transaction and records its hash as the latest one', async () => {
+      mockWagerRepository.findOne.mockResolvedValue(
+        wagerRow({ status: WagerStatus.AWAITING_STAKES }),
+      );
+      mockTokenService.stakeTokens.mockResolvedValue({
+        success: false,
+        status: SettlementStatus.PENDING_SIGNATURE,
+        txHash: 'hash-new',
+        unsignedTransaction: {
+          xdr: 'AAAA...',
+          networkPassphrase: 'Test SDF Network ; September 2015',
+          hash: 'hash-new',
+        },
+        message: 'Sign this transaction in your wallet',
+      });
+
+      const result = await service.requestFreshStakeTransaction(
+        SESSION_ID,
+        mockPlayerA.id,
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.wager?.playerALatestStakeHash).toBe('hash-new');
+      expect(result.pendingSignatures?.[0]).toMatchObject({
+        userId: mockPlayerA.id,
+        transaction: { hash: 'hash-new' },
+      });
+    });
+
+    it('refuses to rebuild once the player has already staked', async () => {
+      mockWagerRepository.findOne.mockResolvedValue(
+        wagerRow({
+          status: WagerStatus.AWAITING_STAKES,
+          playerAStakeTxHash: 'mock:stakeA',
+        }),
+      );
+
+      const result = await service.requestFreshStakeTransaction(
+        SESSION_ID,
+        mockPlayerA.id,
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.message).toContain('already staked');
+      expect(mockTokenService.stakeTokens).not.toHaveBeenCalled();
+    });
+
+    it('refuses to rebuild once the wager is no longer awaiting stakes', async () => {
+      mockWagerRepository.findOne.mockResolvedValue(
+        wagerRow({ status: WagerStatus.STAKED }),
+      );
+
+      const result = await service.requestFreshStakeTransaction(
+        SESSION_ID,
+        mockPlayerA.id,
+      );
+
+      expect(result.success).toBe(false);
+      expect(mockTokenService.stakeTokens).not.toHaveBeenCalled();
+    });
   });
 
   describe('resolveWagerWithWinner', () => {

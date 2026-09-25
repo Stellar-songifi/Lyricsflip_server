@@ -193,6 +193,14 @@ export class WagerService {
         }));
 
       if (pendingSignatures.length > 0) {
+        for (const entry of pendingSignatures) {
+          if (entry.userId === playerAId) {
+            wager.playerALatestStakeHash = entry.transaction.hash;
+          } else {
+            wager.playerBLatestStakeHash = entry.transaction.hash;
+          }
+        }
+
         wager.resultMessage =
           'Waiting for players to sign their stake transactions in their wallets.';
         wager = await this.wagerRepository.save(wager);
@@ -271,6 +279,31 @@ export class WagerService {
       this.contextFor(wager),
     );
 
+    // The hash the wallet actually signed has to match the most recent one
+    // this wager offered — otherwise it is a stake transaction that expired
+    // and was superseded by a fresh one from requestFreshStakeTransaction,
+    // and accepting it anyway would confirm a stake against a transaction
+    // this wager no longer expects.
+    const expectedHash =
+      userId === wager.playerAId
+        ? wager.playerALatestStakeHash
+        : wager.playerBLatestStakeHash;
+
+    if (
+      result.success &&
+      expectedHash &&
+      result.txHash &&
+      result.txHash !== expectedHash
+    ) {
+      return {
+        success: false,
+        wager,
+        message:
+          'This stake transaction has expired. Request a new one via ' +
+          'POST /game-sessions/:id/stake/transaction and sign that instead.',
+      };
+    }
+
     if (userId === wager.playerAId) {
       wager.playerAStakeTxHash = result.txHash ?? wager.playerAStakeTxHash;
     } else {
@@ -300,6 +333,82 @@ export class WagerService {
       message: bothConfirmed
         ? saved.resultMessage
         : 'Stake confirmed. Waiting for your opponent to sign theirs.',
+    };
+  }
+
+  /**
+   * Rebuilds the caller's stake transaction, for when the one they were given
+   * has expired — its timeout ran out, or another transaction from that
+   * account moved the sequence number the original was built against.
+   *
+   * Only valid while the wager is `AWAITING_STAKES` and this player has not
+   * already staked; the new transaction's hash replaces the old one, so
+   * {@link confirmStake} only accepts a signature over the transaction this
+   * call just handed out.
+   */
+  async requestFreshStakeTransaction(
+    sessionId: string,
+    userId: string,
+  ): Promise<WagerResult> {
+    const wager = await this.requireWager(sessionId);
+
+    if (wager.status !== WagerStatus.AWAITING_STAKES) {
+      return {
+        success: false,
+        wager,
+        message: `This wager is not awaiting stakes (status: ${wager.status})`,
+      };
+    }
+
+    if (userId !== wager.playerAId && userId !== wager.playerBId) {
+      throw new BadRequestException('You are not a player in this wager');
+    }
+
+    const alreadyStaked =
+      userId === wager.playerAId
+        ? wager.playerAStakeTxHash
+        : wager.playerBStakeTxHash;
+
+    if (alreadyStaked) {
+      return {
+        success: false,
+        wager,
+        message: 'You have already staked; there is nothing to rebuild',
+      };
+    }
+
+    const result = await this.tokenService.stakeTokens(
+      userId,
+      this.contextFor(wager),
+    );
+
+    if (
+      result.status !== SettlementStatus.PENDING_SIGNATURE ||
+      !result.unsignedTransaction
+    ) {
+      return {
+        success: false,
+        wager,
+        message:
+          result.message ?? 'Could not build a new stake transaction',
+      };
+    }
+
+    if (userId === wager.playerAId) {
+      wager.playerALatestStakeHash = result.unsignedTransaction.hash;
+    } else {
+      wager.playerBLatestStakeHash = result.unsignedTransaction.hash;
+    }
+
+    const saved = await this.wagerRepository.save(wager);
+
+    return {
+      success: true,
+      wager: saved,
+      message: 'New stake transaction ready to sign.',
+      pendingSignatures: [
+        { userId, transaction: result.unsignedTransaction },
+      ],
     };
   }
 
