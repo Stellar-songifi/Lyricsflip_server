@@ -3,7 +3,7 @@
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, BytesN as _},
-    token, Address, Env,
+    token, Address, Env, IntoVal,
 };
 
 struct Setup {
@@ -214,4 +214,73 @@ fn the_admin_can_rotate_the_resolver() {
 
     assert_eq!(s.client.get_config().resolver, new_resolver);
     assert_ne!(s.client.get_config().resolver, s.resolver);
+}
+
+#[test]
+fn open_pot_emits_an_open_event() {
+    let s = setup(1_000);
+    let id = session(&s.env);
+
+    s.client.open_pot(&id, &s.player_a, &s.player_b, &100);
+
+    let events = s.env.events().all();
+    let (contract_id, topics, _data) = events.last().unwrap();
+    assert_eq!(contract_id, &s.contract_id);
+    assert_eq!(
+        topics.get_unchecked(0),
+        soroban_sdk::symbol_short!("open").into_val(&s.env)
+    );
+}
+
+#[test]
+fn full_pot_lifecycle_emits_the_documented_events() {
+    let s = setup(1_000);
+    let id = session(&s.env);
+
+    s.client.open_pot(&id, &s.player_a, &s.player_b, &100);
+    s.client.stake(&id, &s.player_a);
+    s.client.stake(&id, &s.player_b);
+    s.client.resolve(&id, &s.player_a);
+
+    let events = s.env.events().all();
+    let topic_names: std::vec::Vec<_> = events
+        .iter()
+        .map(|(_, topics, _)| topics.get_unchecked(0))
+        .collect();
+
+    assert!(topic_names.contains(&soroban_sdk::symbol_short!("open").into_val(&s.env)));
+    assert!(topic_names.contains(&soroban_sdk::symbol_short!("stake").into_val(&s.env)));
+    assert!(topic_names.contains(&soroban_sdk::symbol_short!("resolve").into_val(&s.env)));
+}
+
+#[test]
+fn refund_emits_a_refund_event() {
+    let s = setup(1_000);
+    let id = session(&s.env);
+
+    s.client.open_pot(&id, &s.player_a, &s.player_b, &100);
+    s.client.stake(&id, &s.player_a);
+    s.client.refund(&id);
+
+    let events = s.env.events().all();
+    let (_, topics, _) = events.last().unwrap();
+    assert_eq!(
+        topics.get_unchecked(0),
+        soroban_sdk::symbol_short!("refund").into_val(&s.env)
+    );
+}
+
+#[test]
+fn set_resolver_emits_a_resolver_event() {
+    let s = setup(1_000);
+    let new_resolver = Address::generate(&s.env);
+
+    s.client.set_resolver(&new_resolver);
+
+    let events = s.env.events().all();
+    let (_, topics, _) = events.last().unwrap();
+    assert_eq!(
+        topics.get_unchecked(0),
+        soroban_sdk::symbol_short!("resolver").into_val(&s.env)
+    );
 }

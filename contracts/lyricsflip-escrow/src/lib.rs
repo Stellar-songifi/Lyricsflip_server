@@ -10,9 +10,23 @@
 //! else: `resolve` can only pay a player of that pot, and `refund` can only
 //! return each stake to the player who made it. That bounds what a compromised
 //! backend key can do to picking the wrong winner, rather than draining escrow.
+//!
+//! ## Events
+//!
+//! Every state-changing call publishes an event so indexers, explorers and
+//! the backend can follow pot activity without polling `get_pot`:
+//!
+//! | Function       | Topics                       | Data                              |
+//! |----------------|-------------------------------|------------------------------------|
+//! | `open_pot`     | `("open", session_id)`        | `(player_a, player_b, stake)`      |
+//! | `stake`        | `("stake", session_id)`       | `(player, is_player_a)`            |
+//! | `resolve`      | `("resolve", session_id)`     | `(winner, payout)`                 |
+//! | `refund`       | `("refund", session_id)`      | `(player_a, player_b)`             |
+//! | `set_resolver` | `("resolver", ())`            | `(old_resolver, new_resolver)`     |
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, token, Address, BytesN, Env,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, BytesN,
+    Env,
 };
 
 /// A game session ID: the 16 bytes of the backend's session UUID.
@@ -114,8 +128,13 @@ impl EscrowContract {
     pub fn set_resolver(env: Env, new_resolver: Address) -> Result<(), Error> {
         let mut config = Self::config(&env)?;
         config.admin.require_auth();
-        config.resolver = new_resolver;
+        let old_resolver = config.resolver.clone();
+        config.resolver = new_resolver.clone();
         env.storage().instance().set(&DataKey::Config, &config);
+
+        env.events()
+            .publish((symbol_short!("resolver"), ()), (old_resolver, new_resolver));
+
         Ok(())
     }
 
@@ -144,16 +163,19 @@ impl EscrowContract {
         }
 
         env.storage().persistent().set(
-            &DataKey::Pot(session_id),
+            &DataKey::Pot(session_id.clone()),
             &Pot {
-                player_a,
-                player_b,
+                player_a: player_a.clone(),
+                player_b: player_b.clone(),
                 stake,
                 funded_a: false,
                 funded_b: false,
                 status: PotStatus::Open,
             },
         );
+
+        env.events()
+            .publish((symbol_short!("open"), session_id), (player_a, player_b, stake));
 
         Ok(())
     }
@@ -201,7 +223,10 @@ impl EscrowContract {
 
         env.storage()
             .persistent()
-            .set(&DataKey::Pot(session_id), &pot);
+            .set(&DataKey::Pot(session_id.clone()), &pot);
+
+        env.events()
+            .publish((symbol_short!("stake"), session_id), (player, is_a));
 
         Ok(())
     }
@@ -233,7 +258,10 @@ impl EscrowContract {
         pot.status = PotStatus::Resolved;
         env.storage()
             .persistent()
-            .set(&DataKey::Pot(session_id), &pot);
+            .set(&DataKey::Pot(session_id.clone()), &pot);
+
+        env.events()
+            .publish((symbol_short!("resolve"), session_id), (winner, payout));
 
         Ok(payout)
     }
@@ -266,7 +294,12 @@ impl EscrowContract {
         pot.status = PotStatus::Refunded;
         env.storage()
             .persistent()
-            .set(&DataKey::Pot(session_id), &pot);
+            .set(&DataKey::Pot(session_id.clone()), &pot);
+
+        env.events().publish(
+            (symbol_short!("refund"), session_id),
+            (pot.player_a.clone(), pot.player_b.clone()),
+        );
 
         Ok(())
     }
