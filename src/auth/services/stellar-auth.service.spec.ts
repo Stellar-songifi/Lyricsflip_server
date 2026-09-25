@@ -339,6 +339,52 @@ describe('StellarAuthService', () => {
     });
   });
 
+  describe('replay protection and key configuration', () => {
+    it('rejects a challenge that was already exchanged', async () => {
+      userRepository.findOne.mockResolvedValue({
+        id: 'u1',
+        isActive: true,
+        email: 'a@b.c',
+        username: 'u',
+      });
+      const signed = signedChallengeFor(wallet);
+      await service.loginWithWallet(signed);
+      await expect(service.loginWithWallet(signed)).rejects.toThrow(
+        /already been used/,
+      );
+    });
+
+    it('fails to boot in production without a web-auth secret', () => {
+      const prev = process.env.NODE_ENV;
+      process.env.NODE_ENV = 'production';
+      try {
+        expect(
+          () =>
+            new StellarAuthService(
+              userRepository as unknown as Repository<User>,
+              jwtService as unknown as JwtService,
+              configOf({}),
+              stellarConfig,
+            ),
+        ).toThrow(/STELLAR_WEB_AUTH_SECRET/);
+      } finally {
+        process.env.NODE_ENV = prev;
+      }
+    });
+
+    it('rejects a malformed web-auth secret', () => {
+      expect(
+        () =>
+          new StellarAuthService(
+            userRepository as unknown as Repository<User>,
+            jwtService as unknown as JwtService,
+            configOf({ STELLAR_WEB_AUTH_SECRET: 'not-a-seed' }),
+            stellarConfig,
+          ),
+      ).toThrow(/valid Stellar secret seed/);
+    });
+  });
+
   describe('unlinkWallet', () => {
     it('clears both the address and its verification stamp', async () => {
       await service.unlinkWallet('user-1');
