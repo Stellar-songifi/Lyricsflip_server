@@ -11,6 +11,8 @@ import {
   ValidationPipe,
 } from '@nestjs/common';
 
+import { Throttle } from '@nestjs/throttler';
+import { guessThrottle } from '../common/throttler/throttle.config';
 import {
   GameLyricResponse,
   GuessResultResponse,
@@ -93,6 +95,7 @@ export class GameController {
   /**
    * POST /game/guess - Submit a guess for evaluation
    */
+  @Throttle(guessThrottle)
   @Post('guess')
   @HttpCode(HttpStatus.OK)
   async checkGuess(

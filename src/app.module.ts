@@ -19,6 +19,9 @@ import { TokensModule } from './tokens/tokens.module';
 import { GameHistoryModule } from './game-history/game-history.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { APP_GUARD } from '@nestjs/core';
+import { ThrottlerModule } from '@nestjs/throttler';
+import { AppThrottlerGuard } from './common/throttler/app-throttler.guard';
+import { defaultThrottle } from './common/throttler/throttle.config';
 
 @Module({
   imports: [
@@ -27,6 +30,7 @@ import { APP_GUARD } from '@nestjs/core';
       isGlobal: true, // Makes ConfigModule available globally
       envFilePath: '.env',
     }),
+    ThrottlerModule.forRoot([defaultThrottle()]),
     // 2. Configure caching globally
     CacheModule.register({
       isGlobal: true,
@@ -112,6 +116,7 @@ import { APP_GUARD } from '@nestjs/core';
   controllers: [AppController],
   providers: [
     AppService,
+    { provide: APP_GUARD, useClass: AppThrottlerGuard },
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
   ],
