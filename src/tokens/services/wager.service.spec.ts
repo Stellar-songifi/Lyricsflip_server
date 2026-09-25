@@ -462,6 +462,13 @@ describe('WagerService', () => {
       expect(result.success).toBe(true);
       expect(result.wager?.status).toBe(WagerStatus.AWAITING_STAKES);
       expect(result.message).toContain('Waiting for your opponent');
+      // The backend checks the envelope is this player's stake, so it needs
+      // to know whose it is.
+      expect(mockTokenService.confirmStake).toHaveBeenCalledWith(
+        mockPlayerA.id,
+        'signed-xdr',
+        expect.objectContaining({ sessionId: SESSION_ID }),
+      );
     });
 
     it('moves the wager to staked once both stakes are confirmed', async () => {

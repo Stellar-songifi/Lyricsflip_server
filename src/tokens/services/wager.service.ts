@@ -309,6 +309,7 @@ export class WagerService {
     }
 
     const result = await this.tokenService.confirmStake(
+      userId,
       signedXdr,
       this.contextFor(wager),
     );

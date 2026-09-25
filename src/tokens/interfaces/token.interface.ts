@@ -89,9 +89,11 @@ export interface ITokenService {
 
   /**
    * Submits a stake transaction that a player's wallet signed.
+   * @param userId The player submitting it; the envelope must be their stake.
    * @param signedXdr Base64 transaction envelope returned by the wallet.
    */
   confirmStake(
+    userId: string,
     signedXdr: string,
     context: EscrowContext,
   ): Promise<TokenTransactionResult>;

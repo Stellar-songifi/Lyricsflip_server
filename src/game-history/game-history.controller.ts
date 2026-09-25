@@ -13,6 +13,8 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { GetUser } from '../auth/decorators/user.decorator';
 import { User } from '../users/entities/user.entity';
 import { GuessType } from '../game/dto/guess.dto';
+import { Roles } from '../auth/decorators/roles.decorator';
+import { Role } from '../auth/roles/role.enum';
 
 @ApiTags('game-history')
 @Controller('game-history')
@@ -56,16 +58,21 @@ export class GameHistoryController {
   @Get(':id')
   @ApiOperation({ summary: 'Get specific game history record' })
   @ApiResponse({ status: 200, description: 'Game history record details.' })
+  @ApiResponse({ status: 403, description: 'The record belongs to another user.' })
   @ApiResponse({ status: 404, description: 'Game history record not found.' })
-  async getGameHistory(@Param('id', ParseUUIDPipe) id: string) {
-    return this.gameHistoryService.findOne(id);
+  async getGameHistory(
+    @Param('id', ParseUUIDPipe) id: string,
+    @GetUser() user: User,
+  ) {
+    return this.gameHistoryService.findOne(id, user);
   }
 
   /**
    * GET /users/:userId/history - Get game history for a specific user (admin functionality)
    */
+  @Roles(Role.Admin)
   @Get('users/:userId')
-  @ApiOperation({ summary: 'Get game history for a specific user' })
+  @ApiOperation({ summary: 'Get game history for a specific user (Admin only)' })
   @ApiResponse({ status: 200, description: 'Paginated game history for the specified user.' })
   async getUserHistory(
     @Param('userId', ParseUUIDPipe) userId: string,
