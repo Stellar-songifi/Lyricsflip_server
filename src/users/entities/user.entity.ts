@@ -105,6 +105,14 @@ export class User {
   isActive: boolean;
 
   /**
+   * Bumped whenever outstanding access/refresh tokens should stop working
+   * (currently: on password change). Embedded in every access token and
+   * compared on each request by JwtStrategy.
+   */
+  @Column({ type: 'int', default: 0 })
+  tokenVersion: number;
+
+  /**
    * The Stellar account (G...) this user stakes from and is paid out to.
    *
    * Null until the user links a wallet by signing a SEP-10 challenge; wagered

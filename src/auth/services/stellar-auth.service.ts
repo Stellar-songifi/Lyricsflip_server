@@ -202,6 +202,7 @@ export class StellarAuthService {
       email: user.email,
       username: user.username,
       role: user.role,
+      tokenVersion: user.tokenVersion,
     };
 
     const { passwordHash: _passwordHash, ...userWithoutPassword } = user;

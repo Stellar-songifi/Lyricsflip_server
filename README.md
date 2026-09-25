@@ -361,10 +361,15 @@ Each correct guess is meant to be worth 10 XP (`calculateXpGain`). **This is not
 
 ### Email and password
 
-- `POST /auth/signup { username (3–20 chars), email, password (6–50 chars) }`: the password is hashed with bcrypt (12 rounds), and the response is `{ accessToken, user }`.
-- `POST /auth/login { email, password }`: updates `lastLoginAt` and returns `{ accessToken, user }`.
+- `POST /auth/signup { username (3–20 chars, letters/numbers/underscore), email, password (8–72 chars, upper+lower+digit) }`: the password is hashed with bcrypt (12 rounds), email and username are lowercased/trimmed, and the response is `{ accessToken, refreshToken, user }`.
+- `POST /auth/login { email, password }`: updates `lastLoginAt` and returns `{ accessToken, refreshToken, user }`.
+- `POST /auth/refresh { refreshToken }`: exchanges a valid refresh token for a new `{ accessToken, refreshToken }` pair. The presented refresh token is revoked as part of the rotation.
+- `POST /auth/logout { refreshToken }`: revokes a single refresh token.
+- `POST /auth/change-password { currentPassword, newPassword }` (authenticated): changes the password, bumps the user's `tokenVersion` (invalidating every outstanding access token) and revokes all of the user's refresh tokens.
 
-Tokens are HS256 JWTs signed with `JWT_SECRET`, valid for `JWT_EXPIRES_IN` (default `7d`). The payload is `{ sub: userId, email, username, role }`. Send the token as `Authorization: Bearer <token>`.
+Access tokens are HS256 JWTs signed with `JWT_SECRET`, valid for `JWT_EXPIRES_IN` (default `15m`). The payload is `{ sub: userId, email, username, role, tokenVersion }`; `JwtStrategy` rejects a token whose `tokenVersion` no longer matches the user's. Send the token as `Authorization: Bearer <token>`.
+
+Refresh tokens are opaque random values returned once and stored server-side only as a SHA-256 hash (`refresh_tokens` table), each valid for 30 days unless revoked sooner by `/auth/logout`, a refresh (rotation revokes the token that was presented), or a password change.
 
 ### Stellar wallets (SEP-10)
 
@@ -625,7 +630,7 @@ All configuration comes from environment variables, loaded from `.env` by `@nest
 | `FRONTEND_URL`   | `http://localhost:3000`  | CORS origin                                                           |
 | `LOG_LEVEL`      | `info`                   | Used by the Winston `LoggerService`                                   |
 | `JWT_SECRET`     | **required**             | The app refuses to start without it. Use a long random value          |
-| `JWT_EXPIRES_IN` | `7d`                     | Any format accepted by `jsonwebtoken`                                 |
+| `JWT_EXPIRES_IN` | `15m`                    | Any format accepted by `jsonwebtoken`. Refresh tokens are separate, opaque and valid for 30 days |
 
 **Database**
 
