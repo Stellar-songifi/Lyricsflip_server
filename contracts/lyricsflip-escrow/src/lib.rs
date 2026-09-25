@@ -125,17 +125,15 @@ pub struct EscrowContract;
 
 #[contractimpl]
 impl EscrowContract {
-    /// Sets the admin, the staking token and the resolver. Callable once.
-    pub fn initialize(
-        env: Env,
-        admin: Address,
-        token: Address,
-        resolver: Address,
-    ) -> Result<(), Error> {
-        if env.storage().instance().has(&DataKey::Config) {
-            return Err(Error::AlreadyInitialized);
-        }
-
+    /// Sets the admin, the staking token and the resolver.
+    ///
+    /// This runs atomically as part of deployment (`stellar contract
+    /// deploy --wasm ... -- --admin ... --token ... --resolver ...`), so
+    /// there is no window between deploy and initialization for an attacker
+    /// to front-run: the contract is never live with unset, or someone
+    /// else's, configuration. There is deliberately no separate `initialize`
+    /// entrypoint any more, so this can never be called a second time.
+    pub fn __constructor(env: Env, admin: Address, token: Address, resolver: Address) {
         admin.require_auth();
 
         env.storage().instance().set(
@@ -146,8 +144,6 @@ impl EscrowContract {
                 resolver,
             },
         );
-
-        Ok(())
     }
 
     /// Rotates the resolver key. Only the admin may call this, which is what

@@ -34,9 +34,11 @@ fn setup(initial_balance: i128) -> Setup {
     token_admin_client.mint(&player_a, &initial_balance);
     token_admin_client.mint(&player_b, &initial_balance);
 
-    let contract_id = env.register(EscrowContract, ());
+    let contract_id = env.register(
+        EscrowContract,
+        (admin.clone(), token_contract.address(), resolver.clone()),
+    );
     let client = EscrowContractClient::new(&env, &contract_id);
-    client.initialize(&admin, &token_contract.address(), &resolver);
 
     Setup {
         env,
