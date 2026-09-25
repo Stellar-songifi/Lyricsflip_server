@@ -28,9 +28,16 @@ export class LyricsService {
   }
 
   async create(createLyricsDto: CreateLyricsDto, user: User): Promise<Lyrics> {
+    // Derive lyricSnippet from content when the caller did not supply one.
+    // The entity column is non-nullable so we must guarantee a value here.
+    const lyricSnippet =
+      createLyricsDto.lyricSnippet?.trim() ||
+      createLyricsDto.content.slice(0, 150).trim();
+
     const lyrics = this.lyricsRepository.create({
       ...createLyricsDto,
-      decade: createLyricsDto.decade?.toString(), // Convert number to string
+      lyricSnippet,
+      decade: createLyricsDto.decade?.toString(), // entity stores decade as varchar
       createdBy: user,
     });
     const savedLyrics = await this.lyricsRepository.save(lyrics);
