@@ -2,6 +2,10 @@ import { MigrationInterface, QueryRunner, Table, TableForeignKey } from 'typeorm
 
 export class CreateRoomsAndRoomUsers1691625843781 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
+    // Every table's uuid primary key defaults to uuid_generate_v4(). This is the
+    // first migration in the chain, so the extension is enabled here.
+    await queryRunner.query(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp"`);
+
     // Create rooms table
     await queryRunner.createTable(
       new Table({
@@ -93,27 +97,8 @@ export class CreateRoomsAndRoomUsers1691625843781 implements MigrationInterface 
       true,
     );
 
-    // Add foreign keys
-    await queryRunner.createForeignKey(
-      'rooms',
-      new TableForeignKey({
-        columnNames: ['lyricId'],
-        referencedColumnNames: ['id'],
-        referencedTableName: 'lyrics',
-        onDelete: 'CASCADE',
-      }),
-    );
-
-    await queryRunner.createForeignKey(
-      'room_users',
-      new TableForeignKey({
-        columnNames: ['userId'],
-        referencedColumnNames: ['id'],
-        referencedTableName: 'users',
-        onDelete: 'CASCADE',
-      }),
-    );
-
+    // The foreign keys to `lyrics` and `users` are added by
+    // RepairSchemaToMatchEntities, once those tables exist.
     await queryRunner.createForeignKey(
       'room_users',
       new TableForeignKey({

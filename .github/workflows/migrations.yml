@@ -1,0 +1,51 @@
+name: Migrations
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  migrations:
+    name: Migrate an empty database and check for drift
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:14
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: lyricflip
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DB_HOST: localhost
+      DB_PORT: 5432
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: lyricflip
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Run all migrations
+        run: npm run migration:run
+
+      # Exits non-zero when the entities describe a schema the migrations do
+      # not produce, i.e. an entity change shipped without a migration.
+      - name: Check the entities match the migrated schema
+        run: npm run migration:check
