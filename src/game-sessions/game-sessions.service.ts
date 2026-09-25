@@ -174,9 +174,12 @@ export class GameSessionsService {
     return savedGameSession;
   }
 
-  async findAll(): Promise<GameSession[]> {
+  async findAll(limit: number = 20, offset: number = 0): Promise<GameSession[]> {
     return this.gameSessionRepository.find({
       relations: ['player'],
+      order: { createdAt: 'DESC' },
+      take: limit,
+      skip: offset,
     });
   }
 
@@ -209,11 +212,15 @@ export class GameSessionsService {
     }
   }
 
-  async getTopScores(limit: number = 10): Promise<GameSession[]> {
+  async getTopScores(
+    limit: number = 10,
+    offset: number = 0,
+  ): Promise<GameSession[]> {
     return this.gameSessionRepository.find({
       where: { status: GameSessionStatus.COMPLETED },
       order: { score: 'DESC' },
       take: limit,
+      skip: offset,
       relations: ['player'],
     });
   }
@@ -221,11 +228,13 @@ export class GameSessionsService {
   async getRecentGames(
     userId: string,
     limit: number = 5,
+    offset: number = 0,
   ): Promise<GameSession[]> {
     return this.gameSessionRepository.find({
       where: { player: { id: userId } },
       order: { createdAt: 'DESC' },
       take: limit,
+      skip: offset,
       relations: ['player'],
     });
   }
@@ -372,7 +381,11 @@ export class GameSessionsService {
   /**
    * Gets user's wager history
    */
-  async getUserWagers(userId: string, limit: number = 10): Promise<Wager[]> {
-    return this.wagerService.getUserWagers(userId, limit);
+  async getUserWagers(
+    userId: string,
+    limit: number = 10,
+    offset: number = 0,
+  ): Promise<Wager[]> {
+    return this.wagerService.getUserWagers(userId, limit, offset);
   }
 }

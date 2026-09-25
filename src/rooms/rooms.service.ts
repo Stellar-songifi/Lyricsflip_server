@@ -11,6 +11,7 @@ import { RoomUser } from './entities/room-user.entity';
 import { Lyrics } from '../lyrics/entities/lyrics.entity';
 import { CreateRoomDto } from './dto/create-room.dto';
 import { GuessLyricDto } from './dto/guess-lyric.dto';
+import { PlayerSummaryDto } from '../users/dto/public-user.dto';
 import * as stringSimilarity from 'string-similarity';
 
 @Injectable()
@@ -104,14 +105,23 @@ export class RoomsService {
       throw new NotFoundException('User has not joined this room');
     }
 
-    // Don't send actual lyrics if user hasn't guessed yet
-    const response = { ...room };
-    if (!roomUser.hasGuessed) {
-      response.lyric = { ...room.lyric, content: '' };
-    }
-    return response;
+    // Don't send actual lyrics if user hasn't guessed yet, and never the
+    // lyric's creator (a full User) if a caller happened to load it
+    const lyricFields: Partial<Lyrics> = { ...room.lyric };
+    delete lyricFields.createdBy;
+    const lyric = roomUser.hasGuessed
+      ? lyricFields
+      : { ...lyricFields, content: '' };
 
-    return room;
+    return {
+      ...room,
+      lyric,
+      // Room members are other players: expose only id and username
+      roomUsers: room.roomUsers.map(({ user, ...member }) => ({
+        ...member,
+        user: user ? PlayerSummaryDto.from(user) : undefined,
+      })),
+    };
   }
 
   async submitGuess(roomId: string, userId: string, guessDto: GuessLyricDto) {

@@ -697,14 +697,18 @@ describe('WagerService', () => {
         leftJoinAndSelect: jest.fn().mockReturnThis(),
         where: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
-        limit: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
         getMany: jest.fn().mockResolvedValue([row]),
       };
       mockWagerRepository.createQueryBuilder.mockReturnValue(mockQueryBuilder);
 
-      const result = await service.getUserWagers(mockPlayerA.id, 10);
+      const result = await service.getUserWagers(mockPlayerA.id, 10, 20);
 
       expect(result).toEqual([row]);
+      // take/skip page by wager; .limit() would count joined rows
+      expect(mockQueryBuilder.take).toHaveBeenCalledWith(10);
+      expect(mockQueryBuilder.skip).toHaveBeenCalledWith(20);
       expect(mockQueryBuilder.where).toHaveBeenCalledWith(
         'wager.playerAId = :userId OR wager.playerBId = :userId',
         { userId: mockPlayerA.id },

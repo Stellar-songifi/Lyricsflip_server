@@ -55,7 +55,8 @@ export class Lyrics {
   @Column({ type: "int", default: 0 })
   timesUsed: number
 
-  @ManyToOne(() => User, { eager: true, nullable: false, onDelete: "CASCADE" })
+  // Not eager: every lyric response would otherwise embed its creator
+  @ManyToOne(() => User, { nullable: false, onDelete: "CASCADE" })
   createdBy: User
 
   @CreateDateColumn()

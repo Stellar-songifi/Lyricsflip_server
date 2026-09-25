@@ -43,14 +43,14 @@ export class Wager {
   @Column({ type: 'uuid' })
   sessionId: string;
 
-  @ManyToOne(() => User, { eager: true })
+  @ManyToOne(() => User)
   @JoinColumn({ name: 'playerAId' })
   playerA: User;
 
   @Column({ type: 'uuid' })
   playerAId: string;
 
-  @ManyToOne(() => User, { eager: true })
+  @ManyToOne(() => User)
   @JoinColumn({ name: 'playerBId' })
   playerB: User;
 
