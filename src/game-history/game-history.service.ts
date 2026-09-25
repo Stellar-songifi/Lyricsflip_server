@@ -1,9 +1,11 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Between } from 'typeorm';
 import { GameHistory } from './entities/game-history.entity';
 import { CreateGameHistoryDto } from './dto/create-game-history.dto';
 import { GameHistoryQueryDto } from './dto/game-history-query.dto';
+import { User } from '../users/entities/user.entity';
+import { Role } from '../auth/roles/role.enum';
 
 export interface GameHistoryResponse {
   id: string;
@@ -113,27 +115,7 @@ export class GameHistoryService {
         take: limit,
       });
 
-      const data: GameHistoryResponse[] = histories.map((history) => ({
-        id: history.id,
-        lyricId: history.lyricId,
-        guessType: history.guessType,
-        guessValue: history.guessValue,
-        isCorrect: history.isCorrect,
-        pointsAwarded: history.pointsAwarded,
-        xpChange: history.xpChange,
-        wagerAmount: history.wagerAmount,
-        createdAt: history.createdAt,
-        lyric: history.lyric ? {
-          artist: history.lyric.artist,
-          songTitle: history.lyric.songTitle,
-          lyricSnippet: history.lyric.lyricSnippet,
-        } : undefined,
-        gameSession: history.gameSession ? {
-          id: history.gameSession.id,
-          mode: history.gameSession.mode,
-          category: history.gameSession.category,
-        } : undefined,
-      }));
+      const data = histories.map((history) => this.toResponse(history));
 
       return {
         data,
@@ -223,18 +205,52 @@ export class GameHistoryService {
   }
 
   /**
-   * Finds a specific game history record by ID
+   * Finds a specific game history record by ID. Only its player, or an
+   * admin, may read it.
    */
-  async findOne(id: string): Promise<GameHistory> {
+  async findOne(id: string, user: User): Promise<GameHistoryResponse> {
     const history = await this.gameHistoryRepository.findOne({
       where: { id },
-      relations: ['lyric', 'gameSession', 'player'],
+      relations: ['lyric', 'gameSession'],
     });
 
     if (!history) {
       throw new NotFoundException(`Game history with ID ${id} not found`);
     }
 
-    return history;
+    if (history.playerId !== user.id && user.role !== Role.Admin) {
+      throw new ForbiddenException('You can only view your own game history');
+    }
+
+    return this.toResponse(history);
+  }
+
+  /**
+   * Projects a record for the API. Relations are copied field by field so
+   * that no entity, and in particular no user (the lyric's eager `createdBy`
+   * carries a password hash), is ever serialised whole.
+   */
+  private toResponse(history: GameHistory): GameHistoryResponse {
+    return {
+      id: history.id,
+      lyricId: history.lyricId,
+      guessType: history.guessType,
+      guessValue: history.guessValue,
+      isCorrect: history.isCorrect,
+      pointsAwarded: history.pointsAwarded,
+      xpChange: history.xpChange,
+      wagerAmount: history.wagerAmount,
+      createdAt: history.createdAt,
+      lyric: history.lyric ? {
+        artist: history.lyric.artist,
+        songTitle: history.lyric.songTitle,
+        lyricSnippet: history.lyric.lyricSnippet,
+      } : undefined,
+      gameSession: history.gameSession ? {
+        id: history.gameSession.id,
+        mode: history.gameSession.mode,
+        category: history.gameSession.category,
+      } : undefined,
+    };
   }
 }

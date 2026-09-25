@@ -2,7 +2,10 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ConflictException,
+  ForbiddenException,
   Inject,
+  Logger,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -15,7 +18,8 @@ import { CreateGameSessionDto } from './dto/create-game-session.dto';
 import { UpdateGameSessionDto } from './dto/update-game-session.dto';
 import { User } from '../users/entities/user.entity';
 import { WagerService } from '../tokens/services/wager.service';
-import { Wager } from '../tokens/entities/wager.entity';
+import { Wager, WagerStatus } from '../tokens/entities/wager.entity';
+import { Role } from '../auth/roles/role.enum';
 import {
   TOKEN_SERVICE,
   ITokenService,
@@ -45,8 +49,18 @@ export type CreateGameSessionResponse = GameSession & {
   }>;
 };
 
+/** Wager states in which no funds are left in escrow. */
+const TERMINAL_WAGER_STATUSES = [
+  WagerStatus.WON,
+  WagerStatus.REFUNDED,
+  WagerStatus.FAILED,
+];
+
 @Injectable()
 export class GameSessionsService {
+  /** Every settlement decision is written here: who, with what, and the result. */
+  private readonly auditLogger = new Logger('SettlementAudit');
+
   constructor(
     @InjectRepository(GameSession)
     private readonly gameSessionRepository: Repository<GameSession>,
@@ -174,13 +188,26 @@ export class GameSessionsService {
     return savedGameSession;
   }
 
-  async findAll(): Promise<GameSession[]> {
+  /** Admins see every session; everyone else sees the ones they play in. */
+  async findAll(user: User): Promise<GameSession[]> {
+    if (user.role === Role.Admin) {
+      return this.gameSessionRepository.find({
+        relations: ['player'],
+      });
+    }
+
     return this.gameSessionRepository.find({
+      where: [{ player: { id: user.id } }, { playerTwoId: user.id }],
       relations: ['player'],
     });
   }
 
-  async findOne(id: string): Promise<GameSession> {
+  /**
+   * Loads a session. When `user` is given, it must be one of the session's
+   * players or an admin; internal callers that have already decided who may
+   * act omit it.
+   */
+  async findOne(id: string, user?: User): Promise<GameSession> {
     const gameSession = await this.gameSessionRepository.findOne({
       where: { id },
       relations: ['player'],
@@ -190,22 +217,50 @@ export class GameSessionsService {
       throw new NotFoundException(`Game session with ID "${id}" not found`);
     }
 
+    if (user) {
+      this.assertParticipant(gameSession, user);
+    }
+
     return gameSession;
   }
 
   async update(
     id: string,
     updateGameSessionDto: UpdateGameSessionDto,
+    user: User,
   ): Promise<GameSession> {
-    const gameSession = await this.findOne(id);
-    Object.assign(gameSession, updateGameSessionDto);
+    const gameSession = await this.findOne(id, user);
+    // Only the fields the narrow DTO allows; anything else was already
+    // rejected by validation, and is not copied even if it slipped through.
+    if (updateGameSessionDto.category !== undefined) {
+      gameSession.category = updateGameSessionDto.category;
+    }
     return this.gameSessionRepository.save(gameSession);
   }
 
-  async remove(id: string): Promise<void> {
+  async remove(id: string, user: User): Promise<void> {
+    await this.findOne(id, user);
+
+    // Deleting the session would orphan a pot that still holds stakes.
+    const wager = await this.wagerService.getWagerBySessionId(id);
+    if (wager && !TERMINAL_WAGER_STATUSES.includes(wager.status)) {
+      throw new ConflictException(
+        `This session has a wager that is still ${wager.status}; it cannot be deleted until it is settled or refunded`,
+      );
+    }
+
     const result = await this.gameSessionRepository.delete(id);
     if (result.affected === 0) {
       throw new NotFoundException(`Game session with ID "${id}" not found`);
+    }
+  }
+
+  private assertParticipant(gameSession: GameSession, user: User): void {
+    const isParticipant =
+      gameSession.player?.id === user.id || gameSession.playerTwoId === user.id;
+
+    if (!isParticipant && user.role !== Role.Admin) {
+      throw new ForbiddenException('You are not a player in this session');
     }
   }
 
@@ -249,12 +304,16 @@ export class GameSessionsService {
   }
 
   /**
-   * Completes a wagered game session and resolves the wager
+   * Completes a wagered game session and resolves the wager.
+   *
+   * Scores decide who is paid, so this is an admin action (enforced on the
+   * route) and every call is audit-logged with who triggered it.
    */
   async completeWageredGame(
     sessionId: string,
     playerOneScore: number,
     playerTwoScore: number,
+    triggeredBy: User,
   ): Promise<{
     gameSession: GameSession;
     wagerResult?: any;
@@ -315,6 +374,20 @@ export class GameSessionsService {
     const updatedGameSession =
       await this.gameSessionRepository.save(gameSession);
 
+    this.auditLogger.log(
+      JSON.stringify({
+        event: 'wager.settlement',
+        sessionId,
+        triggeredBy: { id: triggeredBy.id, role: triggeredBy.role },
+        playerOneScore,
+        playerTwoScore,
+        winnerId: gameSession.winnerId ?? null,
+        success: Boolean(wagerResult?.success),
+        wagerStatus: wagerResult?.wager?.status ?? null,
+        settlementTxHash: wagerResult?.wager?.settlementTxHash ?? null,
+      }),
+    );
+
     return {
       gameSession: updatedGameSession,
       wagerResult,
@@ -363,9 +436,10 @@ export class GameSessionsService {
   }
 
   /**
-   * Gets wager information for a session
+   * Gets wager information for a session the user plays in
    */
-  async getSessionWager(sessionId: string): Promise<Wager | null> {
+  async getSessionWager(sessionId: string, user: User): Promise<Wager | null> {
+    await this.findOne(sessionId, user);
     return this.wagerService.getWagerBySessionId(sessionId);
   }
 

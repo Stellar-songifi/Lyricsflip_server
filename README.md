@@ -318,7 +318,7 @@ A `GameSession` has a creator (`player`), an optional `playerTwo`, a `category`,
 - `multiplayer` / `wagered`: `playerTwoId` is required, you cannot play yourself, and the session starts as `waiting_for_player`.
 - If the session is `wagered` (or `hasWager: true`), a `wagerAmount` is also required. Before the session row is written, the server checks that **both** players can afford the stake. A wager is then opened (see [Wagers and settlement](#wagers-and-settlement)). If opening the wager fails, the session row is deleted again.
 
-When a wagered match ends, `PUT /game-sessions/:id/complete-wagered` records both scores. The higher score wins the pot, and a tie refunds both stakes. `GET /game-sessions/top-scores` and `/my-recent` list completed and recent sessions.
+When a wagered match ends, an admin calls `PUT /game-sessions/:id/complete-wagered` with both scores. The higher score wins the pot, and a tie refunds both stakes. Players cannot call it, because the scores decide who is paid. Every call is written to the `SettlementAudit` log with who triggered it, the scores, the winner and the settlement transaction hash. `GET /game-sessions/top-scores` and `/my-recent` list completed and recent sessions.
 
 ### Scoring
 
@@ -487,12 +487,14 @@ sequenceDiagram
     B->>S: POST /game-sessions/:id/stake { transaction }
     S->>E: submit stake(session, B)
     Note over S,E: pot is Funded, wager is staked
-    A->>S: PUT /game-sessions/:id/complete-wagered { scores }
+    Note over A,S: admin calls PUT /game-sessions/:id/complete-wagered { scores }
     S->>E: resolve(session, winner)  (resolver-signed)
     E-->>S: pays 2 × stake to the winner
 ```
 
 Each `transaction` in `pendingSignatures` has the shape `{ xdr, networkPassphrase, hash }`. The `hash` does not change when the wallet adds a signature, which lets the server track the transaction before it is signed. An unsigned transaction expires after **180 seconds** (`TRANSACTION_TIMEOUT_SECONDS`).
+
+Before a signed envelope is submitted, the server decodes it and checks that it is exactly one call to `stake(sessionId, callerAddress)` on the configured escrow contract. Anything else, such as a payment, another player's stake or a stake for another session, is rejected with `400` and never reaches the network.
 
 ### Why no network call runs inside a database transaction
 
@@ -664,7 +666,7 @@ Validation is deliberately strict. A mistyped contract ID or a key from the wron
 
 ## API reference
 
-Swagger at `/api/docs` has the request and response detail. In the tables below, `public` means no token is needed and `admin` means the admin role is required. Every other route needs a bearer token.
+Swagger at `/api/docs` has the request and response detail. In the tables below, `public` means no token is needed, `admin` means the admin role is required, and `participant` means the caller must be one of the session's players or an admin. Every other route needs a bearer token.
 
 **App and health**
 
@@ -740,16 +742,16 @@ Swagger at `/api/docs` has the request and response detail. In the tables below,
 | Method & path                                | Access | Purpose                                                                  |
 | -------------------------------------------- | ------ | ------------------------------------------------------------------------ |
 | `POST /game-sessions`                        | auth   | `{ category, mode?, playerTwoId?, wagerAmount? ("10.5"), hasWager? }`. Wagered sessions also return `wager` and, in non-custodial mode, `pendingSignatures` |
-| `GET /game-sessions`                         | auth   | All sessions                                                             |
+| `GET /game-sessions`                         | auth   | Your sessions (all sessions for admins)                                  |
 | `GET /game-sessions/top-scores`              | auth   | `?limit`, completed sessions by score                                    |
 | `GET /game-sessions/my-recent`               | auth   | `?limit`, your recent sessions                                           |
-| `GET /game-sessions/:id`                     | auth   | One session                                                              |
-| `PATCH /game-sessions/:id`                   | auth   | Update                                                                   |
-| `DELETE /game-sessions/:id`                  | auth   | Delete                                                                   |
-| `POST /game-sessions/:id/stake`              | auth   | `{ transaction }`: your wallet-signed stake XDR                          |
-| `PUT /game-sessions/:id/complete-wagered`    | auth   | `{ playerOneScore, playerTwoScore }`: finish and settle (to be made server-authoritative, issue #30) |
+| `GET /game-sessions/:id`                     | participant | One session                                                         |
+| `PATCH /game-sessions/:id`                   | participant | `{ category? }` only; score, status, players and wager fields are rejected |
+| `DELETE /game-sessions/:id`                  | participant | Delete; `409` while the session's wager is not `won`, `refunded` or `failed` |
+| `POST /game-sessions/:id/stake`              | auth   | `{ transaction }`: your wallet-signed stake XDR, verified as your stake for this session |
+| `PUT /game-sessions/:id/complete-wagered`    | admin  | `{ playerOneScore, playerTwoScore }` (non-negative integers): finish and settle, audit-logged (to be computed server-side, issue #30) |
 | `POST /game-sessions/:id/wager/reconcile`    | admin  | Reconcile a wager stuck in `settling` with the ledger                    |
-| `GET /game-sessions/:id/wager`               | auth   | The wager for a session                                                  |
+| `GET /game-sessions/:id/wager`               | participant | The wager for a session                                             |
 | `GET /game-sessions/wagers/my-history`       | auth   | `?limit`, your wagers                                                    |
 | `GET /game-sessions/tokens/balance`          | auth   | `{ stroops, display }` from the active settlement backend                |
 
@@ -759,8 +761,8 @@ Swagger at `/api/docs` has the request and response detail. In the tables below,
 | -------------------------------------- | ------ | --------------------------------------------------------------------------- |
 | `GET /game-history/me`                 | auth   | Paginated. `?page&limit(≤100)&guessType&isCorrect&startDate&endDate&lyricId` |
 | `GET /game-history/me/stats`           | auth   | Totals, accuracy, best streak, average points                               |
-| `GET /game-history/:id`                | auth   | One record                                                                  |
-| `GET /game-history/users/:userId`      | auth   | Another user's history (to be restricted to admins, issue #33)              |
+| `GET /game-history/:id`                | auth   | One of your records (any record, for admins); no user entity is embedded     |
+| `GET /game-history/users/:userId`      | admin  | Another user's history                                                      |
 
 **Admin**: `/admin` (all routes are admin-only)
 
