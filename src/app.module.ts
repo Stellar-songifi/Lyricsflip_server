@@ -13,6 +13,7 @@ import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 import { RolesGuard } from './auth/guards/roles.guard';
 import { RoomsModule } from './rooms/rooms.module';
 import { cacheConfig } from './config/cache.config';
+import { envValidationSchema } from './config/env.validation';
 // import { CommonModule } from './common/common.module';
 import { AdminModule } from './admin/admin.module';
 import { GameModule } from './game/game.module';
@@ -28,6 +29,10 @@ import { APP_GUARD } from '@nestjs/core';
     ConfigModule.forRoot({
       isGlobal: true, // Makes ConfigModule available globally
       envFilePath: '.env',
+      validationSchema: envValidationSchema,
+      validationOptions: {
+        abortEarly: false,
+      },
     }),
     // Drives periodic jobs such as RoomsService.checkAndCloseExpiredRooms.
     ScheduleModule.forRoot(),

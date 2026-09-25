@@ -635,7 +635,7 @@ All configuration comes from environment variables, loaded from `.env` by `@nest
 | `NODE_ENV`       | –                        | `production` hides validation messages and database error details, and drops the mock notification endpoints |
 | `FRONTEND_URL`   | `http://localhost:3000`  | CORS origin                                                           |
 | `LOG_LEVEL`      | `info`                   | Used by the Winston `LoggerService`                                   |
-| `JWT_SECRET`     | **required**             | The app refuses to start without it. Use a long random value          |
+| `JWT_SECRET`     | **required**             | The app refuses to start without it, and it must be at least 32 characters. Use a long random value |
 | `JWT_EXPIRES_IN` | `7d`                     | Any format accepted by `jsonwebtoken`                                 |
 | `INVITATION_TTL_MINUTES` | `30`             | How long player two has to accept a session invitation before it is abandoned and player one refunded |
 
@@ -653,6 +653,7 @@ All configuration comes from environment variables, loaded from `.env` by `@nest
 | `STELLAR_SETTLEMENT_MODE`       | `mock`                          | `mock` or `stellar`                                                                             |
 | `STELLAR_NETWORK`               | `testnet`                       | `public`, `testnet`, `futurenet` or `standalone`                                                |
 | `STELLAR_CUSTODY_MODE`          | `non-custodial`                 | `custodial` is refused on `public`                                                              |
+| `STELLAR_KEY_STORE`             | `env`                           | `env`, `kms` or `vault`. See [Key stores](#key-stores)                                          |
 | `STELLAR_RPC_URL`               | per network                     | Soroban JSON-RPC endpoint                                                                       |
 | `STELLAR_HORIZON_URL`           | per network                     | Reported by `/stellar/info`                                                                     |
 | `STELLAR_NETWORK_PASSPHRASE`    | per network                     | Override for custom standalone networks                                                         |
