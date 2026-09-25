@@ -3,7 +3,6 @@ import { AppModule } from './app.module';
 import { ValidationPipe, Logger } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
-import { ErrorInterceptor } from './common/interceptors/error.interceptor';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -19,7 +18,7 @@ async function bootstrap() {
     }),
   );
 
-  app.useGlobalInterceptors(new LoggingInterceptor(), new ErrorInterceptor());
+  app.useGlobalInterceptors(new LoggingInterceptor());
 
   // Swagger configuration
   const config = new DocumentBuilder()
@@ -38,6 +37,6 @@ async function bootstrap() {
     credentials: true,
   });
   logger.log(`Application is running on: http://localhost:${port}`);
-  logger.log(`Logging and Error interceptors are active`);
+  logger.log(`Logging interceptor and global exception filter are active`);
 }
 bootstrap();

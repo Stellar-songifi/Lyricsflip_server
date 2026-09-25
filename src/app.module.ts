@@ -14,14 +14,14 @@ import { RolesGuard } from './auth/guards/roles.guard';
 import { RoomsModule } from './rooms/rooms.module';
 import { cacheConfig } from './config/cache.config';
 import { envValidationSchema } from './config/env.validation';
-// import { CommonModule } from './common/common.module';
+import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { AdminModule } from './admin/admin.module';
 import { GameModule } from './game/game.module';
 import { TokensModule } from './tokens/tokens.module';
 import { GameHistoryModule } from './game-history/game-history.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { XpModule } from './xp-level/xp.module';
-import { APP_GUARD } from '@nestjs/core';
+import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 
 @Module({
   imports: [
@@ -110,7 +110,6 @@ import { APP_GUARD } from '@nestjs/core';
     AuthModule,
     GameSessionsModule,
     LyricsModule,
-    // CommonModule,
     RoomsModule,
     AdminModule,
     GameModule,
@@ -122,6 +121,7 @@ import { APP_GUARD } from '@nestjs/core';
   controllers: [AppController],
   providers: [
     AppService,
+    { provide: APP_FILTER, useClass: AllExceptionsFilter },
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
   ],
