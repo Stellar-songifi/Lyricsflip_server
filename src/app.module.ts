@@ -4,6 +4,7 @@ import { AppService } from './app.service';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { CacheModule } from '@nestjs/cache-manager';
+import { ScheduleModule } from '@nestjs/schedule';
 import { UsersModule } from './users/users.module';
 import { LyricsModule } from './lyrics/lyrics.module';
 import { AuthModule } from './auth/auth.module';
@@ -18,6 +19,7 @@ import { GameModule } from './game/game.module';
 import { TokensModule } from './tokens/tokens.module';
 import { GameHistoryModule } from './game-history/game-history.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { XpModule } from './xp-level/xp.module';
 import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { AppThrottlerGuard } from './common/throttler/app-throttler.guard';
@@ -31,10 +33,12 @@ import { defaultThrottle } from './common/throttler/throttle.config';
       envFilePath: '.env',
     }),
     ThrottlerModule.forRoot([defaultThrottle()]),
+    // Drives periodic jobs such as RoomsService.checkAndCloseExpiredRooms.
+    ScheduleModule.forRoot(),
     // 2. Configure caching globally
     CacheModule.register({
       isGlobal: true,
-      ttl: cacheConfig.lyricsTTL,
+      ttl: cacheConfig.defaultTtlMs,
       max: cacheConfig.maxItems,
     }),
     // 3. Configure TypeORM using the loaded environment variables
@@ -112,6 +116,7 @@ import { defaultThrottle } from './common/throttler/throttle.config';
     TokensModule,
     GameHistoryModule,
     NotificationsModule,
+    XpModule,
   ],
   controllers: [AppController],
   providers: [
