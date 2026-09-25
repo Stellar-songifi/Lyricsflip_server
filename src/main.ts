@@ -1,5 +1,7 @@
 import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
+import helmet from 'helmet';
+import { helmetOptions } from './common/security/helmet.config';
 import { AppModule } from './app.module';
 import { ValidationPipe, Logger } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
@@ -19,6 +21,9 @@ async function bootstrap() {
       Number.isNaN(hops) ? process.env.TRUST_PROXY : hops,
     );
   }
+
+  app.disable('x-powered-by');
+  app.use(helmet(helmetOptions));
 
   // This is a Global validation pipe
   app.useGlobalPipes(
