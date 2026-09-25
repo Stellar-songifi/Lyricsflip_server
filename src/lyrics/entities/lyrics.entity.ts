@@ -55,8 +55,12 @@ export class Lyrics {
   @Column({ type: "int", default: 0 })
   timesUsed: number
 
-  @ManyToOne(() => User, { eager: true, nullable: false, onDelete: "CASCADE" })
-  createdBy: User
+  // Nullable + SET NULL so deleting or deactivating the admin who seeded a
+  // lyric never deletes the lyric itself (and by extension the game history
+  // and rooms that reference it). See migration
+  // AddSetNullToLyricsCreatedBy for the corresponding schema change.
+  @ManyToOne(() => User, { eager: true, nullable: true, onDelete: "SET NULL" })
+  createdBy: User | null
 
   @CreateDateColumn()
   createdAt: Date

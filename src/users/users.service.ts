@@ -1,23 +1,37 @@
 import {
   Injectable,
   BadRequestException,
+  ConflictException,
   Inject,
   NotFoundException,
 } from '@nestjs/common';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UpdateUserPreferencesDto } from './dto/update-user-preferences.dto';
 import { User } from './entities/user.entity';
 import { Cache } from 'cache-manager';
+import { Wager, WagerStatus } from '../tokens/entities/wager.entity';
+
+// Wager states that have not yet reached a final outcome. A user involved in
+// any wager in one of these states cannot be deleted/deactivated, since doing
+// so could leave a wager unresolvable or an escrowed stake unaccounted for.
+const NON_TERMINAL_WAGER_STATUSES = [
+  WagerStatus.PENDING,
+  WagerStatus.AWAITING_STAKES,
+  WagerStatus.STAKED,
+  WagerStatus.SETTLING,
+];
 
 @Injectable()
 export class UsersService {
   constructor(
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
+    @InjectRepository(Wager)
+    private readonly wagerRepository: Repository<Wager>,
     @Inject(CACHE_MANAGER)
     private cacheManager: Cache,
   ) {}
@@ -49,10 +63,37 @@ export class UsersService {
     return this.userRepository.save(user);
   }
 
+  /**
+   * Soft-deletes a user: deactivates and anonymizes the account instead of
+   * removing the row. A hard delete would cascade into the user's lyric
+   * catalogue, game history and wagers (or fail outright on FK constraints),
+   * so the account is deactivated and its identifying fields scrubbed while
+   * every row that references the user id is preserved.
+   */
   async remove(id: string) {
     const user = await this.findOne(id);
-    await this.userRepository.remove(user);
-    return { message: 'User deleted successfully' };
+
+    const activeWager = await this.wagerRepository.findOne({
+      where: [
+        { playerAId: id, status: In(NON_TERMINAL_WAGER_STATUSES) },
+        { playerBId: id, status: In(NON_TERMINAL_WAGER_STATUSES) },
+      ],
+    });
+    if (activeWager) {
+      throw new ConflictException(
+        'User has an in-progress wager and cannot be deleted until it is resolved',
+      );
+    }
+
+    user.isActive = false;
+    user.email = `deleted-${user.id}@deleted.lyricsflip.local`;
+    user.username = `deleted_${user.id}`;
+    user.name = null;
+    user.stellarAddress = null;
+    user.stellarAddressVerifiedAt = null;
+
+    await this.userRepository.save(user);
+    return { message: 'User deactivated successfully' };
   }
 
   /**
