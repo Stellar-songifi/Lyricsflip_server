@@ -28,7 +28,34 @@ export default tseslint.config(
     rules: {
       '@typescript-eslint/no-explicit-any': 'off',
       '@typescript-eslint/no-floating-promises': 'warn',
-      '@typescript-eslint/no-unsafe-argument': 'warn'
+      '@typescript-eslint/no-unsafe-argument': 'warn',
+    },
+  },
+  {
+    // Nest reads constructor and handler parameter types from the emitted
+    // decorator metadata. A type-only import erases the class, so services
+    // can no longer be injected and DTOs are no longer validated.
+    files: ['src/**/*.controller.ts', 'src/**/*.gateway.ts'],
+    rules: {
+      '@typescript-eslint/consistent-type-imports': [
+        'error',
+        { fixStyle: 'inline-type-imports' },
+      ],
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector:
+            'ImportDeclaration[importKind="type"][source.value=/\\.(service|dto|entity)$/]',
+          message:
+            'Use a value import: `import type` breaks dependency injection and DTO validation.',
+        },
+        {
+          selector:
+            'ImportDeclaration[source.value=/\\.(service|dto|entity)$/] > ImportSpecifier[importKind="type"]',
+          message:
+            'Use a value import: `import type` breaks dependency injection and DTO validation.',
+        },
+      ],
     },
   },
 );
