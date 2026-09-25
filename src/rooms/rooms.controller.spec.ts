@@ -6,6 +6,7 @@ import { RoomUser } from './entities/room-user.entity';
 import { Lyrics } from '../lyrics/entities/lyrics.entity';
 import { Genre } from '../lyrics/entities/lyrics.entity';
 import { User } from '../users/entities/user.entity';
+import { GuessType } from '../game/dto/guess.dto';
 
 describe('RoomsController', () => {
   let controller: RoomsController;
@@ -71,11 +72,13 @@ describe('RoomsController', () => {
             join: jest.fn().mockResolvedValue(mockRoomUser),
             getRoomStatus: jest.fn().mockResolvedValue(mockRoom),
             submitGuess: jest.fn().mockResolvedValue({
-              ...mockRoomUser,
-              hasGuessed: true,
-              score: 0.8,
+              roomId: mockRoom.id,
+              guessType: GuessType.ARTIST,
               guess: 'Test guess',
-              guessedAt: new Date(),
+              isCorrect: false,
+              score: 0,
+              correctAnswer: 'Test Artist',
+              lyric: { id: 1, lyricSnippet: 'snippet' },
             }),
           },
         },
@@ -109,11 +112,11 @@ describe('RoomsController', () => {
     expect(service.getRoomStatus).toHaveBeenCalledWith(mockRoom.id, '1');
   });
 
-  it('should submit a guess and return updated room user', async () => {
-    const guessDto = { guess: 'Test guess' };
+  it('should submit a guess and return the scored result', async () => {
+    const guessDto = { guessType: GuessType.ARTIST, guess: 'Test guess' };
     const result = await controller.submitGuess(mockRoom.id, '1', guessDto);
-    expect(result.hasGuessed).toBe(true);
-    expect(result.score).toBe(0.8);
+    expect(result.isCorrect).toBe(false);
+    expect(result.score).toBe(0);
     expect(service.submitGuess).toHaveBeenCalledWith(mockRoom.id, '1', guessDto);
   });
 });
