@@ -219,6 +219,33 @@ fn the_admin_can_rotate_the_resolver() {
 }
 
 #[test]
+fn pot_and_instance_survive_past_default_ttl() {
+    use soroban_sdk::testutils::Ledger;
+    let s = setup(1_000);
+    let session = BytesN::<16>::random(&s.env);
+    s.client
+        .open_pot(&session, &s.player_a, &s.player_b, &100);
+
+    // Advance beyond the extension window's midpoint, then touch the pot.
+    let seq = s.env.ledger().sequence();
+    s.env.ledger().set_sequence_number(seq + TTL_THRESHOLD + 1);
+    assert_eq!(s.client.get_pot(&session).stake, 100);
+
+    // The read refreshed the TTL, so another jump of the same size is fine.
+    let seq = s.env.ledger().sequence();
+    s.env.ledger().set_sequence_number(seq + TTL_THRESHOLD + 1);
+    assert_eq!(s.client.get_pot(&session).stake, 100);
+    s.client.get_config();
+
+    s.env.as_contract(&s.contract_id, || {
+        let ttl = s
+            .env
+            .storage()
+            .persistent()
+            .get_ttl(&DataKey::Pot(session.clone()));
+        assert!(ttl >= TTL_THRESHOLD);
+    });
+}
 fn open_pot_emits_an_open_event() {
     let s = setup(1_000);
     let id = session(&s.env);

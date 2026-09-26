@@ -21,6 +21,12 @@ import {
 } from '../stellar.constants';
 import type { StellarConfig } from '../stellar.config';
 
+/** Reads a non-negative integer from the environment, with a default. */
+function envInt(name: string, fallback: number): number {
+  const parsed = Number.parseInt(process.env[name] ?? '', 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
 /** Outcome of submitting a transaction to the network. */
 export interface SubmitResult {
   /** Transaction hash — the canonical on-chain identifier, always present. */
@@ -94,9 +100,10 @@ export class StellarRpcService {
   ): Promise<Transaction> {
     const source = await this.loadAccount(sourcePublicKey);
     const contract = new Contract(contractId);
+    const fee = await this.resolveInclusionFee();
 
     const transaction = new TransactionBuilder(source, {
-      fee: DEFAULT_MAX_FEE,
+      fee,
       networkPassphrase: this.config.networkPassphrase,
     })
       .addOperation(contract.call(method, ...args))
@@ -110,6 +117,62 @@ export class StellarRpcService {
         `Simulation of ${method} on ${contractId} failed: ${(error as Error).message}`,
       );
     }
+  }
+
+  /** Fee ceiling in stroops, from `STELLAR_MAX_FEE` (default 0.1 XLM). */
+  get maxFee(): bigint {
+    const raw = process.env.STELLAR_MAX_FEE;
+    return raw && /^\d+$/.test(raw) && BigInt(raw) > 0n
+      ? BigInt(raw)
+      : BigInt(DEFAULT_MAX_FEE);
+  }
+
+  /**
+   * Inclusion fee per operation: the p90 of recent network fees, capped at
+   * {@link maxFee}. Falls back to the cap if fee stats are unavailable.
+   */
+  async resolveInclusionFee(): Promise<string> {
+    const ceiling = this.maxFee;
+    try {
+      const stats = await this.server.getFeeStats();
+      const observed = BigInt(stats.sorobanInclusionFee.p90);
+      if (observed <= 0n) return ceiling.toString();
+      return (observed < ceiling ? observed : ceiling).toString();
+    } catch {
+      return ceiling.toString();
+    }
+  }
+
+  /**
+   * Wraps a signed transaction in a fee bump with a higher fee, for a resolver
+   * transaction stuck in the queue. The fee is capped at {@link maxFee} per
+   * operation (plus the inner resource fee is already in the inner fee).
+   */
+  async feeBump(
+    inner: Transaction,
+    feeSource: Keypair,
+    newBaseFee: string,
+  ): Promise<SubmitResult> {
+    const capped =
+      BigInt(newBaseFee) > this.maxFee ? this.maxFee : BigInt(newBaseFee);
+    const bump = TransactionBuilder.buildFeeBumpTransaction(
+      feeSource,
+      capped.toString(),
+      inner,
+      this.config.networkPassphrase,
+    );
+    bump.sign(feeSource);
+    this.logger.log(`Fee-bumping ${this.hashHex(inner)} to ${capped} stroops`);
+    const sent = await this.server.sendTransaction(bump);
+    if (sent.status === 'ERROR') {
+      return {
+        hash: sent.hash,
+        confirmed: false,
+        error: `Network rejected the fee bump: ${JSON.stringify(sent.errorResult ?? {})}`,
+      };
+    }
+    // The inner hash is what the wager records, and it is what confirms.
+    return this.waitForConfirmation(this.hashHex(inner));
   }
 
   /**
@@ -194,15 +257,34 @@ export class StellarRpcService {
   async submit(transaction: Transaction): Promise<SubmitResult> {
     const hash = this.hashHex(transaction);
 
+    const maxRetries = envInt('STELLAR_TRY_AGAIN_MAX_ATTEMPTS', 5);
+    const baseDelayMs = envInt('STELLAR_TRY_AGAIN_BASE_DELAY_MS', 500);
+
     let sent: rpc.Api.SendTransactionResponse;
-    try {
-      sent = await this.server.sendTransaction(transaction);
-    } catch (error) {
-      return {
-        hash,
-        confirmed: false,
-        error: `Submission failed: ${(error as Error).message}`,
-      };
+    for (let attempt = 0; ; attempt++) {
+      try {
+        sent = await this.server.sendTransaction(transaction);
+      } catch (error) {
+        return {
+          hash,
+          confirmed: false,
+          error: `Submission failed: ${(error as Error).message}`,
+        };
+      }
+
+      // TRY_AGAIN_LATER means the queue is full and the transaction was NOT
+      // accepted, so polling for it is pointless: back off and resubmit.
+      if (sent.status !== 'TRY_AGAIN_LATER') break;
+
+      if (attempt >= maxRetries) {
+        return {
+          hash,
+          confirmed: false,
+          error: `Network queue still full after ${attempt + 1} submissions (TRY_AGAIN_LATER)`,
+        };
+      }
+
+      await this.sleep(baseDelayMs * 2 ** attempt);
     }
 
     if (sent.status === 'ERROR' || sent.status === 'DUPLICATE') {
@@ -230,11 +312,17 @@ export class StellarRpcService {
   async waitForConfirmation(hash: string): Promise<SubmitResult> {
     try {
       const result = await this.server.pollTransaction(hash, {
-        attempts: 15,
-        sleepStrategy: rpc.LinearSleepStrategy,
+        attempts: envInt('STELLAR_POLL_ATTEMPTS', 15),
+        sleepStrategy:
+          process.env.STELLAR_POLL_SLEEP_STRATEGY === 'basic'
+            ? rpc.BasicSleepStrategy
+            : rpc.LinearSleepStrategy,
       });
 
       if (result.status === rpc.Api.GetTransactionStatus.SUCCESS) {
+        this.logger.log(
+          `Transaction ${hash} settled in ledger ${result.ledger}; fee charged ${this.feeCharged(result)} stroops`,
+        );
         return {
           hash,
           confirmed: true,
@@ -302,6 +390,20 @@ export class StellarRpcService {
         error: `Lookup failed: ${(error as Error).message}`,
       };
     }
+  }
+
+  private feeCharged(result: unknown): string {
+    try {
+      const r = (result as { resultXdr?: xdr.TransactionResult }).resultXdr;
+      return r ? r.feeCharged().toString() : 'unknown';
+    } catch {
+      return 'unknown';
+    }
+  }
+
+  /** Overridable delay, so tests need not wait in real time. */
+  protected sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   /**

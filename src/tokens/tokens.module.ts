@@ -9,6 +9,7 @@ import { MockTokenService } from './services/mock-token.service';
 import { StellarTokenService } from './services/stellar-token.service';
 import { WagerService } from './services/wager.service';
 import { WagerRefundJob } from './services/wager-refund.job';
+import { WagerReconcileJob } from './services/wager-reconcile.job';
 import { TOKEN_SERVICE } from './interfaces/token.interface';
 import { StellarModule } from '../stellar/stellar.module';
 import { EscrowContractService } from '../stellar/services/escrow-contract.service';
@@ -66,6 +67,7 @@ import type { StellarConfig } from '../stellar/stellar.config';
     },
     WagerService,
     WagerRefundJob,
+    WagerReconcileJob,
   ],
   exports: [TOKEN_SERVICE, WagerService],
 })
