@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { In, Not, Repository } from 'typeorm';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UpdateUserPreferencesDto } from './dto/update-user-preferences.dto';
@@ -24,13 +24,13 @@ const NON_TERMINAL_WAGER_STATUSES = [
   WagerStatus.STAKED,
   WagerStatus.SETTLING,
 ];
-import { Not, Repository } from 'typeorm';
 import { AdminUpdateUserDto, UpdateProfileDto } from './dto/update-user.dto';
-import { UpdateUserPreferencesDto } from './dto/update-user-preferences.dto';
-import { User } from './entities/user.entity';
-import { Cache } from 'cache-manager';
 import { MAX_PAGE_SIZE } from '../common/dto/pagination-query.dto';
 import { cacheConfig } from '../config/cache.config';
+
+// Usernames must be 3-30 chars, start with a letter, and contain only
+// letters, numbers and underscores (issue #129).
+const USERNAME_PATTERN = /^[a-zA-Z][a-zA-Z0-9_]{2,29}$/;
 
 @Injectable()
 export class UsersService {
@@ -59,6 +59,76 @@ export class UsersService {
       throw new NotFoundException(`User with ID ${id} not found`);
     }
     return user;
+  }
+
+  /**
+   * Returns the richer self-service profile for the authenticated user:
+   * the user record, its level title, the linked wallet, a balance summary
+   * and gameplay stats.
+   */
+  async getProfile(userId: string) {
+    const user = await this.findOne(userId);
+
+    const balance = user.balance ?? 0;
+    const stats = {
+      xp: user.xp ?? 0,
+      level: user.level ?? 1,
+      totalWins: user.totalWins ?? 0,
+      totalLosses: user.totalLosses ?? 0,
+      totalWagers: user.totalWagers ?? 0,
+    };
+
+    return {
+      ...user,
+      levelTitle: this.getLevelTitle(stats.level),
+      wallet: user.stellarAddress
+        ? {
+            address: user.stellarAddress,
+            verified: Boolean(user.stellarAddressVerifiedAt),
+          }
+        : null,
+      balance: {
+        amount: balance,
+        currency: 'XLM',
+      },
+      stats,
+    };
+  }
+
+  /**
+   * Self-service profile update for the authenticated user. Validates the
+   * username format and enforces uniqueness before persisting.
+   */
+  async updateProfile(userId: string, dto: UpdateProfileDto) {
+    const user = await this.findOne(userId);
+
+    if (dto.username && dto.username !== user.username) {
+      if (!USERNAME_PATTERN.test(dto.username)) {
+        throw new BadRequestException(
+          'Username must be 3-30 characters, start with a letter, and contain only letters, numbers and underscores',
+        );
+      }
+      await this.assertUnused(
+        { username: dto.username },
+        userId,
+        'Username already exists',
+      );
+    }
+
+    Object.assign(user, dto);
+    await this.userRepository.save(user);
+    await this.cacheManager.del(`user:${userId}`);
+
+    return this.getProfile(userId);
+  }
+
+  private getLevelTitle(level: number): string {
+    if (level >= 50) return 'Legend';
+    if (level >= 30) return 'Master';
+    if (level >= 20) return 'Expert';
+    if (level >= 10) return 'Veteran';
+    if (level >= 5) return 'Apprentice';
+    return 'Rookie';
   }
 
   async update(id: string, updateUserDto: UpdateProfileDto | AdminUpdateUserDto) {
