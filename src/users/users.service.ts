@@ -28,6 +28,19 @@ import { AdminUpdateUserDto, UpdateProfileDto } from './dto/update-user.dto';
 import { MAX_PAGE_SIZE } from '../common/dto/pagination-query.dto';
 import { cacheConfig } from '../config/cache.config';
 
+// Fields that are safe to expose on a public player profile. Everything else
+// on the User entity (email, wallet address, preferences, flags, timestamps)
+// is considered private and must never leak through the public endpoint.
+const PUBLIC_PROFILE_FIELDS = [
+  'username',
+  'level',
+  'levelTitle',
+  'xp',
+  'achievements',
+  'wins',
+  'losses',
+] as const;
+
 @Injectable()
 export class UsersService {
   constructor(
@@ -55,6 +68,35 @@ export class UsersService {
       throw new NotFoundException(`User with ID ${id} not found`);
     }
     return user;
+  }
+
+  /**
+   * Returns the deliberately public view of a player profile, looked up by
+   * username. Only fields listed in PUBLIC_PROFILE_FIELDS are exposed; the
+   * full entity (email, wallet, preferences, etc.) is never returned here.
+   */
+  async findPublicProfile(username: string) {
+    const user = await this.userRepository.findOne({
+      where: { username },
+      select: [...PUBLIC_PROFILE_FIELDS],
+    });
+    if (!user) {
+      throw new NotFoundException(`User with username ${username} not found`);
+    }
+
+    const wins = user.wins ?? 0;
+    const losses = user.losses ?? 0;
+    const totalGames = wins + losses;
+    const winRate = totalGames > 0 ? wins / totalGames : 0;
+
+    return {
+      username: user.username,
+      level: user.level,
+      levelTitle: user.levelTitle,
+      xp: user.xp,
+      achievements: user.achievements ?? [],
+      winRate,
+    };
   }
 
   async update(id: string, updateUserDto: UpdateProfileDto | AdminUpdateUserDto) {
@@ -254,19 +296,12 @@ export class UsersService {
         ...user,
         rank: offset + idx + 1,
       })),
-      meta: {
-        total,
-        limit,
-        offset,
-        sort,
-        order,
-      },
+      total,
+      limit,
+      offset,
     };
-    await this.cacheManager.set(
-      cacheKey,
-      result,
-      cacheConfig.leaderboardTtlMs,
-    );
+
+    await this.cacheManager.set(cacheKey, result, cacheConfig.ttl * 1000);
     return result;
   }
 }

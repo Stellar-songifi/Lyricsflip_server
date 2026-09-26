@@ -159,11 +159,29 @@ export class UsersController {
     );
   }
 
-  @Get(':id')
-  @ApiOperation({ summary: 'Get a user’s public profile by ID' })
+  /**
+   * GET /users/:username/public - Safe public profile for opponents and
+   * leaderboard entries. Exposes only deliberately public fields.
+   * Declared before `@Get(':id')` so the literal `public` segment is not
+   * swallowed by the wildcard route.
+   */
+  @Get(':username/public')
+  @ApiOperation({ summary: 'Get a user’s public profile by username' })
   @ApiResponse({ status: 200, description: 'Public user data.', type: PublicUserDto })
-  async findOne(@Param('id', ParseUUIDPipe) id: string): Promise<PublicUserDto> {
-    return PublicUserDto.from(await this.usersService.findOne(id));
+  @ApiResponse({ status: 404, description: 'User not found.' })
+  async findPublicByUsername(
+    @Param('username') username: string,
+  ): Promise<PublicUserDto> {
+    return PublicUserDto.from(await this.usersService.findByUsername(username));
+  }
+
+  @Get(':id')
+  @Roles(Role.Admin)
+  @ApiOperation({ summary: 'Get a user by ID (admin only)' })
+  @ApiResponse({ status: 200, description: 'Full user data.' })
+  @ApiResponse({ status: 403, description: 'Not an admin.' })
+  async findOne(@Param('id', ParseUUIDPipe) id: string): Promise<User> {
+    return this.usersService.findOne(id);
   }
 
   @Patch(':id')
