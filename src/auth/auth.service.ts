@@ -8,7 +8,6 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { IsNull, Repository } from 'typeorm';
 import { JwtService } from '@nestjs/jwt';
-import { Repository } from 'typeorm';
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
 import { SignupDto } from './dto/signup.dto';
@@ -37,16 +36,6 @@ export class AuthService {
     @InjectRepository(RefreshToken)
     private refreshTokenRepository: Repository<RefreshToken>,
     private jwtService: JwtService,
-  ) {}
-
-  async signup(
-    signupDto: SignupDto,
-  ): Promise<TokenPair & { user: Partial<User> }> {
-    // Normalize again here (not just in the DTO) so any caller that bypasses
-    // the DTO's @Transform still gets consistent, case-insensitive identity.
-    const email = signupDto.email.trim().toLowerCase();
-    const username = signupDto.username.trim();
-    const { password } = signupDto;
     private authTokenService: AuthTokenService,
   ) {}
 
@@ -90,25 +79,6 @@ export class AuthService {
       throw new BadRequestException('Failed to create user');
     }
 
-    const tokens = await this.issueTokenPair(user);
-
-    // Return user without password
-    const { passwordHash: _, ...userWithoutPassword } = user;
-
-    return {
-      ...tokens,
-      user: userWithoutPassword,
-    };
-  }
-
-  async login(loginDto: LoginDto): Promise<TokenPair & { user: Partial<User> }> {
-    const email = loginDto.email.trim().toLowerCase();
-    const { password } = loginDto;
-
-    // Find user by email (case-insensitive)
-    const user = await this.userRepository
-      .createQueryBuilder('user')
-      .where('LOWER(user.email) = LOWER(:email)', { email })
     return this.authTokenService.issueToken(user);
   }
 
@@ -149,15 +119,7 @@ export class AuthService {
     user.lastLoginAt = new Date();
     await this.userRepository.save(user);
 
-    const tokens = await this.issueTokenPair(user);
-
-    // Return user without password
-    const { passwordHash: _, ...userWithoutPassword } = user;
-
-    return {
-      ...tokens,
-      user: userWithoutPassword,
-    };
+    return this.authTokenService.issueToken(user);
   }
 
   /**
@@ -203,15 +165,19 @@ export class AuthService {
   }
 
   /**
-   * Changes the user's password, bumps tokenVersion (invalidating every
-   * outstanding access token immediately) and revokes all of the user's
-   * refresh tokens.
+   * Changes the user's password, bumping tokenVersion (invalidating every
+   * outstanding access token immediately) and revoking all of the user's
+   * refresh tokens so other sessions are signed out.
    */
   async changePassword(
     userId: string,
     dto: ChangePasswordDto,
   ): Promise<void> {
-    const user = await this.userRepository.findOne({ where: { id: userId } });
+    const user = await this.userRepository
+      .createQueryBuilder('user')
+      .addSelect('user.passwordHash')
+      .where('user.id = :userId', { userId })
+      .getOne();
     if (!user) {
       throw new UnauthorizedException('User not found');
     }
@@ -258,44 +224,20 @@ export class AuthService {
     );
 
     return { accessToken, refreshToken: rawRefreshToken };
-    return this.authTokenService.issueToken(user);
   }
 
-  /**
-   * Refresh tokens are high-entropy random values (not passwords), so a fast
-   * deterministic hash is used instead of bcrypt: it needs to be looked up
-   * by equality, and the token cannot be brute-forced from its hash any more
-   * easily than the raw 320-bit value could be guessed.
-   */
   private hashRefreshToken(token: string): string {
     return crypto.createHash('sha256').update(token).digest('hex');
   }
 
-  // Hash a plaintext password using bcrypt
-
   private async hashPassword(password: string): Promise<string> {
-    const saltRounds = 12;
-    try {
-      return await bcrypt.hash(password, saltRounds);
-    } catch (err) {
-      throw new Error('Hashing failed');
-    }
+    return bcrypt.hash(password, 10);
   }
-
-  // Validate a plaintext password against a hash
 
   private async validatePassword(
-    plain: string,
-    hashed: string,
+    password: string,
+    passwordHash: string,
   ): Promise<boolean> {
-    try {
-      return await bcrypt.compare(plain, hashed);
-    } catch (err) {
-      return false;
-    }
-  }
-
-  async validateUser(id: string): Promise<User | null> {
-    return this.userRepository.findOne({ where: { id } });
+    return bcrypt.compare(password, passwordHash);
   }
 }

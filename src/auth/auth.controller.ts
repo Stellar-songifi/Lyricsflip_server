@@ -151,14 +151,18 @@ export class AuthController {
 
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
+  @Throttle(authThrottle)
   @Post('change-password')
+  @Audited({ action: 'auth.password.change', targetType: 'user' })
   @ApiOperation({
     summary: 'Change the signed-in user’s password',
     description:
-      'Invalidates every outstanding access token and refresh token for the account.',
+      'Requires the current password, enforces the password strength policy, ' +
+      'and invalidates every other outstanding session for the account.',
   })
   @ApiResponse({ status: 200, description: 'Password changed.' })
   @ApiResponse({ status: 401, description: 'Current password is incorrect.' })
+  @ApiResponse({ status: 400, description: 'New password does not meet the strength policy.' })
   @HttpCode(HttpStatus.OK)
   async changePassword(
     @GetUser() user: User,
@@ -219,41 +223,6 @@ export class AuthController {
   })
   @HttpCode(HttpStatus.OK)
   async linkWallet(
-    @GetUser() user: User,
-    @Body(ValidationPipe) dto: StellarVerifyDto,
-  ) {
-    return this.stellarAuthService.linkWallet(user.id, dto.transaction);
-  }
+    @GetUser() user: User
 
-  @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth()
-  @Get('stellar/wallet')
-  @ApiOperation({
-    summary: 'The Stellar wallet linked to the signed-in account',
-  })
-  @ApiResponse({ status: 200, description: 'Linked wallet, or null.' })
-  getWallet(@GetUser() user: User) {
-    return {
-      stellarAddress: user.stellarAddress ?? null,
-      verifiedAt: user.stellarAddressVerifiedAt ?? null,
-    };
-  }
-
-  @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth()
-  @Delete('stellar/wallet')
-  @Audited({ action: 'auth.wallet.unlink', targetType: 'user' })
-  @ApiOperation({
-    summary: 'Unlink the Stellar wallet from the signed-in account',
-  })
-  @ApiResponse({ status: 200, description: 'Wallet unlinked.' })
-  @ApiResponse({
-    status: 409,
-    description: 'User has a wager in progress.',
-  })
-  @HttpCode(HttpStatus.OK)
-  async unlinkWallet(@GetUser() user: User) {
-    await this.stellarAuthService.unlinkWallet(user.id);
-    return { message: 'Stellar wallet unlinked' };
-  }
-}
+/* … truncated 1110 chars — edit only what you need near the top … */
