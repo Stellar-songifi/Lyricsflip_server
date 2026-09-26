@@ -28,11 +28,21 @@ export class Lyrics {
   @Column()
   artist: string
 
+  // Alternative spellings for the artist (e.g. "JAY Z" for "Jay-Z").
+  // Guesses are matched against the canonical value and every alias.
+  @Column("text", { array: true, default: () => "'{}'" })
+  artistAliases: string[]
+
   @Column("text")
   lyricSnippet: string
 
   @Column({ length: 200 })
   songTitle: string
+
+  // Alternative spellings for the title (e.g. "WizKid" for "Wizkid").
+  // Guesses are matched against the canonical value and every alias.
+  @Column("text", { array: true, default: () => "'{}'" })
+  titleAliases: string[]
 
   @Column({ length: 50, nullable: true })
   @Index()
