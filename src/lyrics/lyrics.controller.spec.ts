@@ -1,6 +1,9 @@
 import { Reflector } from '@nestjs/core';
+import { Test } from '@nestjs/testing';
 import { LyricsController } from './lyrics.controller';
-import type { LyricsService } from './lyrics.service';
+import { LyricsService } from './lyrics.service';
+import { CreateLyricsDto } from './dto/create-lyrics.dto';
+import { UpdateLyricsDto } from './dto/update-lyrics.dto';
 import { Genre, Lyrics } from './entities/lyrics.entity';
 import type { User } from '../users/entities/user.entity';
 import { Role } from '../auth/roles/role.enum';
@@ -98,5 +101,37 @@ describe('LyricsController', () => {
       content: 'Full lyric content',
     });
     expect(result).not.toHaveProperty('createdBy');
+  });
+
+  describe('dependency injection', () => {
+    it('compiles in a testing module and receives LyricsService', async () => {
+      const lyricsService = {};
+      const moduleRef = await Test.createTestingModule({
+        controllers: [LyricsController],
+        providers: [{ provide: LyricsService, useValue: lyricsService }],
+      }).compile();
+
+      const controller = moduleRef.get(LyricsController);
+      expect(controller).toBeInstanceOf(LyricsController);
+      expect(controller['lyricsService']).toBe(lyricsService);
+    });
+
+    it('emits class references, not Function, in decorator metadata', () => {
+      const paramTypes = (method?: string) =>
+        (method
+          ? Reflect.getMetadata(
+              'design:paramtypes',
+              LyricsController.prototype,
+              method,
+            )
+          : Reflect.getMetadata(
+              'design:paramtypes',
+              LyricsController,
+            )) as unknown[];
+
+      expect(paramTypes()).toEqual([LyricsService]);
+      expect(paramTypes('create')[0]).toBe(CreateLyricsDto);
+      expect(paramTypes('update')[1]).toBe(UpdateLyricsDto);
+    });
   });
 });
