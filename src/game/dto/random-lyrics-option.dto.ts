@@ -4,6 +4,7 @@ import {
   IsArray,
   IsNumber,
   IsEnum,
+  IsUUID,
 } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
 import { Genre, toGenre } from 'src/lyrics/entities/genre.enum';
@@ -31,4 +32,9 @@ export class RandomLyricOptionsDto {
   @IsNumber({}, { each: true })
   @Type(() => Number)
   excludeIds?: number[];
+
+  /** Ties the round to a multiplayer session the caller is playing in. */
+  @IsOptional()
+  @IsUUID()
+  sessionId?: string;
 }

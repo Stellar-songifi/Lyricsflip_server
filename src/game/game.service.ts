@@ -6,15 +6,31 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Lyrics } from 'src/lyrics/entities/lyrics.entity';
-import { Repository } from 'typeorm';
 import { matchGuess, normalizeAnswer } from './guess-matcher';
 import { Genre, isGenre, toGenre } from 'src/lyrics/entities/genre.enum';
-import { Repository, SelectQueryBuilder } from 'typeorm';
-import { IsNull, MoreThanOrEqual, Repository } from 'typeorm';
+import {
+  In,
+  IsNull,
+  MoreThanOrEqual,
+  Repository,
+  SelectQueryBuilder,
+} from 'typeorm';
 import { GameRound } from './entities/game-round.entity';
+import {
+  GameSession,
+  GameSessionStatus,
+} from 'src/game-sessions/entities/game-session.entity';
 import { GAME_CONSTANTS } from './constants/game.constants';
+import { maxRoundPoints, scoreRound } from './round-scoring.util';
+import {
+  RealtimeEvent,
+  RoundEndedPayload,
+  RoundStartedPayload,
+} from 'src/realtime/realtime.events';
 
 export interface RandomLyricOptions {
   category?: string;
@@ -46,6 +62,22 @@ export interface GuessResult {
   correctAnswer: string;
   explanation?: string;
   points?: number;
+  /** Part of `points` that came from answering quickly. */
+  speedBonus?: number;
+  /** The answer window had closed, so the guess earned nothing. */
+  timedOut?: boolean;
+  hintsUsed?: number;
+}
+
+/** Everything revealed so far by the hints taken on a round. */
+export interface RoundHints {
+  level: number;
+  hintsRemaining: number;
+  /** The most this round can now score. */
+  maxPoints: number;
+  decade?: string | null;
+  wordCount?: { songTitle: number; artist: number };
+  firstLetter?: { songTitle: string; artist: string };
 }
 
 export interface GameLyric {
@@ -58,6 +90,12 @@ export interface GameLyric {
   genre?: string;
 }
 
+/** Session states in which a player is still in a game. */
+const ACTIVE_SESSION_STATUSES = [
+  GameSessionStatus.WAITING_FOR_PLAYER,
+  GameSessionStatus.IN_PROGRESS,
+];
+
 @Injectable()
 export class GameLogicService {
   private readonly logger = new Logger(GameLogicService.name);
@@ -67,25 +105,69 @@ export class GameLogicService {
     private lyricsRepository: Repository<Lyrics>,
     @InjectRepository(GameRound)
     private roundRepository: Repository<GameRound>,
+    @InjectRepository(GameSession)
+    private sessionRepository: Repository<GameSession>,
+    private readonly configService: ConfigService,
+    private readonly events: EventEmitter2,
   ) {}
+
+  /** Seconds a player has to answer, configurable per deployment. */
+  private get answerWindowSeconds(): number {
+    return (
+      this.configService.get<number>('ROUND_ANSWER_WINDOW_SECONDS') ??
+      GAME_CONSTANTS.LIMITS.ROUND_ANSWER_WINDOW_SECONDS
+    );
+  }
 
   /**
    * Records that a lyric has been served to a player, opening the one round
    * that player can guess it in.
+   *
+   * `issuedAt` is set here, from the server clock, and is what the answer
+   * window is measured against when the guess arrives.
    */
-  async issueRound(userId: string, lyricId: number): Promise<GameRound> {
+  async issueRound(
+    userId: string,
+    lyricId: number,
+    sessionId?: string,
+  ): Promise<GameRound> {
+    if (sessionId) {
+      await this.assertActiveParticipant(userId, sessionId);
+    }
+
+    const issuedAt = new Date();
     const expiresAt = new Date(
-      Date.now() + GAME_CONSTANTS.LIMITS.ROUND_TIMEOUT_SECONDS * 1000,
+      issuedAt.getTime() + GAME_CONSTANTS.LIMITS.ROUND_TIMEOUT_SECONDS * 1000,
     );
 
-    return this.roundRepository.save(
+    const round = await this.roundRepository.save(
       this.roundRepository.create({
         userId,
         lyricId,
+        sessionId: sessionId ?? null,
+        issuedAt,
         expiresAt,
+        answerWindowSeconds: this.answerWindowSeconds,
+        hintsUsed: 0,
         closedAt: null,
       }),
     );
+
+    if (sessionId) {
+      await this.touchSession(sessionId);
+    }
+
+    const payload: RoundStartedPayload = {
+      roundId: round.id,
+      sessionId: round.sessionId ?? null,
+      userId,
+      issuedAt: round.issuedAt,
+      expiresAt: round.expiresAt,
+      answerWindowSeconds: round.answerWindowSeconds,
+    };
+    this.events.emit(RealtimeEvent.ROUND_STARTED, payload);
+
+    return round;
   }
 
   /**
@@ -94,6 +176,9 @@ export class GameLogicService {
    * The round is closed with a conditional update before the answer is looked
    * at, so two concurrent guesses cannot both be scored and the answer the
    * first one reveals cannot be replayed.
+   *
+   * A guess that arrives after the answer window is still evaluated, but earns
+   * no points, so looking the answer up elsewhere gains nothing.
    */
   async guessRound(userId: string, dto: RoundGuessDto): Promise<GuessResult> {
     const round = await this.roundRepository.findOne({
@@ -117,6 +202,12 @@ export class GameLogicService {
         { id: round.id, closedAt: IsNull() },
         { closedAt: now },
       );
+      this.emitRoundEnded(round, {
+        isCorrect: false,
+        points: 0,
+        speedBonus: 0,
+        timedOut: true,
+      });
       throw new GoneException('This round has expired');
     }
 
@@ -129,11 +220,188 @@ export class GameLogicService {
       throw new ConflictException('This round has already been guessed');
     }
 
-    return this.checkGuess({
+    const result = await this.checkGuess({
       lyricId: round.lyricId,
       guessType: dto.guessType,
       guessValue: dto.guessValue,
     });
+
+    const score = scoreRound({
+      basePoints: result.points ?? 0,
+      isCorrect: result.isCorrect,
+      elapsedMs: now.getTime() - round.issuedAt.getTime(),
+      windowMs: round.answerWindowSeconds * 1000,
+      hintsUsed: round.hintsUsed,
+    });
+
+    const scored: GuessResult = {
+      ...result,
+      points: score.points,
+      speedBonus: score.speedBonus,
+      timedOut: score.timedOut,
+      hintsUsed: round.hintsUsed,
+    };
+
+    if (score.timedOut) {
+      scored.explanation = `Too late, no points awarded. ${result.explanation}`;
+    }
+
+    this.emitRoundEnded(round, {
+      isCorrect: result.isCorrect && !score.timedOut,
+      points: score.points,
+      speedBonus: score.speedBonus,
+      timedOut: score.timedOut,
+    });
+
+    if (round.sessionId) {
+      await this.touchSession(round.sessionId);
+    }
+
+    return scored;
+  }
+
+  /**
+   * Reveals the next hint for an open round: the decade, then the word count,
+   * then the first letter. Each hint lowers the points the round can score, so
+   * nothing is revealed for free.
+   *
+   * Hints are refused for anyone in an active wagered session, since one
+   * player could otherwise buy an edge the other cannot.
+   */
+  async useHint(userId: string, roundId: string): Promise<RoundHints> {
+    const round = await this.roundRepository.findOne({
+      where: { id: roundId, userId },
+    });
+
+    if (!round) {
+      throw new NotFoundException('Round not found');
+    }
+
+    if (round.closedAt) {
+      throw new ConflictException('This round has already been guessed');
+    }
+
+    if (round.expiresAt.getTime() <= Date.now()) {
+      throw new GoneException('This round has expired');
+    }
+
+    await this.assertHintsAllowed(userId);
+
+    if (round.hintsUsed >= GAME_CONSTANTS.LIMITS.MAX_HINTS) {
+      throw new ConflictException('No more hints are available for this round');
+    }
+
+    // Conditional on the count read above, so two simultaneous requests cannot
+    // both take the same hint level (or skip past one).
+    const taken = await this.roundRepository.update(
+      { id: round.id, closedAt: IsNull(), hintsUsed: round.hintsUsed },
+      { hintsUsed: round.hintsUsed + 1 },
+    );
+
+    if (!taken.affected) {
+      throw new ConflictException('This round changed, try the hint again');
+    }
+
+    const lyric = await this.lyricsRepository.findOne({
+      where: { id: round.lyricId, isActive: true },
+    });
+
+    if (!lyric) {
+      throw new NotFoundException('Round not found');
+    }
+
+    return this.buildHints(lyric, round.hintsUsed + 1);
+  }
+
+  private buildHints(lyric: Lyrics, level: number): RoundHints {
+    const words = (text: string) =>
+      normalizeAnswer(text).split(' ').filter(Boolean).length;
+    const initial = (text: string) =>
+      normalizeAnswer(text).charAt(0).toUpperCase();
+
+    const hints: RoundHints = {
+      level,
+      hintsRemaining: GAME_CONSTANTS.LIMITS.MAX_HINTS - level,
+      maxPoints: maxRoundPoints(level),
+      decade: lyric.decade ?? null,
+    };
+
+    if (level >= 2) {
+      hints.wordCount = {
+        songTitle: words(lyric.songTitle),
+        artist: words(lyric.artist),
+      };
+    }
+
+    if (level >= 3) {
+      hints.firstLetter = {
+        songTitle: initial(lyric.songTitle),
+        artist: initial(lyric.artist),
+      };
+    }
+
+    return hints;
+  }
+
+  private async assertHintsAllowed(userId: string): Promise<void> {
+    const wagered = await this.sessionRepository.count({
+      where: [
+        {
+          hasWager: true,
+          status: In(ACTIVE_SESSION_STATUSES),
+          player: { id: userId },
+        },
+        {
+          hasWager: true,
+          status: In(ACTIVE_SESSION_STATUSES),
+          playerTwoId: userId,
+        },
+      ],
+    });
+
+    if (wagered > 0) {
+      throw new BadRequestException('Hints are not available in wagered games');
+    }
+  }
+
+  /** A round can only be tied to a session the player is actually playing. */
+  private async assertActiveParticipant(
+    userId: string,
+    sessionId: string,
+  ): Promise<void> {
+    const session = await this.sessionRepository.findOne({
+      where: { id: sessionId, status: In(ACTIVE_SESSION_STATUSES) },
+      relations: { player: true },
+    });
+
+    if (
+      !session ||
+      (session.player?.id !== userId && session.playerTwoId !== userId)
+    ) {
+      throw new NotFoundException('Session not found');
+    }
+  }
+
+  /** Playing a round counts as activity, so a busy session is never idle. */
+  private async touchSession(sessionId: string): Promise<void> {
+    await this.sessionRepository.update(sessionId, { updatedAt: new Date() });
+  }
+
+  private emitRoundEnded(
+    round: GameRound,
+    outcome: Pick<
+      RoundEndedPayload,
+      'isCorrect' | 'points' | 'speedBonus' | 'timedOut'
+    >,
+  ): void {
+    const payload: RoundEndedPayload = {
+      roundId: round.id,
+      sessionId: round.sessionId ?? null,
+      userId: round.userId,
+      hintsUsed: round.hintsUsed,
+      ...outcome,
+    };
+    this.events.emit(RealtimeEvent.ROUND_ENDED, payload);
   }
 
   /**
@@ -147,7 +415,7 @@ export class GameLogicService {
     const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000);
 
     const rounds = await this.roundRepository.find({
-      where: { userId, createdAt: MoreThanOrEqual(since) },
+      where: { userId, issuedAt: MoreThanOrEqual(since) },
       select: ['lyricId'],
     });
 
@@ -203,10 +471,7 @@ export class GameLogicService {
 
       // Pick a random row without a COUNT + OFFSET scan: order by a random
       // expression and take the first row.
-      const lyric = await queryBuilder
-        .orderBy('RANDOM()')
-        .take(1)
-        .getOne();
+      const lyric = await queryBuilder.orderBy('RANDOM()').take(1).getOne();
 
       if (lyric) {
         this.logger.debug(`Selected lyric ID: ${lyric.id}`);
@@ -335,14 +600,64 @@ export class GameLogicService {
   }
 
   /**
-   * Applies the optional category, decade and genre filters to a query.
+   * Gets statistics about available lyrics
+   * @param options - Optional filtering
+   * @returns Promise with counts and categories
+   */
+  async getLyricStats(options: Partial<RandomLyricOptions> = {}) {
+    this.logger.debug('Fetching lyric statistics');
+
+    try {
+      const queryBuilder = this.lyricsRepository.createQueryBuilder('lyrics');
+      this.applyFilters(queryBuilder, options);
+
+      const [totalCount, categories, decades, genres] = await Promise.all([
+        queryBuilder.getCount(),
+        this.lyricsRepository
+          .createQueryBuilder('lyrics')
+          .select('DISTINCT lyrics.category', 'category')
+          .where('lyrics.category IS NOT NULL')
+          .andWhere('lyrics.isActive = :isActive', { isActive: true })
+          .getRawMany(),
+        this.lyricsRepository
+          .createQueryBuilder('lyrics')
+          .select('DISTINCT lyrics.decade', 'decade')
+          .where('lyrics.decade IS NOT NULL')
+          .andWhere('lyrics.isActive = :isActive', { isActive: true })
+          .orderBy('lyrics.decade', 'ASC')
+          .getRawMany(),
+        this.lyricsRepository
+          .createQueryBuilder('lyrics')
+          .select('DISTINCT lyrics.genre', 'genre')
+          .where('lyrics.genre IS NOT NULL')
+          .andWhere('lyrics.isActive = :isActive', { isActive: true })
+          .getRawMany(),
+      ]);
+
+      return {
+        totalCount,
+        availableCategories: categories.map((c) => c.category).filter(Boolean),
+        availableDecades: decades.map((d) => d.decade).filter(Boolean),
+        availableGenres: genres.map((g) => g.genre).filter(Boolean),
+      };
+    } catch (error) {
+      this.logger.error('Error fetching lyric statistics', error.stack);
+      throw error;
+    }
+  }
+
+  /**
+   * Applies the shared gameplay filters. Deactivated lyrics are always
+   * excluded, so an admin removal takes effect for players immediately.
    */
   private applyFilters(
     queryBuilder: SelectQueryBuilder<Lyrics>,
-    options: RandomLyricOptions,
+    options: Partial<RandomLyricOptions>,
   ): void {
+    queryBuilder.andWhere('lyrics.isActive = :isActive', { isActive: true });
+
     if (options.category) {
-      queryBuilder.andWhere('lyrics.category = :category', {
+      queryBuilder.andWhere('LOWER(lyrics.category) = LOWER(:category)', {
         category: options.category,
       });
     }
@@ -354,9 +669,55 @@ export class GameLogicService {
     }
 
     if (options.genre) {
+      // genre is a Postgres enum and LOWER() has no enum overload, so resolve
+      // the value to the enum here and compare the column directly.
       queryBuilder.andWhere('lyrics.genre = :genre', {
-        genre: options.genre,
+        genre: this.resolveGenre(options.genre),
       });
     }
+  }
+
+  /**
+   * Maps a genre case-insensitively onto the Genre enum. The HTTP DTO already
+   * validates it, but the WebSocket gateway does not, and an unknown value
+   * would otherwise reach Postgres as an invalid enum literal.
+   */
+  private resolveGenre(genre: string): Genre {
+    const resolved = toGenre(genre);
+    if (!isGenre(resolved)) {
+      throw new BadRequestException(
+        `genre must be one of: ${Object.values(Genre).join(', ')}`,
+      );
+    }
+    return resolved;
+  }
+
+  /**
+   * Validates if a guess is reasonable (not empty, reasonable length)
+   * @param guess - The guess string to validate
+   */
+  validateGuess(guess: string): { isValid: boolean; reason?: string } {
+    if (!guess || typeof guess !== 'string') {
+      return { isValid: false, reason: 'Guess cannot be empty' };
+    }
+
+    const trimmedGuess = guess.trim();
+    if (trimmedGuess.length === 0) {
+      return { isValid: false, reason: 'Guess cannot be empty' };
+    }
+
+    if (trimmedGuess.length > 200) {
+      return {
+        isValid: false,
+        reason: 'Guess is too long (max 200 characters)',
+      };
+    }
+
+    return { isValid: true };
+  }
+
+  /** Normalizes a string for comparison (case, punctuation, whitespace). */
+  private normalizeString(str: string): string {
+    return normalizeAnswer(str);
   }
 }
