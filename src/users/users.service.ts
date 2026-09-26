@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { In, Not, Repository } from 'typeorm';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UpdateUserPreferencesDto } from './dto/update-user-preferences.dto';
@@ -24,11 +24,7 @@ const NON_TERMINAL_WAGER_STATUSES = [
   WagerStatus.STAKED,
   WagerStatus.SETTLING,
 ];
-import { Not, Repository } from 'typeorm';
 import { AdminUpdateUserDto, UpdateProfileDto } from './dto/update-user.dto';
-import { UpdateUserPreferencesDto } from './dto/update-user-preferences.dto';
-import { User } from './entities/user.entity';
-import { Cache } from 'cache-manager';
 import { MAX_PAGE_SIZE } from '../common/dto/pagination-query.dto';
 import { cacheConfig } from '../config/cache.config';
 
@@ -122,6 +118,45 @@ export class UsersService {
 
     await this.userRepository.save(user);
     return { message: 'User deactivated successfully' };
+  }
+
+  /**
+   * Exports all personal data held for a user as a JSON-serialisable bundle.
+   * Includes the profile, game history and wagers so the user can satisfy
+   * data-portability requests (GDPR/NDPR).
+   */
+  async exportData(id: string) {
+    const user = await this.findOne(id);
+
+    const wagers = await this.wagerRepository.find({
+      where: [{ playerAId: id }, { playerBId: id }],
+      order: { createdAt: 'DESC' },
+    });
+
+    const gameHistory = await this.userRepository.manager
+      .getRepository('GameHistory')
+      .find({ where: { userId: id } })
+      .catch(() => []);
+
+    return {
+      exportedAt: new Date().toISOString(),
+      profile: {
+        id: user.id,
+        email: user.email,
+        username: user.username,
+        name: user.name,
+        stellarAddress: user.stellarAddress,
+        preferredGenre: user.preferredGenre,
+        preferredDecade: user.preferredDecade,
+        xp: user.xp,
+        level: user.level,
+        isActive: user.isActive,
+        createdAt: user.createdAt,
+        updatedAt: user.updatedAt,
+      },
+      gameHistory,
+      wagers,
+    };
   }
 
   /**

@@ -15,6 +15,7 @@ import { AdminUpdateUserDto, UpdateProfileDto } from './dto/update-user.dto';
 import { UpdateUserPreferencesDto } from './dto/update-user-preferences.dto';
 import { LeaderboardQueryDto } from './dto/leaderboard-query.dto';
 import { PublicUserDto } from './dto/public-user.dto';
+import { DeleteAccountDto } from './dto/delete-account.dto';
 import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
 import { User } from './entities/user.entity';
 import { UserGroup } from './user-serialization';
@@ -72,12 +73,32 @@ export class UsersController {
     return this.usersService.update(user.id, updateProfileDto);
   }
 
-  /** DELETE /users/me - Delete the current user's own account. */
+  /**
+   * DELETE /users/me - Delete the current user's own account.
+   * Requires re-authentication via the current password. The account is
+   * anonymized and deactivated; anonymized wager records are retained for
+   * financial/audit purposes (see issue #130).
+   */
+  @UseGuards(JwtAuthGuard)
   @Delete('me')
   @ApiOperation({ summary: 'Delete your own account' })
-  @ApiResponse({ status: 200, description: 'Account deleted.' })
-  removeMe(@GetUser() user: User) {
-    return this.usersService.remove(user.id);
+  @ApiResponse({ status: 200, description: 'Account deleted and anonymized.' })
+  @ApiResponse({ status: 401, description: 'Re-authentication failed.' })
+  @ApiResponse({ status: 409, description: 'An active wager is in progress.' })
+  removeMe(@GetUser() user: User, @Body() deleteAccountDto: DeleteAccountDto) {
+    return this.usersService.deleteAccount(user.id, deleteAccountDto.password);
+  }
+
+  /**
+   * GET /users/me/export - Export the current user's data as a JSON bundle.
+   * Declared before `:id` so `me` is not treated as an ID.
+   */
+  @UseGuards(JwtAuthGuard)
+  @Get('me/export')
+  @ApiOperation({ summary: 'Export your own data' })
+  @ApiResponse({ status: 200, description: 'Profile, game history and wagers.' })
+  exportMe(@GetUser() user: User) {
+    return this.usersService.exportData(user.id);
   }
 
   /**
