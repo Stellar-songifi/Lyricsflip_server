@@ -8,6 +8,8 @@ import {
   Logger,
   HttpStatus,
   HttpCode,
+  ParseUUIDPipe,
+  Param,
   ValidationPipe,
 } from '@nestjs/common';
 
@@ -17,6 +19,7 @@ import {
   GameLyricResponse,
   GuessResultResponse,
   GameStatsResponse,
+  RoundHintResponse,
 } from './interfaces/game-response.interface';
 import { GameLogicService } from './game.service';
 import { RandomLyricOptionsDto } from './dto/random-lyrics-option.dto';
@@ -37,7 +40,7 @@ export class GameController {
   @Get('lyric')
   async getRandomLyric(
     @Query(new ValidationPipe({ transform: true }))
-    options: RandomLyricOptionsDto,
+    { sessionId, ...options }: RandomLyricOptionsDto,
     @GetUser() user: User,
   ): Promise<GameLyricResponse> {
     this.logger.log(
@@ -46,12 +49,18 @@ export class GameController {
 
     try {
       const lyric = await this.gameLogicService.getRandomLyric(options);
-      const round = await this.gameLogicService.issueRound(user.id, lyric.id);
+      const round = await this.gameLogicService.issueRound(
+        user.id,
+        lyric.id,
+        sessionId,
+      );
 
       // Return only the fields needed for the game (hide correct answers)
       return {
         roundId: round.id,
+        issuedAt: round.issuedAt,
         expiresAt: round.expiresAt,
+        answerWindowSeconds: round.answerWindowSeconds,
         id: lyric.id,
         lyricSnippet: lyric.lyricSnippet,
         category: lyric.category,
@@ -95,7 +104,9 @@ export class GameController {
 
           return {
             roundId: round.id,
+            issuedAt: round.issuedAt,
             expiresAt: round.expiresAt,
+            answerWindowSeconds: round.answerWindowSeconds,
             id: lyric.id,
             lyricSnippet: lyric.lyricSnippet,
             category: lyric.category,
@@ -138,6 +149,9 @@ export class GameController {
         correctAnswer: result.correctAnswer,
         explanation: result.explanation ?? '',
         points: result.points ?? 0,
+        speedBonus: result.speedBonus ?? 0,
+        timedOut: result.timedOut ?? false,
+        hintsUsed: result.hintsUsed ?? 0,
       };
     } catch (error) {
       this.logger.error('Error checking guess', error.stack);
@@ -146,14 +160,27 @@ export class GameController {
   }
 
   /**
+   * POST /game/rounds/:id/hint - Reveal the next hint for an open round.
+   * Each hint reduces the points the round can score.
+   */
+  @Post('rounds/:id/hint')
+  @HttpCode(HttpStatus.OK)
+  async useHint(
+    @Param('id', ParseUUIDPipe) roundId: string,
+    @GetUser() user: User,
+  ): Promise<RoundHintResponse> {
+    return this.gameLogicService.useHint(user.id, roundId);
+  }
+
+  /**
    * GET /game/stats - Get statistics about available lyrics
    */
   @Get('stats')
   async getLyricStats(
     @Query(new ValidationPipe({ transform: true }))
-    // Every field is optional already. Partial<> erases the class at runtime,
+    options // Every field is optional already. Partial<> erases the class at runtime,
     // which silently disables validation, so the DTO is used directly.
-    options: RandomLyricOptionsDto,
+    : RandomLyricOptionsDto,
   ): Promise<GameStatsResponse> {
     this.logger.log('Getting lyric statistics');
 

@@ -7,6 +7,7 @@ import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 import { LoggerService } from './common/services/logger.service';
 import { configureApp } from './app.setup';
+import { RedisIoAdapter } from './realtime/redis-io.adapter';
 
 async function bootstrap() {
   // Instantiate the Winston logger before the app so bootstrap messages
@@ -21,6 +22,14 @@ async function bootstrap() {
   // Register Winston as the app-wide logger (replaces Nest's default).
   app.useLogger(winstonLogger);
   app.flushLogs();
+
+  // Realtime events fan out through Redis when REDIS_URL is set, so every
+  // instance can reach every connected player.
+  if (process.env.REDIS_URL) {
+    const ioAdapter = new RedisIoAdapter(app);
+    await ioAdapter.connectToRedis(process.env.REDIS_URL);
+    app.useWebSocketAdapter(ioAdapter);
+  }
 
   // Global validation pipe and response serializer (shared with e2e tests)
   configureApp(app);

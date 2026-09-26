@@ -69,11 +69,9 @@ export class Lyrics {
   // lyric never deletes the lyric itself (and by extension the game history
   // and rooms that reference it). See migration
   // AddSetNullToLyricsCreatedBy for the corresponding schema change.
-  @ManyToOne(() => User, { eager: true, nullable: true, onDelete: "SET NULL" })
+  // Not eager: every lyric response would otherwise embed its creator.
+  @ManyToOne(() => User, { nullable: true, onDelete: "SET NULL" })
   createdBy: User | null
-  // Not eager: every lyric response would otherwise embed its creator
-  @ManyToOne(() => User, { nullable: false, onDelete: "CASCADE" })
-  createdBy: User
 
   @CreateDateColumn()
   createdAt: Date

@@ -21,7 +21,7 @@ interface GameSession {
   streak: number;
   currentLyric?: any;
   /** Lyric IDs already served to this player, to avoid repeats. */
-  seenLyricIds: Set<string>;
+  seenLyricIds: Set<number>;
 }
 
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
@@ -88,7 +88,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       playerId: userId,
       score: 0,
       streak: 0,
-      seenLyricIds: new Set<string>(),
+      seenLyricIds: new Set<number>(),
     });
 
     client.emit('connected', {

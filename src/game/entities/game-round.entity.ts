@@ -33,6 +33,18 @@ export class GameRound {
   @Column({ type: 'timestamp' })
   expiresAt: Date;
 
+  /** Seconds after `issuedAt` in which a correct guess still scores. */
+  @Column({ type: 'int', default: 20 })
+  answerWindowSeconds: number;
+
+  /** Hints revealed so far; each one lowers the points this round can score. */
+  @Column({ type: 'int', default: 0 })
+  hintsUsed: number;
+
+  /** The multiplayer session this round was played in, if any. */
+  @Column({ type: 'uuid', nullable: true })
+  sessionId: string | null;
+
   /** Set when the round's guess is taken; a closed round accepts no more. */
   @Column({ type: 'timestamp', nullable: true })
   closedAt: Date | null;
