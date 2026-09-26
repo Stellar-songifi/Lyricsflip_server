@@ -20,6 +20,8 @@ import { SignupDto } from './dto/signup.dto';
 import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
+import { VerifyEmailDto } from './dto/verify-email.dto';
+import { ResendVerificationDto } from './dto/resend-verification.dto';
 import { StellarChallengeDto, StellarVerifyDto } from './dto/stellar-auth.dto';
 import { Public } from './decorators/public.decorator';
 import { GetUser } from './decorators/user.decorator';
@@ -78,6 +80,38 @@ export class AuthController {
   async logout(@Body(ValidationPipe) dto: RefreshTokenDto) {
     await this.authService.logout(dto.refreshToken);
     return { message: 'Logged out' };
+  }
+
+  @Public()
+  @Throttle(authThrottle)
+  @Post('verify-email')
+  @ApiOperation({
+    summary: 'Verify an email address with a single-use token',
+    description:
+      'Consumes the token emailed at signup and marks the account as verified.',
+  })
+  @ApiResponse({ status: 200, description: 'Email verified.' })
+  @ApiResponse({ status: 400, description: 'Token invalid, expired, or already used.' })
+  @HttpCode(HttpStatus.OK)
+  async verifyEmail(@Body(ValidationPipe) dto: VerifyEmailDto) {
+    await this.authService.verifyEmail(dto.token);
+    return { message: 'Email verified' };
+  }
+
+  @Public()
+  @Throttle(authThrottle)
+  @Post('resend-verification')
+  @ApiOperation({
+    summary: 'Resend the email verification link',
+    description:
+      'Always responds with success so the endpoint cannot be used to probe ' +
+      'which addresses are registered.',
+  })
+  @ApiResponse({ status: 200, description: 'Verification email sent if needed.' })
+  @HttpCode(HttpStatus.OK)
+  async resendVerification(@Body(ValidationPipe) dto: ResendVerificationDto) {
+    await this.authService.resendVerification(dto.email);
+    return { message: 'If the account exists, a verification email has been sent.' };
   }
 
   @UseGuards(JwtAuthGuard)

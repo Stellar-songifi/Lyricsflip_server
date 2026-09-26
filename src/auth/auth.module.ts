@@ -8,17 +8,15 @@ import { AuthService } from './auth.service';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { StellarAuthService } from './services/stellar-auth.service';
 import { AuthTokenService } from './services/auth-token.service';
+import { MailerService } from './services/mailer.service';
+import { EmailVerificationService } from './services/email-verification.service';
 import { User } from 'src/users/entities/user.entity';
-import { Wager } from '../tokens/entities/wager.entity';
-
-@Module({
-  imports: [
-    TypeOrmModule.forFeature([User, Wager]),
 import { RefreshToken } from './entities/refresh-token.entity';
+import { EmailToken } from './entities/email-token.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([User, RefreshToken]),
+    TypeOrmModule.forFeature([User, RefreshToken, EmailToken]),
     PassportModule.register({ defaultStrategy: 'jwt' }),
     JwtModule.registerAsync({
       imports: [ConfigModule],
@@ -34,7 +32,14 @@ import { RefreshToken } from './entities/refresh-token.entity';
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, StellarAuthService, AuthTokenService, JwtStrategy],
-  exports: [JwtStrategy, PassportModule, AuthService, StellarAuthService],
+  providers: [
+    AuthService,
+    StellarAuthService,
+    AuthTokenService,
+    MailerService,
+    EmailVerificationService,
+    JwtStrategy,
+  ],
+  exports: [JwtStrategy, PassportModule, AuthService, StellarAuthService, EmailVerificationService],
 })
 export class AuthModule {}
