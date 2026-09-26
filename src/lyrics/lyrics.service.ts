@@ -212,6 +212,66 @@ export class LyricsService {
   }
 
   /**
+   * Normalise a value for alias comparison: lower-case, trim, and collapse
+   * internal whitespace so "JAY Z" and "Jay-Z" compare equal.
+   */
+  private normalizeAnswer(value: string): string {
+    return value
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, ' ')
+      .trim();
+  }
+
+  /**
+   * Check whether a guess matches the canonical value or any of its aliases.
+   * Comparison is case- and punctuation-insensitive so "Jay-Z" matches
+   * "JAY Z" and "WizKid" matches "Wizkid".
+   */
+  matchesAnswer(
+    guess: string,
+    canonical: string,
+    aliases: string[] = [],
+  ): boolean {
+    if (!guess) {
+      return false;
+    }
+
+    const normalizedGuess = this.normalizeAnswer(guess);
+    if (!normalizedGuess) {
+      return false;
+    }
+
+    const candidates = [canonical, ...(aliases ?? [])];
+    return candidates.some(
+      (candidate) =>
+        candidate != null &&
+        this.normalizeAnswer(candidate) === normalizedGuess,
+    );
+  }
+
+  /**
+   * Score a guess against a lyric's canonical artist/title and their aliases.
+   * A guess that matches an alias is scored as correct.
+   */
+  scoreGuess(
+    lyrics: Lyrics,
+    guess: { artist?: string; title?: string },
+  ): { artistCorrect: boolean; titleCorrect: boolean } {
+    return {
+      artistCorrect: this.matchesAnswer(
+        guess.artist ?? '',
+        lyrics.artist,
+        lyrics.artistAliases,
+      ),
+      titleCorrect: this.matchesAnswer(
+        guess.title ?? '',
+        lyrics.title,
+        lyrics.titleAliases,
+      ),
+    };
+  }
+
+  /**
    * Fetch random lyrics with caching support
    * @param count Number of random lyrics to fetch (default: 1, max: 100)
    * @param genre Optional genre filter
@@ -256,124 +316,6 @@ export class LyricsService {
       const query = this.lyricsRepository
         .createQueryBuilder('lyrics')
         .leftJoinAndSelect('lyrics.createdBy', 'user')
-        .where('lyrics.isActive = :isActive', { isActive: true });
+        .where('lyrics.isActive = :isActive
 
-      if (genre) {
-        query.andWhere('lyrics.genre = :genre', { genre });
-      }
-
-      if (decade) {
-        query.andWhere('lyrics.decade = :decade', { decade: decade.toString() });
-      }
-
-      return query.orderBy('RANDOM()').take(count).getMany();
-    });
-  }
-
-  /**
-   * Search lyrics by term across title, artist and content.
-   * Admin-only at the route level: it matches answer fields (content),
-   * so it must not be exposed to regular players (issue #121).
-   */
-  async searchLyrics(term: string): Promise<Lyrics[]> {
-    if (!term || !term.trim()) {
-      throw new BadRequestException('Search term is required');
-    }
-
-    const normalized = term.trim().toLowerCase();
-    const cacheKey = `${cacheConfig.keys.search}${normalized}`;
-
-    return this.getOrLoad(cacheKey, this.cacheTtlMs, async () => {
-      return this.lyricsRepository
-        .createQueryBuilder('lyrics')
-        .leftJoinAndSelect('lyrics.createdBy', 'user')
-        .where('lyrics.isActive = :isActive', { isActive: true })
-        .andWhere(
-          '(lyrics.title ILIKE :term OR lyrics.artist ILIKE :term OR lyrics.content ILIKE :term)',
-          { term: `%${normalized}%` },
-        )
-        .orderBy('lyrics.id', 'ASC')
-        .take(MAX_PAGE_SIZE)
-        .getMany();
-    });
-  }
-
-  /**
-   * Read-through cache helper. Records the key so clearCache can drop it,
-   * and skips repopulating when a write invalidated the cache mid-read.
-   */
-  private async getOrLoad<T>(
-    key: string,
-    ttlMs: number,
-    loader: () => Promise<T>,
-  ): Promise<T> {
-    const cached = await this.cacheManager.get<T>(key);
-    if (cached !== undefined && cached !== null) {
-      return cached;
-    }
-
-    const generation = this.cacheGeneration;
-    const value = await loader();
-
-    // A write happened while we were loading; don't cache stale data.
-    if (generation !== this.cacheGeneration) {
-      return value;
-    }
-
-    await this.cacheManager.set(key, value, ttlMs);
-    this.cachedKeys.set(key, Date.now() + ttlMs);
-
-    return value;
-  }
-
-  /**
-   * Drop every lyrics cache entry (lyrics, random, category and search).
-   * Called on create/update/remove so search results refresh on writes.
-   */
-  private async clearCache(): Promise<void> {
-    this.cacheGeneration += 1;
-
-    const now = Date.now();
-    const deletions: Promise<unknown>[] = [];
-
-    for (const [key, expiresAt] of this.cachedKeys) {
-      if (expiresAt <= now) {
-        this.cachedKeys.delete(key);
-        continue;
-      }
-      deletions.push(this.cacheManager.del(key));
-      this.cachedKeys.delete(key);
-    }
-
-    await Promise.all(deletions);
-  }
-
-  /**
-   * Cache statistics for the admin cache dashboard.
-   */
-  getCacheStats(): LyricsCacheStats {
-    const now = Date.now();
-    const keysByType = { lyrics: 0, random: 0, category: 0, search: 0 };
-
-    for (const [key, expiresAt] of this.cachedKeys) {
-      if (expiresAt <= now) {
-        continue;
-      }
-      if (key.startsWith(cacheConfig.keys.search)) {
-        keysByType.search += 1;
-      } else if (key.startsWith(cacheConfig.keys.randomLyrics)) {
-        keysByType.random += 1;
-      } else if (key.startsWith(cacheConfig.keys.category)) {
-        keysByType.category += 1;
-      } else if (key.startsWith(cacheConfig.keys.lyrics)) {
-        keysByType.lyrics += 1;
-      }
-    }
-
-    return {
-      keys: this.cachedKeys.size,
-      keysByType,
-      ttlMs: this.cacheTtlMs,
-    };
-  }
-}
+/* … truncated 3469 chars — edit only what you need near the top … */
