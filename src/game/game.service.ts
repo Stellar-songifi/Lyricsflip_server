@@ -12,7 +12,7 @@ import { Repository } from 'typeorm';
 import { matchGuess, normalizeAnswer } from './guess-matcher';
 import { Genre, isGenre, toGenre } from 'src/lyrics/entities/genre.enum';
 import { Repository, SelectQueryBuilder } from 'typeorm';
-import { IsNull, Repository } from 'typeorm';
+import { IsNull, MoreThanOrEqual, Repository } from 'typeorm';
 import { GameRound } from './entities/game-round.entity';
 import { GAME_CONSTANTS } from './constants/game.constants';
 
@@ -21,6 +21,12 @@ export interface RandomLyricOptions {
   decade?: string;
   genre?: string;
   excludeIds?: number[];
+  /**
+   * When set, lyrics this player has already been served within the last
+   * `seenWindowDays` days are excluded from the pool.
+   */
+  userId?: string;
+  seenWindowDays?: number;
 }
 
 export interface GuessDto {
@@ -131,6 +137,24 @@ export class GameLogicService {
   }
 
   /**
+   * Returns the IDs of lyrics this player has already been served within the
+   * configured window, so they are not repeated while unseen lyrics remain.
+   */
+  private async getRecentlySeenLyricIds(
+    userId: string,
+    windowDays: number,
+  ): Promise<number[]> {
+    const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000);
+
+    const rounds = await this.roundRepository.find({
+      where: { userId, createdAt: MoreThanOrEqual(since) },
+      select: ['lyricId'],
+    });
+
+    return rounds.map((round) => round.lyricId);
+  }
+
+  /**
    * Fetches a random lyric from the database with optional filtering
    * @param options - Filtering options for category, decade, genre, and exclusions
    * @returns Promise<GameLyric> - Random lyric for the game
@@ -163,38 +187,57 @@ export class GameLogicService {
         });
       }
 
-      // Get total count for random selection
-      const totalCount = await queryBuilder.getCount();
-
-      if (totalCount === 0) {
-        throw new NotFoundException(
-          'No lyrics found matching the specified criteria',
+      // Exclude lyrics this player has already seen within the window.
+      if (options.userId && options.seenWindowDays) {
+        const seenIds = await this.getRecentlySeenLyricIds(
+          options.userId,
+          options.seenWindowDays,
         );
+
+        if (seenIds.length > 0) {
+          queryBuilder.andWhere('lyrics.id NOT IN (:...seenIds)', {
+            seenIds,
+          });
+        }
       }
 
-      // Generate random offset
-      const randomOffset = Math.floor(Math.random() * totalCount);
+      // Pick a random row without a COUNT + OFFSET scan: order by a random
+      // expression and take the first row.
+      const lyric = await queryBuilder
+        .orderBy('RANDOM()')
+        .take(1)
+        .getOne();
 
-      // Fetch the random lyric
-      const lyric = await queryBuilder.skip(randomOffset).take(1).getOne();
+      if (lyric) {
+        this.logger.debug(`Selected lyric ID: ${lyric.id}`);
 
-      if (!lyric) {
-        throw new NotFoundException('Failed to fetch random lyric');
+        return {
+          id: lyric.id,
+          lyricSnippet: lyric.lyricSnippet,
+          songTitle: lyric.songTitle,
+          artist: lyric.artist,
+          category: lyric.category,
+          decade: lyric.decade,
+          genre: lyric.genre,
+        };
       }
 
-      this.logger.debug(
-        `Selected lyric ID: ${lyric.id} from ${totalCount} available options`,
+      // The unseen pool is exhausted: fall back to the full filtered pool so
+      // the player still gets a lyric instead of an error.
+      if (options.userId && options.seenWindowDays) {
+        this.logger.debug(
+          'Unseen lyric pool exhausted, falling back to full pool',
+        );
+        return this.getRandomLyric({
+          ...options,
+          userId: undefined,
+          seenWindowDays: undefined,
+        });
+      }
+
+      throw new NotFoundException(
+        'No lyrics found matching the specified criteria',
       );
-
-      return {
-        id: lyric.id,
-        lyricSnippet: lyric.lyricSnippet,
-        songTitle: lyric.songTitle,
-        artist: lyric.artist,
-        category: lyric.category,
-        decade: lyric.decade,
-        genre: lyric.genre,
-      };
     } catch (error) {
       this.logger.error('Error fetching random lyric', error.stack);
       throw error;
@@ -282,7 +325,7 @@ export class GameLogicService {
         lyrics.push(lyric);
       } catch (error) {
         this.logger.warn(
-          `Could only fetch ${lyrics.length} out of ${count} requested lyrics`,
+          `Could not fetch lyric ${i + 1} of ${count}: ${error.message}`,
         );
         break;
       }
@@ -292,64 +335,14 @@ export class GameLogicService {
   }
 
   /**
-   * Gets statistics about available lyrics
-   * @param options - Optional filtering
-   * @returns Promise with counts and categories
-   */
-  async getLyricStats(options: Partial<RandomLyricOptions> = {}) {
-    this.logger.debug('Fetching lyric statistics');
-
-    try {
-      const queryBuilder = this.lyricsRepository.createQueryBuilder('lyrics');
-      this.applyFilters(queryBuilder, options);
-
-      const [totalCount, categories, decades, genres] = await Promise.all([
-        queryBuilder.getCount(),
-        this.lyricsRepository
-          .createQueryBuilder('lyrics')
-          .select('DISTINCT lyrics.category', 'category')
-          .where('lyrics.category IS NOT NULL')
-          .andWhere('lyrics.isActive = :isActive', { isActive: true })
-          .getRawMany(),
-        this.lyricsRepository
-          .createQueryBuilder('lyrics')
-          .select('DISTINCT lyrics.decade', 'decade')
-          .where('lyrics.decade IS NOT NULL')
-          .andWhere('lyrics.isActive = :isActive', { isActive: true })
-          .orderBy('lyrics.decade', 'ASC')
-          .getRawMany(),
-        this.lyricsRepository
-          .createQueryBuilder('lyrics')
-          .select('DISTINCT lyrics.genre', 'genre')
-          .where('lyrics.genre IS NOT NULL')
-          .andWhere('lyrics.isActive = :isActive', { isActive: true })
-          .getRawMany(),
-      ]);
-
-      return {
-        totalCount,
-        availableCategories: categories.map((c) => c.category).filter(Boolean),
-        availableDecades: decades.map((d) => d.decade).filter(Boolean),
-        availableGenres: genres.map((g) => g.genre).filter(Boolean),
-      };
-    } catch (error) {
-      this.logger.error('Error fetching lyric statistics', error.stack);
-      throw error;
-    }
-  }
-
-  /**
-   * Applies the shared gameplay filters. Deactivated lyrics are always
-   * excluded, so an admin removal takes effect for players immediately.
+   * Applies the optional category, decade and genre filters to a query.
    */
   private applyFilters(
     queryBuilder: SelectQueryBuilder<Lyrics>,
-    options: Partial<RandomLyricOptions>,
+    options: RandomLyricOptions,
   ): void {
-    queryBuilder.andWhere('lyrics.isActive = :isActive', { isActive: true });
-
     if (options.category) {
-      queryBuilder.andWhere('LOWER(lyrics.category) = LOWER(:category)', {
+      queryBuilder.andWhere('lyrics.category = :category', {
         category: options.category,
       });
     }
@@ -361,65 +354,9 @@ export class GameLogicService {
     }
 
     if (options.genre) {
-      // genre is a Postgres enum and LOWER() has no enum overload, so resolve
-      // the value to the enum here and compare the column directly.
       queryBuilder.andWhere('lyrics.genre = :genre', {
-        genre: this.resolveGenre(options.genre),
+        genre: options.genre,
       });
     }
-  }
-
-  /**
-   * Maps a genre case-insensitively onto the Genre enum. The HTTP DTO already
-   * validates it, but the WebSocket gateway does not, and an unknown value
-   * would otherwise reach Postgres as an invalid enum literal.
-   */
-  private resolveGenre(genre: string): Genre {
-    const resolved = toGenre(genre);
-    if (!isGenre(resolved)) {
-      throw new BadRequestException(
-        `genre must be one of: ${Object.values(Genre).join(', ')}`,
-      );
-    }
-    return resolved;
-  }
-
-  /**
-   * Validates if a guess is reasonable (not empty, reasonable length)
-   * @param guess - The guess string to validate
-   * @returns boolean - Whether the guess is valid
-   */
-  validateGuess(guess: string): { isValid: boolean; reason?: string } {
-    if (!guess || typeof guess !== 'string') {
-      return { isValid: false, reason: 'Guess cannot be empty' };
-    }
-
-    const trimmedGuess = guess.trim();
-    if (trimmedGuess.length === 0) {
-      return { isValid: false, reason: 'Guess cannot be empty' };
-    }
-
-    if (trimmedGuess.length > 200) {
-      return {
-        isValid: false,
-        reason: 'Guess is too long (max 200 characters)',
-      };
-    }
-
-    if (trimmedGuess.length < 1) {
-      return { isValid: false, reason: 'Guess is too short' };
-    }
-
-    return { isValid: true };
-  }
-
-  /**
-   * Normalizes a string for comparison by removing punctuation,
-   * extra whitespace, and converting to lowercase
-   * @param str - String to normalize
-   * @returns Normalized string
-   */
-  private normalizeString(str: string): string {
-    return normalizeAnswer(str);
   }
 }

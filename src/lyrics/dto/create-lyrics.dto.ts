@@ -4,6 +4,8 @@ import {
   IsEnum,
   IsInt,
   IsOptional,
+  IsArray,
+  ArrayMaxSize,
   Min,
   Max,
   MaxLength,
@@ -51,10 +53,52 @@ export class CreateLyricsDto {
   @IsNotEmpty()
   artist: string;
 
+  @ApiPropertyOptional({
+    description:
+      'Alternative accepted spellings for the artist (e.g. "JAY Z" for "Jay-Z").',
+    type: [String],
+    maxItems: 20,
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @IsString({ each: true })
+  @MaxLength(200, { each: true })
+  @Transform(({ value }) =>
+    Array.isArray(value)
+      ? value
+          .filter((v): v is string => typeof v === 'string')
+          .map((v) => v.trim())
+          .filter((v) => v.length > 0)
+      : value,
+  )
+  artistAliases?: string[];
+
   @ApiProperty({ description: 'Song title' })
   @IsString()
   @IsNotEmpty()
   songTitle: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Alternative accepted spellings for the song title (e.g. "WizKid" for "Wizkid").',
+    type: [String],
+    maxItems: 20,
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @IsString({ each: true })
+  @MaxLength(200, { each: true })
+  @Transform(({ value }) =>
+    Array.isArray(value)
+      ? value
+          .filter((v): v is string => typeof v === 'string')
+          .map((v) => v.trim())
+          .filter((v) => v.length > 0)
+      : value,
+  )
+  titleAliases?: string[];
 
   @ApiProperty({ enum: Genre, description: 'Genre of the song' })
   @IsEnum(Genre)
