@@ -28,6 +28,18 @@ import { AdminUpdateUserDto, UpdateProfileDto } from './dto/update-user.dto';
 import { MAX_PAGE_SIZE } from '../common/dto/pagination-query.dto';
 import { cacheConfig } from '../config/cache.config';
 
+// Fields that are safe to expose on a public player profile. Everything else
+// on the User entity (email, wallet address, preferences, flags, timestamps)
+// is considered private and must never leak through the public endpoint.
+const PUBLIC_PROFILE_FIELDS = [
+  'username',
+  'level',
+  'levelTitle',
+  'xp',
+  'achievements',
+  'wins',
+  'losses',
+] as const;
 // Usernames must be 3-30 chars, start with a letter, and contain only
 // letters, numbers and underscores (issue #129).
 const USERNAME_PATTERN = /^[a-zA-Z][a-zA-Z0-9_]{2,29}$/;
@@ -65,6 +77,34 @@ export class UsersService {
   }
 
   /**
+   * Returns the deliberately public view of a player profile, looked up by
+   * username. Only fields listed in PUBLIC_PROFILE_FIELDS are exposed; the
+   * full entity (email, wallet, preferences, etc.) is never returned here.
+   */
+  async findPublicProfile(username: string) {
+    const user = await this.userRepository.findOne({
+      where: { username },
+      select: [...PUBLIC_PROFILE_FIELDS],
+    });
+    if (!user) {
+      throw new NotFoundException(`User with username ${username} not found`);
+    }
+
+    const wins = user.wins ?? 0;
+    const losses = user.losses ?? 0;
+    const totalGames = wins + losses;
+    const winRate = totalGames > 0 ? wins / totalGames : 0;
+
+    return {
+      username: user.username,
+      level: user.level,
+      levelTitle: user.levelTitle,
+      xp: user.xp,
+      achievements: user.achievements ?? [],
+      winRate,
+    };
+  }
+
    * Returns the richer self-service profile for the authenticated user:
    * the user record, its level title, the linked wallet, a balance summary
    * and gameplay stats.
@@ -195,6 +235,45 @@ export class UsersService {
 
     await this.userRepository.save(user);
     return { message: 'User deactivated successfully' };
+  }
+
+  /**
+   * Exports all personal data held for a user as a JSON-serialisable bundle.
+   * Includes the profile, game history and wagers so the user can satisfy
+   * data-portability requests (GDPR/NDPR).
+   */
+  async exportData(id: string) {
+    const user = await this.findOne(id);
+
+    const wagers = await this.wagerRepository.find({
+      where: [{ playerAId: id }, { playerBId: id }],
+      order: { createdAt: 'DESC' },
+    });
+
+    const gameHistory = await this.userRepository.manager
+      .getRepository('GameHistory')
+      .find({ where: { userId: id } })
+      .catch(() => []);
+
+    return {
+      exportedAt: new Date().toISOString(),
+      profile: {
+        id: user.id,
+        email: user.email,
+        username: user.username,
+        name: user.name,
+        stellarAddress: user.stellarAddress,
+        preferredGenre: user.preferredGenre,
+        preferredDecade: user.preferredDecade,
+        xp: user.xp,
+        level: user.level,
+        isActive: user.isActive,
+        createdAt: user.createdAt,
+        updatedAt: user.updatedAt,
+      },
+      gameHistory,
+      wagers,
+    };
   }
 
   /**
@@ -352,6 +431,16 @@ export class UsersService {
     }));
 
     const result = {
+      data: users.map((user, idx) => ({
+        ...user,
+        rank: offset + idx + 1,
+      })),
+      total,
+      limit,
+      offset,
+    };
+
+    await this.cacheManager.set(cacheKey, result, cacheConfig.ttl * 1000);
       data,
       meta: {
         total,

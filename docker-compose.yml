@@ -1,47 +1,64 @@
-version: '3.9'
-
-# Local development stack for LyricsFlip server.
-# Starts PostgreSQL and Redis; the NestJS app itself is run with `npm run start:dev`.
-#
-# Usage:
-#   docker compose up -d        # start services
-#   docker compose down -v      # stop and remove volumes
-#
-# The app's .env should contain:
-#   DB_HOST=localhost  DB_PORT=5432  DB_USERNAME=lyricflip  DB_PASSWORD=lyricflip  DB_NAME=lyricflip
-#   REDIS_URL=redis://localhost:6379
-
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16
     restart: unless-stopped
     environment:
-      POSTGRES_USER: lyricflip
-      POSTGRES_PASSWORD: lyricflip
-      POSTGRES_DB: lyricflip
+      POSTGRES_USER: ${POSTGRES_USER:-app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app}
+      POSTGRES_DB: ${POSTGRES_DB:-app}
     ports:
-      - '5432:5432'
+      - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U lyricflip']
-      interval: 10s
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-app} -d ${POSTGRES_DB:-app}"]
+      interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
 
   redis:
     image: redis:7-alpine
     restart: unless-stopped
     ports:
-      - '6379:6379'
+      - "6379:6379"
     volumes:
-      - redis_data:/data
+      - redis-data:/data
     healthcheck:
-      test: ['CMD', 'redis-cli', 'ping']
-      interval: 10s
-      timeout: 3s
-      retries: 5
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_USER: ${POSTGRES_USER:-app}
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD:-app}
+      DATABASE_NAME: ${POSTGRES_DB:-app}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    ports:
+      - "3000:3000"
+
+  stellar:
+    image: stellar/quickstart
+    profiles:
+      - stellar
+    command: ["--local", "--enable-soroban-rpc"]
+    ports:
+      - "8000:8000"
 
 volumes:
-  postgres_data:
-  redis_data:
+  postgres-data:
+  redis-data:
