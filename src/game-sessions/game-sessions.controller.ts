@@ -21,7 +21,7 @@ import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
 import { TopScoresQueryDto } from './dto/top-scores-query.dto';
 import { CompleteWageredGameDto } from './dto/complete-wagered-game.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import { Roles } from '../auth/decorators/roles.decorator';
+import { Roles } from '../auth/roles/roles.decorator';
 import { Role } from '../auth/roles/role.enum';
 import { GetUser } from '../auth/decorators/user.decorator';
 import { User } from '../users/entities/user.entity';
