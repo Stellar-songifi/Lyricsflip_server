@@ -43,6 +43,27 @@ export interface RandomLyricOptions {
    */
   userId?: string;
   seenWindowDays?: number;
+  /**
+   * Genre to fall back to when no explicit genre filter was given (sourced from
+   * the player's preferredGenre). Ignored when `ignorePreferences` is true.
+   */
+  preferredGenre?: string;
+  /**
+   * Decade to fall back to when no explicit decade filter was given (sourced
+   * from the player's preferredDecade). Ignored when `ignorePreferences` is
+   * true.
+   */
+  preferredDecade?: string;
+  /**
+   * When true, preferredGenre / preferredDecade are not applied even if they
+   * are set.
+   */
+  ignorePreferences?: boolean;
+  /**
+   * Exact difficulty level (1–5) the lyric must match. When omitted all levels
+   * are accepted.
+   */
+  difficulty?: number;
 }
 
 export interface GuessDto {
@@ -423,8 +444,17 @@ export class GameLogicService {
   }
 
   /**
-   * Fetches a random lyric from the database with optional filtering
-   * @param options - Filtering options for category, decade, genre, and exclusions
+   * Fetches a random lyric from the database with optional filtering.
+   *
+   * Preference fallback (issue #176):
+   * When the caller provides no explicit `genre` or `decade` filter and
+   * `ignorePreferences` is not set, the player's `preferredGenre` /
+   * `preferredDecade` are applied as soft filters.  If the preference-filtered
+   * pool is empty we fall back to all lyrics so the player always gets a
+   * result.
+   *
+   * @param options - Filtering options for category, decade, genre, difficulty
+   *   and exclusions
    * @returns Promise<GameLyric> - Random lyric for the game
    */
   async getRandomLyric(options: RandomLyricOptions = {}): Promise<GameLyric> {
@@ -433,7 +463,15 @@ export class GameLogicService {
     );
 
     try {
-      // Build the query with optional filters
+      // Resolve effective filters, honouring the preference fallback.
+      const effectiveGenre =
+        options.genre ??
+        (!options.ignorePreferences ? options.preferredGenre : undefined);
+
+      const effectiveDecade =
+        options.decade ??
+        (!options.ignorePreferences ? options.preferredDecade : undefined);
+
       const queryBuilder = this.lyricsRepository
         .createQueryBuilder('lyrics')
         .select([
@@ -446,7 +484,11 @@ export class GameLogicService {
           'lyrics.genre',
         ]);
 
-      this.applyFilters(queryBuilder, options);
+      this.applyFilters(queryBuilder, {
+        ...options,
+        genre: effectiveGenre,
+        decade: effectiveDecade,
+      });
 
       // Exclude previously shown lyrics in the session
       if (options.excludeIds && options.excludeIds.length > 0) {
@@ -476,6 +518,10 @@ export class GameLogicService {
       if (lyric) {
         this.logger.debug(`Selected lyric ID: ${lyric.id}`);
 
+        // Increment timesUsed atomically (issue #175) so the count reflects
+        // every serve, even if two requests race.
+        await this.lyricsRepository.increment({ id: lyric.id }, 'timesUsed', 1);
+
         return {
           id: lyric.id,
           lyricSnippet: lyric.lyricSnippet,
@@ -487,8 +533,11 @@ export class GameLogicService {
         };
       }
 
-      // The unseen pool is exhausted: fall back to the full filtered pool so
-      // the player still gets a lyric instead of an error.
+      // The pool for the effective filters is exhausted or the preferences
+      // produced no match.  Try falling back in layers:
+      //   1. Drop the seen-window restriction (player exhausted unseen pool).
+      //   2. Drop the preference-derived genre/decade so the player always gets
+      //      a lyric rather than an empty-result error.
       if (options.userId && options.seenWindowDays) {
         this.logger.debug(
           'Unseen lyric pool exhausted, falling back to full pool',
@@ -497,6 +546,24 @@ export class GameLogicService {
           ...options,
           userId: undefined,
           seenWindowDays: undefined,
+        });
+      }
+
+      // Preferences produced no match — retry without them so the player is
+      // never locked out by their own settings (acceptance criterion #176).
+      const hasPreferenceFilters =
+        !options.ignorePreferences &&
+        ((!options.genre && options.preferredGenre) ||
+          (!options.decade && options.preferredDecade));
+
+      if (hasPreferenceFilters) {
+        this.logger.debug(
+          'Preference-filtered pool empty, retrying without preferences',
+        );
+        return this.getRandomLyric({
+          ...options,
+          preferredGenre: undefined,
+          preferredDecade: undefined,
         });
       }
 
@@ -673,6 +740,12 @@ export class GameLogicService {
       // the value to the enum here and compare the column directly.
       queryBuilder.andWhere('lyrics.genre = :genre', {
         genre: this.resolveGenre(options.genre),
+      });
+    }
+
+    if (options.difficulty !== undefined) {
+      queryBuilder.andWhere('lyrics.difficulty = :difficulty', {
+        difficulty: options.difficulty,
       });
     }
   }
