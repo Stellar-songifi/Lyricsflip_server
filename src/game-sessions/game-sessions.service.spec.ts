@@ -578,10 +578,10 @@ describe('GameSessionsService', () => {
 
       mockWagerService.getUserWagers.mockResolvedValue(wagers);
 
-      const result = await service.getUserWagers(userId, 10);
+      const result = await service.getUserWagers(userId, 10, 20);
 
       expect(result).toBe(wagers);
-      expect(mockWagerService.getUserWagers).toHaveBeenCalledWith(userId, 10);
+      expect(mockWagerService.getUserWagers).toHaveBeenCalledWith(userId, 10, 20);
     });
   });
 

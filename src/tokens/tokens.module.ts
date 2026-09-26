@@ -1,11 +1,15 @@
 import { Logger, Module } from '@nestjs/common';
 import { TypeOrmModule, getRepositoryToken } from '@nestjs/typeorm';
+import { ScheduleModule } from '@nestjs/schedule';
 import { Repository } from 'typeorm';
 import { Wager } from './entities/wager.entity';
 import { User } from '../users/entities/user.entity';
+import { GameSession } from '../game-sessions/entities/game-session.entity';
 import { MockTokenService } from './services/mock-token.service';
 import { StellarTokenService } from './services/stellar-token.service';
 import { WagerService } from './services/wager.service';
+import { WagerRefundJob } from './services/wager-refund.job';
+import { WagerReconcileJob } from './services/wager-reconcile.job';
 import { TOKEN_SERVICE } from './interfaces/token.interface';
 import { StellarModule } from '../stellar/stellar.module';
 import { EscrowContractService } from '../stellar/services/escrow-contract.service';
@@ -15,7 +19,11 @@ import { KEY_STORE, STELLAR_CONFIG } from '../stellar/stellar.constants';
 import type { StellarConfig } from '../stellar/stellar.config';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Wager, User]), StellarModule],
+  imports: [
+    TypeOrmModule.forFeature([Wager, User, GameSession]),
+    StellarModule,
+    ScheduleModule.forRoot(),
+  ],
   providers: [
     MockTokenService,
     StellarTokenService,
@@ -58,6 +66,8 @@ import type { StellarConfig } from '../stellar/stellar.config';
       },
     },
     WagerService,
+    WagerRefundJob,
+    WagerReconcileJob,
   ],
   exports: [TOKEN_SERVICE, WagerService],
 })

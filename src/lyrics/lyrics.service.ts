@@ -14,6 +14,7 @@ import { UpdateLyricsDto } from './dto/update-lyrics.dto';
 import { User } from '../users/entities/user.entity';
 import { cacheConfig } from '../config/cache.config';
 import { Genre } from './entities/genre.enum';
+import { MAX_PAGE_SIZE } from '../common/dto/pagination-query.dto';
 
 export interface LyricsCacheStats {
   keys: number;
@@ -54,9 +55,16 @@ export class LyricsService {
   }
 
   async create(createLyricsDto: CreateLyricsDto, user: User): Promise<Lyrics> {
+    // Derive lyricSnippet from content when the caller did not supply one.
+    // The entity column is non-nullable so we must guarantee a value here.
+    const lyricSnippet =
+      createLyricsDto.lyricSnippet?.trim() ||
+      createLyricsDto.content.slice(0, 150).trim();
+
     const lyrics = this.lyricsRepository.create({
       ...createLyricsDto,
-      decade: createLyricsDto.decade?.toString(), // Convert number to string
+      lyricSnippet,
+      decade: createLyricsDto.decade?.toString(), // entity stores decade as varchar
       createdBy: user,
     });
     const savedLyrics = await this.lyricsRepository.save(lyrics);
@@ -67,7 +75,12 @@ export class LyricsService {
     return savedLyrics;
   }
 
-  async findAll(genre?: string, decade?: number): Promise<Lyrics[]> {
+  async findAll(
+    genre?: string,
+    decade?: number,
+    limit: number = MAX_PAGE_SIZE,
+    offset: number = 0,
+  ): Promise<Lyrics[]> {
     const query = this.lyricsRepository
       .createQueryBuilder('lyrics')
       .leftJoinAndSelect('lyrics.createdBy', 'user');
@@ -105,7 +118,12 @@ export class LyricsService {
     // Only return active lyrics
     query.andWhere('lyrics.isActive = :isActive', { isActive: true });
 
-    const results = await query.getMany();
+    // Always capped, so no caller can pull the whole table in one request
+    const results = await query
+      .orderBy('lyrics.id', 'ASC')
+      .take(limit)
+      .skip(offset)
+      .getMany();
 
     // Return empty array instead of throwing exception for no results
     return results;

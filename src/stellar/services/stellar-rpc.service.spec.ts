@@ -144,6 +144,47 @@ describe('StellarRpcService', () => {
       expect(result.confirmed).toBe(true);
     });
 
+    it('resubmits on TRY_AGAIN_LATER and succeeds once the queue clears', async () => {
+      const send = jest
+        .spyOn(rpc.Server.prototype, 'sendTransaction')
+        .mockResolvedValueOnce({
+          status: 'TRY_AGAIN_LATER',
+          hash: hashOf(transaction),
+        } as rpc.Api.SendTransactionResponse)
+        .mockResolvedValueOnce(pending(hashOf(transaction)));
+      jest
+        .spyOn(service as any, 'sleep')
+        .mockResolvedValue(undefined);
+      jest
+        .spyOn(service, 'waitForConfirmation')
+        .mockResolvedValue({ hash: hashOf(transaction), confirmed: true });
+
+      const result = await service.submit(transaction);
+
+      expect(send).toHaveBeenCalledTimes(2);
+      expect(result.confirmed).toBe(true);
+    });
+
+    it('gives up without polling when TRY_AGAIN_LATER persists', async () => {
+      process.env.STELLAR_TRY_AGAIN_MAX_ATTEMPTS = '2';
+      const send = jest
+        .spyOn(rpc.Server.prototype, 'sendTransaction')
+        .mockResolvedValue({
+          status: 'TRY_AGAIN_LATER',
+          hash: hashOf(transaction),
+        } as rpc.Api.SendTransactionResponse);
+      jest.spyOn(service as any, 'sleep').mockResolvedValue(undefined);
+      const wait = jest.spyOn(service, 'waitForConfirmation');
+
+      const result = await service.submit(transaction);
+      delete process.env.STELLAR_TRY_AGAIN_MAX_ATTEMPTS;
+
+      expect(send).toHaveBeenCalledTimes(3);
+      expect(wait).not.toHaveBeenCalled();
+      expect(result.confirmed).toBe(false);
+      expect(result.error).toMatch(/TRY_AGAIN_LATER/);
+    });
+
     it('reports a network rejection without confirming', async () => {
       jest.spyOn(rpc.Server.prototype, 'sendTransaction').mockResolvedValue({
         status: 'ERROR',
@@ -351,6 +392,33 @@ describe('StellarRpcService', () => {
           [],
         ),
       ).rejects.toThrow(/Simulation of stake .* failed: insufficient balance/);
+    });
+  });
+
+  describe('resolveInclusionFee', () => {
+    afterEach(() => delete process.env.STELLAR_MAX_FEE);
+
+    it('uses observed p90 fee below the ceiling', async () => {
+      jest.spyOn(rpc.Server.prototype, 'getFeeStats').mockResolvedValue({
+        sorobanInclusionFee: { p90: '500' },
+      } as unknown as rpc.Api.GetFeeStatsResponse);
+      expect(await service.resolveInclusionFee()).toBe('500');
+    });
+
+    it('caps the fee at STELLAR_MAX_FEE', async () => {
+      process.env.STELLAR_MAX_FEE = '300';
+      jest.spyOn(rpc.Server.prototype, 'getFeeStats').mockResolvedValue({
+        sorobanInclusionFee: { p90: '500' },
+      } as unknown as rpc.Api.GetFeeStatsResponse);
+      expect(await service.resolveInclusionFee()).toBe('300');
+    });
+
+    it('falls back to the ceiling when fee stats fail', async () => {
+      process.env.STELLAR_MAX_FEE = '700';
+      jest
+        .spyOn(rpc.Server.prototype, 'getFeeStats')
+        .mockRejectedValue(new Error('down'));
+      expect(await service.resolveInclusionFee()).toBe('700');
     });
   });
 

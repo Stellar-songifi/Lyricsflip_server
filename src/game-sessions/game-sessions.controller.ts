@@ -11,28 +11,32 @@ import {
   Put,
   HttpCode,
   HttpStatus,
+  UseInterceptors,
 } from '@nestjs/common';
 import { GameSessionsService } from './game-sessions.service';
 import { CreateGameSessionDto } from './dto/create-game-session.dto';
 import { UpdateGameSessionDto } from './dto/update-game-session.dto';
 import { ConfirmStakeDto } from './dto/confirm-stake.dto';
+import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
 import { CompleteWageredGameDto } from './dto/complete-wagered-game.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { Role } from '../auth/roles/role.enum';
 import { GetUser } from '../auth/decorators/user.decorator';
 import { User } from '../users/entities/user.entity';
+import { AuditInterceptor } from '../audit/audit.interceptor';
+import { Audited } from '../audit/decorators/audited.decorator';
 import {
   ApiTags,
   ApiOperation,
   ApiResponse,
-  ApiQuery,
   ApiParam,
 } from '@nestjs/swagger';
 
 @ApiTags('game-sessions')
 @Controller('game-sessions')
 @UseGuards(JwtAuthGuard)
+@UseInterceptors(AuditInterceptor)
 export class GameSessionsController {
   constructor(private readonly gameSessionsService: GameSessionsService) {}
 
@@ -51,24 +55,30 @@ export class GameSessionsController {
     summary: 'Get your game sessions (every session, for admins)',
   })
   @ApiResponse({ status: 200, description: 'List of game sessions.' })
+  @ApiResponse({ status: 400, description: 'Invalid pagination values.' })
+  findAll(@Query() { limit, offset }: PaginationQueryDto) {
+    return this.gameSessionsService.findAll(limit, offset);
   findAll(@GetUser() user: User) {
     return this.gameSessionsService.findAll(user);
   }
 
   @Get('top-scores')
   @ApiOperation({ summary: 'Get top scores' })
-  @ApiQuery({ name: 'limit', required: false, type: Number })
   @ApiResponse({ status: 200, description: 'Top scores.' })
-  getTopScores(@Query('limit') limit: number) {
-    return this.gameSessionsService.getTopScores(limit);
+  @ApiResponse({ status: 400, description: 'Invalid pagination values.' })
+  getTopScores(@Query() { limit, offset }: PaginationQueryDto) {
+    return this.gameSessionsService.getTopScores(limit, offset);
   }
 
   @Get('my-recent')
   @ApiOperation({ summary: 'Get recent games for user' })
-  @ApiQuery({ name: 'limit', required: false, type: Number })
   @ApiResponse({ status: 200, description: 'Recent games for user.' })
-  getRecentGames(@GetUser() user: User, @Query('limit') limit: number) {
-    return this.gameSessionsService.getRecentGames(user.id, limit);
+  @ApiResponse({ status: 400, description: 'Invalid pagination values.' })
+  getRecentGames(
+    @GetUser() user: User,
+    @Query() { limit, offset }: PaginationQueryDto,
+  ) {
+    return this.gameSessionsService.getRecentGames(user.id, limit, offset);
   }
 
   @Get(':id')
@@ -107,6 +117,7 @@ export class GameSessionsController {
   // them. Admin only until scores are computed server-side from gameplay.
   @Roles(Role.Admin)
   @Put(':id/complete-wagered')
+  @Audited({ action: 'settlement.wager.complete', targetType: 'game-session' })
   @ApiOperation({
     summary: 'Complete a wagered game session and resolve wager (Admin only)',
   })
@@ -181,8 +192,32 @@ export class GameSessionsController {
     return this.gameSessionsService.confirmStake(id, user.id, dto.transaction);
   }
 
+  @Post(':id/stake/transaction')
+  @ApiOperation({
+    summary: "Rebuild the caller's stake transaction",
+    description:
+      'Use this when the transaction from POST /game-sessions expired before ' +
+      'it was signed. Only valid while the wager is awaiting stakes and the ' +
+      "caller has not already staked; the new transaction's hash replaces the " +
+      'old one, so only the fresh transaction is accepted by POST :id/stake.',
+  })
+  @ApiParam({ name: 'id', description: 'Game session ID' })
+  @ApiResponse({ status: 200, description: 'New unsigned stake transaction.' })
+  @ApiResponse({
+    status: 400,
+    description: 'Not a player in this wager, already staked, or not awaiting stakes.',
+  })
+  @HttpCode(HttpStatus.OK)
+  async requestFreshStakeTransaction(
+    @Param('id') id: string,
+    @GetUser() user: User,
+  ) {
+    return this.gameSessionsService.requestFreshStakeTransaction(id, user.id);
+  }
+
   @Roles(Role.Admin)
   @Post(':id/wager/reconcile')
+  @Audited({ action: 'settlement.wager.reconcile', targetType: 'game-session' })
   @ApiOperation({
     summary: 'Reconcile a wager left mid-settlement against the ledger',
     description:
@@ -224,17 +259,16 @@ export class GameSessionsController {
 
   @Get('wagers/my-history')
   @ApiOperation({ summary: 'Get user wager history' })
-  @ApiQuery({
-    name: 'limit',
-    required: false,
-    type: Number,
-    description: 'Limit number of results',
-  })
   @ApiResponse({ status: 200, description: 'User wager history.' })
+  @ApiResponse({ status: 400, description: 'Invalid pagination values.' })
   async getUserWagers(
     @GetUser() user: User,
-    @Query('limit') limit: number,
+    @Query() { limit, offset }: PaginationQueryDto,
   ): Promise<any[]> {
-    return await this.gameSessionsService.getUserWagers(user.id, limit);
+    return await this.gameSessionsService.getUserWagers(
+      user.id,
+      limit,
+      offset,
+    );
   }
 }

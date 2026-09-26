@@ -4,6 +4,7 @@ import { Repository, Between } from 'typeorm';
 import { GameHistory } from './entities/game-history.entity';
 import { CreateGameHistoryDto } from './dto/create-game-history.dto';
 import { GameHistoryQueryDto } from './dto/game-history-query.dto';
+import { MAX_PAGE_SIZE } from '../common/dto/pagination-query.dto';
 import { User } from '../users/entities/user.entity';
 import { Role } from '../auth/roles/role.enum';
 
@@ -75,8 +76,9 @@ export class GameHistoryService {
   ): Promise<PaginatedGameHistoryResponse> {
     this.logger.debug(`Fetching game history for user ${userId}`);
 
-    const page = parseInt(queryDto.page || '1', 10);
-    const limit = Math.min(parseInt(queryDto.limit || '10', 10), 100); // Cap at 100
+    // Bounds are validated by GameHistoryQueryDto; the cap is a backstop
+    const page = queryDto.page ?? 1;
+    const limit = Math.min(queryDto.limit ?? 10, MAX_PAGE_SIZE);
     const skip = (page - 1) * limit;
 
     // Build where conditions

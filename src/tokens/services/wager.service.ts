@@ -6,6 +6,7 @@ import {
   Inject,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { ConfigService } from '@nestjs/config';
 import { Repository } from 'typeorm';
 import { Wager, WagerStatus } from '../entities/wager.entity';
 import { User } from '../../users/entities/user.entity';
@@ -23,6 +24,7 @@ import {
   multiplyStroops,
 } from '../../stellar/amount.util';
 import type { UnsignedTransaction } from '../../stellar/services/stellar-rpc.service';
+import { sanitizeForDisplay } from '../../common/utils/sanitize.util';
 
 export interface CreateWagerDto {
   sessionId: string;
@@ -71,9 +73,21 @@ export class WagerService {
     private readonly userRepository: Repository<User>,
     @Inject(TOKEN_SERVICE)
     private readonly tokenService: ITokenService,
+    private readonly configService: ConfigService,
   ) {}
 
   /**
+   * How long a wager may sit `AWAITING_STAKES` before {@link WagerRefundJob}
+   * refunds it. Configurable via `WAGER_STAKE_DEADLINE_MINUTES`, default 15.
+   */
+  private get stakeDeadlineMs(): number {
+    const minutes =
+      this.configService.get<number>('WAGER_STAKE_DEADLINE_MINUTES') ?? 15;
+    return minutes * 60_000;
+  }
+
+  /**
+   * Opens an escrow pot for a session and stakes both players into it.
    * Opens an escrow pot for a session and stakes player one into it.
    *
    * Player two is only staked once they accept, through {@link acceptWager};
@@ -128,14 +142,14 @@ export class WagerService {
       if (!playerAFunded) {
         return {
           success: false,
-          message: `${playerA.username} has insufficient LYRIC for this wager (${fromStroops(stake)} required)`,
+          message: `${sanitizeForDisplay(playerA.username)} has insufficient LYRIC for this wager (${fromStroops(stake)} required)`,
         };
       }
 
       if (!playerBFunded) {
         return {
           success: false,
-          message: `${playerB.username} has insufficient LYRIC for this wager (${fromStroops(stake)} required)`,
+          message: `${sanitizeForDisplay(playerB.username)} has insufficient LYRIC for this wager (${fromStroops(stake)} required)`,
         };
       }
 
@@ -173,6 +187,34 @@ export class WagerService {
       // Step 3 — stake player one only. Player two has not agreed to anything
       // yet, so their funds are not touched until they accept (acceptWager).
       const stakeA = await this.tokenService.stakeTokens(playerAId, context);
+
+      wager.playerAStakeTxHash = stakeA.txHash ?? null;
+      wager.playerBStakeTxHash = stakeB.txHash ?? null;
+
+      const pendingSignatures = [
+        { userId: playerAId, result: stakeA },
+        { userId: playerBId, result: stakeB },
+      ]
+        .filter(
+          (entry) => entry.result.status === SettlementStatus.PENDING_SIGNATURE,
+        )
+        .map((entry) => ({
+          userId: entry.userId,
+          transaction: entry.result.unsignedTransaction as UnsignedTransaction,
+        }));
+
+      if (pendingSignatures.length > 0) {
+        for (const entry of pendingSignatures) {
+          if (entry.userId === playerAId) {
+            wager.playerALatestStakeHash = entry.transaction.hash;
+          } else {
+            wager.playerBLatestStakeHash = entry.transaction.hash;
+          }
+        }
+
+        // A player who never signs would otherwise leave the other player's
+        // stake locked in the pot forever; WagerRefundJob sweeps past this.
+        wager.stakeDeadline = new Date(Date.now() + this.stakeDeadlineMs);
 
       if (stakeA.status === SettlementStatus.PENDING_SIGNATURE) {
         wager.resultMessage =
@@ -314,6 +356,31 @@ export class WagerService {
       this.contextFor(wager),
     );
 
+    // The hash the wallet actually signed has to match the most recent one
+    // this wager offered — otherwise it is a stake transaction that expired
+    // and was superseded by a fresh one from requestFreshStakeTransaction,
+    // and accepting it anyway would confirm a stake against a transaction
+    // this wager no longer expects.
+    const expectedHash =
+      userId === wager.playerAId
+        ? wager.playerALatestStakeHash
+        : wager.playerBLatestStakeHash;
+
+    if (
+      result.success &&
+      expectedHash &&
+      result.txHash &&
+      result.txHash !== expectedHash
+    ) {
+      return {
+        success: false,
+        wager,
+        message:
+          'This stake transaction has expired. Request a new one via ' +
+          'POST /game-sessions/:id/stake/transaction and sign that instead.',
+      };
+    }
+
     if (userId === wager.playerAId) {
       wager.playerAStakeTxHash = result.txHash ?? wager.playerAStakeTxHash;
     } else {
@@ -343,6 +410,82 @@ export class WagerService {
       message: bothConfirmed
         ? saved.resultMessage
         : 'Stake confirmed. Waiting for your opponent to sign theirs.',
+    };
+  }
+
+  /**
+   * Rebuilds the caller's stake transaction, for when the one they were given
+   * has expired — its timeout ran out, or another transaction from that
+   * account moved the sequence number the original was built against.
+   *
+   * Only valid while the wager is `AWAITING_STAKES` and this player has not
+   * already staked; the new transaction's hash replaces the old one, so
+   * {@link confirmStake} only accepts a signature over the transaction this
+   * call just handed out.
+   */
+  async requestFreshStakeTransaction(
+    sessionId: string,
+    userId: string,
+  ): Promise<WagerResult> {
+    const wager = await this.requireWager(sessionId);
+
+    if (wager.status !== WagerStatus.AWAITING_STAKES) {
+      return {
+        success: false,
+        wager,
+        message: `This wager is not awaiting stakes (status: ${wager.status})`,
+      };
+    }
+
+    if (userId !== wager.playerAId && userId !== wager.playerBId) {
+      throw new BadRequestException('You are not a player in this wager');
+    }
+
+    const alreadyStaked =
+      userId === wager.playerAId
+        ? wager.playerAStakeTxHash
+        : wager.playerBStakeTxHash;
+
+    if (alreadyStaked) {
+      return {
+        success: false,
+        wager,
+        message: 'You have already staked; there is nothing to rebuild',
+      };
+    }
+
+    const result = await this.tokenService.stakeTokens(
+      userId,
+      this.contextFor(wager),
+    );
+
+    if (
+      result.status !== SettlementStatus.PENDING_SIGNATURE ||
+      !result.unsignedTransaction
+    ) {
+      return {
+        success: false,
+        wager,
+        message:
+          result.message ?? 'Could not build a new stake transaction',
+      };
+    }
+
+    if (userId === wager.playerAId) {
+      wager.playerALatestStakeHash = result.unsignedTransaction.hash;
+    } else {
+      wager.playerBLatestStakeHash = result.unsignedTransaction.hash;
+    }
+
+    const saved = await this.wagerRepository.save(wager);
+
+    return {
+      success: true,
+      wager: saved,
+      message: 'New stake transaction ready to sign.',
+      pendingSignatures: [
+        { userId, transaction: result.unsignedTransaction },
+      ],
     };
   }
 
@@ -508,8 +651,14 @@ export class WagerService {
   }
 
   /** Gets all wagers for a user. */
-  async getUserWagers(userId: string, limit: number = 10): Promise<Wager[]> {
+  async getUserWagers(
+    userId: string,
+    limit: number = 10,
+    offset: number = 0,
+  ): Promise<Wager[]> {
     try {
+      // take/skip rather than limit/offset: with joins, .limit() caps joined
+      // rows, not wagers.
       return await this.wagerRepository
         .createQueryBuilder('wager')
         .leftJoinAndSelect('wager.playerA', 'playerA')
@@ -519,7 +668,8 @@ export class WagerService {
           userId,
         })
         .orderBy('wager.createdAt', 'DESC')
-        .limit(limit)
+        .take(limit)
+        .skip(offset)
         .getMany();
     } catch (error) {
       this.logger.error(

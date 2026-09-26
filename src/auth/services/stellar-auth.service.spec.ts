@@ -9,7 +9,9 @@ import { JwtService } from '@nestjs/jwt';
 import { Keypair, Networks, Transaction, WebAuth } from '@stellar/stellar-sdk';
 import { Repository } from 'typeorm';
 import { StellarAuthService } from './stellar-auth.service';
+import { AuthTokenService } from './auth-token.service';
 import { User } from '../../users/entities/user.entity';
+import { Wager, WagerStatus } from '../../tokens/entities/wager.entity';
 import type { StellarConfig } from '../../stellar/stellar.config';
 
 const stellarConfig = {
@@ -27,6 +29,7 @@ describe('StellarAuthService', () => {
     save: jest.Mock;
     update: jest.Mock;
   };
+  let wagerRepository: { findOne: jest.Mock };
   let jwtService: { sign: jest.Mock };
   let serverSecret: string;
   let wallet: Keypair;
@@ -44,11 +47,14 @@ describe('StellarAuthService', () => {
       save: jest.fn((user) => Promise.resolve(user)),
       update: jest.fn().mockResolvedValue({ affected: 1 }),
     };
+    wagerRepository = { findOne: jest.fn().mockResolvedValue(null) };
     jwtService = { sign: jest.fn().mockReturnValue('a.jwt.token') };
 
     service = new StellarAuthService(
       userRepository as unknown as Repository<User>,
+      wagerRepository as unknown as Repository<Wager>,
       jwtService as unknown as JwtService,
+      new AuthTokenService(jwtService as unknown as JwtService),
       configOf({ STELLAR_WEB_AUTH_SECRET: serverSecret }),
       stellarConfig,
     );
@@ -80,7 +86,7 @@ describe('StellarAuthService', () => {
       const resolverSecret = Keypair.random().secret();
       const fallback = new StellarAuthService(
         userRepository as unknown as Repository<User>,
-        jwtService as unknown as JwtService,
+        new AuthTokenService(jwtService as unknown as JwtService),
         configOf({ STELLAR_RESOLVER_SECRET: resolverSecret }),
         stellarConfig,
       );
@@ -95,7 +101,7 @@ describe('StellarAuthService', () => {
 
       new StellarAuthService(
         userRepository as unknown as Repository<User>,
-        jwtService as unknown as JwtService,
+        new AuthTokenService(jwtService as unknown as JwtService),
         configOf({}),
         stellarConfig,
       );
@@ -177,7 +183,7 @@ describe('StellarAuthService', () => {
     it('rejects a challenge issued by a different server', () => {
       const otherServer = new StellarAuthService(
         userRepository as unknown as Repository<User>,
-        jwtService as unknown as JwtService,
+        new AuthTokenService(jwtService as unknown as JwtService),
         configOf({ STELLAR_WEB_AUTH_SECRET: Keypair.random().secret() }),
         stellarConfig,
       );
@@ -339,6 +345,52 @@ describe('StellarAuthService', () => {
     });
   });
 
+  describe('replay protection and key configuration', () => {
+    it('rejects a challenge that was already exchanged', async () => {
+      userRepository.findOne.mockResolvedValue({
+        id: 'u1',
+        isActive: true,
+        email: 'a@b.c',
+        username: 'u',
+      });
+      const signed = signedChallengeFor(wallet);
+      await service.loginWithWallet(signed);
+      await expect(service.loginWithWallet(signed)).rejects.toThrow(
+        /already been used/,
+      );
+    });
+
+    it('fails to boot in production without a web-auth secret', () => {
+      const prev = process.env.NODE_ENV;
+      process.env.NODE_ENV = 'production';
+      try {
+        expect(
+          () =>
+            new StellarAuthService(
+              userRepository as unknown as Repository<User>,
+              jwtService as unknown as JwtService,
+              configOf({}),
+              stellarConfig,
+            ),
+        ).toThrow(/STELLAR_WEB_AUTH_SECRET/);
+      } finally {
+        process.env.NODE_ENV = prev;
+      }
+    });
+
+    it('rejects a malformed web-auth secret', () => {
+      expect(
+        () =>
+          new StellarAuthService(
+            userRepository as unknown as Repository<User>,
+            jwtService as unknown as JwtService,
+            configOf({ STELLAR_WEB_AUTH_SECRET: 'not-a-seed' }),
+            stellarConfig,
+          ),
+      ).toThrow(/valid Stellar secret seed/);
+    });
+  });
+
   describe('unlinkWallet', () => {
     it('clears both the address and its verification stamp', async () => {
       await service.unlinkWallet('user-1');
@@ -347,6 +399,44 @@ describe('StellarAuthService', () => {
         { id: 'user-1' },
         { stellarAddress: null, stellarAddressVerifiedAt: null },
       );
+    });
+
+    it.each([
+      WagerStatus.PENDING,
+      WagerStatus.AWAITING_STAKES,
+      WagerStatus.STAKED,
+      WagerStatus.SETTLING,
+    ])('refuses to unlink while a wager is %s', async (status) => {
+      wagerRepository.findOne.mockResolvedValueOnce({
+        id: 'wager-1',
+        status,
+      });
+
+      await expect(service.unlinkWallet('user-1')).rejects.toThrow(
+        ConflictException,
+      );
+      expect(userRepository.update).not.toHaveBeenCalled();
+    });
+
+    it('allows unlinking once the wager has settled', async () => {
+      wagerRepository.findOne.mockResolvedValueOnce(null);
+
+      await expect(service.unlinkWallet('user-1')).resolves.toBeUndefined();
+      expect(userRepository.update).toHaveBeenCalled();
+    });
+  });
+
+  describe('linkWallet with an active wager', () => {
+    it('refuses to relink while the user has an active wager', async () => {
+      wagerRepository.findOne.mockResolvedValueOnce({
+        id: 'wager-1',
+        status: WagerStatus.STAKED,
+      });
+
+      await expect(
+        service.linkWallet('user-1', signedChallengeFor(wallet)),
+      ).rejects.toThrow(ConflictException);
+      expect(userRepository.findOne).not.toHaveBeenCalled();
     });
   });
 });

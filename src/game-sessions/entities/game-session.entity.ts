@@ -57,12 +57,14 @@ export class GameSession {
   @Column({
     type: 'enum',
     enum: GameCategory,
+    enumName: 'game_category_enum',
   })
   category: GameCategory;
 
   @Column({
     type: 'enum',
     enum: GameMode,
+    enumName: 'game_mode_enum',
     default: GameMode.SINGLE_PLAYER,
   })
   mode: GameMode;
@@ -70,6 +72,7 @@ export class GameSession {
   @Column({
     type: 'enum',
     enum: GameSessionStatus,
+    enumName: 'game_session_status_enum',
     default: GameSessionStatus.IN_PROGRESS,
   })
   status: GameSessionStatus;

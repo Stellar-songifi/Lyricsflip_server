@@ -99,11 +99,16 @@ export class EscrowContractService {
     sessionId: string,
     playerAddress: string,
   ): Promise<Transaction> {
+    // The stake is the one transaction a player, not the backend, has to
+    // sign, so it gets its own — configurable — timeout: a player who takes
+    // longer than the network default to open their wallet should still be
+    // able to request a fresh one rather than being stuck (see buildUnsignedStake).
     return this.rpc.buildInvocation(
       sourcePublicKey,
       this.config.escrowContractId,
       'stake',
       [this.sessionIdToScVal(sessionId), addressToScVal(playerAddress)],
+      this.config.stakeTxTimeoutSeconds,
     );
   }
 

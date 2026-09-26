@@ -1,4 +1,5 @@
 import {
+  Body,
   Controller,
   Get,
   Post,
@@ -66,6 +67,8 @@ export class LyricsController {
     return AdminLyricDto.from(
       await this.lyricsService.create(createLyricsDto, user),
     );
+  create(@Body() createLyricsDto: CreateLyricsDto, @GetUser() user: User) {
+    return this.lyricsService.create(createLyricsDto, user);
   }
 
   @ApiOperation({ summary: 'Get filtered lyrics' })

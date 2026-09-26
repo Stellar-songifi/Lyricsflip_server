@@ -43,14 +43,14 @@ export class Wager {
   @Column({ type: 'uuid' })
   sessionId: string;
 
-  @ManyToOne(() => User, { eager: true })
+  @ManyToOne(() => User)
   @JoinColumn({ name: 'playerAId' })
   playerA: User;
 
   @Column({ type: 'uuid' })
   playerAId: string;
 
-  @ManyToOne(() => User, { eager: true })
+  @ManyToOne(() => User)
   @JoinColumn({ name: 'playerBId' })
   playerB: User;
 
@@ -74,6 +74,7 @@ export class Wager {
   @Column({
     type: 'enum',
     enum: WagerStatus,
+    enumName: 'wager_status_enum',
     default: WagerStatus.PENDING,
   })
   status: WagerStatus;
@@ -107,6 +108,22 @@ export class Wager {
   playerBStakeTxHash?: string | null;
 
   /**
+   * Hash of the most recently built (but not necessarily signed) stake
+   * transaction offered to player A.
+   *
+   * A player's original stake transaction expires — its timeout runs out, or
+   * the account's sequence number moves — long before the wager does.
+   * `POST /game-sessions/:id/stake/transaction` rebuilds it and records the
+   * new hash here so a stale signature can be told apart from a current one.
+   */
+  @Column({ type: 'varchar', length: 128, nullable: true })
+  playerALatestStakeHash?: string | null;
+
+  /** Hash of the most recently built stake transaction offered to player B. */
+  @Column({ type: 'varchar', length: 128, nullable: true })
+  playerBLatestStakeHash?: string | null;
+
+  /**
    * Hash of the payout or refund transaction.
    *
    * Written *before* the outcome is known, so that a crash between submission
@@ -123,6 +140,17 @@ export class Wager {
   /** Message to display to users about the wager result. */
   @Column({ type: 'text', nullable: true })
   resultMessage: string;
+
+  /**
+   * When a wager still `AWAITING_STAKES` past this point is refunded
+   * automatically.
+   *
+   * Set once, when the pot opens, so a player who never signs cannot leave
+   * the other player's stake locked indefinitely: {@link WagerRefundJob}
+   * sweeps past-deadline wagers and refunds whatever staked.
+   */
+  @Column({ type: 'timestamp', nullable: true })
+  stakeDeadline?: Date | null;
 
   @CreateDateColumn()
   createdAt: Date;
