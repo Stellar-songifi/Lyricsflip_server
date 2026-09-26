@@ -16,6 +16,12 @@ import { cacheConfig } from '../config/cache.config';
 import { Genre } from './entities/genre.enum';
 import { MAX_PAGE_SIZE } from '../common/dto/pagination-query.dto';
 
+/**
+ * Maximum length of a lyric snippet served to players. Full lyric text is
+ * never exposed; only a short snippet plus answer metadata is returned.
+ */
+export const MAX_LYRIC_SNIPPET_LENGTH = 150;
+
 export interface LyricsCacheStats {
   keys: number;
   keysByType: {
@@ -54,12 +60,27 @@ export class LyricsService {
     this.cacheTtlMs = cacheConfig.lyricsTtlMs;
   }
 
+  /**
+   * Reject snippets that exceed the content policy limit. Full lyric text is
+   * never served to players, so the snippet is the only lyric surface and it
+   * must stay short.
+   */
+  private assertSnippetWithinLimit(snippet: string): void {
+    if (snippet.length > MAX_LYRIC_SNIPPET_LENGTH) {
+      throw new BadRequestException(
+        `lyricSnippet must be at most ${MAX_LYRIC_SNIPPET_LENGTH} characters`,
+      );
+    }
+  }
+
   async create(createLyricsDto: CreateLyricsDto, user: User): Promise<Lyrics> {
     // Derive lyricSnippet from content when the caller did not supply one.
     // The entity column is non-nullable so we must guarantee a value here.
     const lyricSnippet =
       createLyricsDto.lyricSnippet?.trim() ||
-      createLyricsDto.content.slice(0, 150).trim();
+      (createLyricsDto.content ?? '').slice(0, MAX_LYRIC_SNIPPET_LENGTH).trim();
+
+    this.assertSnippetWithinLimit(lyricSnippet);
 
     const lyrics = this.lyricsRepository.create({
       ...createLyricsDto,
@@ -179,6 +200,10 @@ export class LyricsService {
     Object.assign(lyrics, updateLyricsDto);
     lyrics.updatedAt = new Date(); // Assuming you have updatedAt field
 
+    if (updateLyricsDto.lyricSnippet !== undefined) {
+      this.assertSnippetWithinLimit(updateLyricsDto.lyricSnippet.trim());
+    }
+
     const updatedLyrics = await this.lyricsRepository.save(lyrics);
 
     // The edited lyric may appear in any list, category, random or search
@@ -271,51 +296,6 @@ export class LyricsService {
     };
   }
 
-  /**
-   * Fetch random lyrics with caching support
-   * @param count Number of random lyrics to fetch (default: 1, max: 100)
-   * @param genre Optional genre filter
-   * @param decade Optional decade filter
-   * @returns Promise<Lyrics[]>
-   */
-  async getRandomLyrics(
-    count = 1,
-    genre?: string,
-    decade?: number,
-  ): Promise<Lyrics[]> {
-    // Validate count
-    if (count <= 0 || count > 100) {
-      throw new BadRequestException('Count must be between 1 and 100');
-    }
+  /*
 
-    // Validate genre if provided
-    if (genre) {
-      const validGenres = Object.values(Genre);
-      if (!validGenres.includes(genre as Genre)) {
-        throw new BadRequestException(
-          `Invalid genre. Valid genres are: ${validGenres.join(', ')}`,
-        );
-      }
-    }
-
-    // Validate decade if provided
-    if (
-      decade &&
-      (decade < 1900 || decade > new Date().getFullYear() || decade % 10 !== 0)
-    ) {
-      throw new BadRequestException(
-        'Invalid decade. Please provide a 4-digit year in decades (e.g., 1990, 2000, 2010)',
-      );
-    }
-
-    // Create cache key based on parameters
-    const cacheKey = `${cacheConfig.keys.randomLyrics}${count}:${genre || 'all'}:${decade || 'all'}`;
-
-    // Random data gets a shorter TTL so repeated requests still vary
-    return this.getOrLoad(cacheKey, cacheConfig.randomTtlMs, async () => {
-      const query = this.lyricsRepository
-        .createQueryBuilder('lyrics')
-        .leftJoinAndSelect('lyrics.createdBy', 'user')
-        .where('lyrics.isActive = :isActive
-
-/* … truncated 3469 chars — edit only what you need near the top … */
+/* … truncated 1609 chars — edit only what you need near the top … */
