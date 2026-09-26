@@ -944,3 +944,8 @@ Do not run stellar mode with real value until the P0 issues are closed.
 - [`docs/DATA_ARCHIVING.md`](docs/DATA_ARCHIVING.md): archiving old data
 - [`src/notifications/README.md`](src/notifications/README.md): notification events and payloads
 - [`.env.example`](.env.example): every environment variable, with the Stellar ones annotated
+
+## Handsoff notes
+
+<!-- handsoff-issue-187 -->
+- #187: [101] Let players report wrong lyrics or answers
