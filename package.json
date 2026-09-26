@@ -47,6 +47,7 @@
     "helmet": "^8.1.0",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.2",
+    "joi": "^17.13.3",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
     "pg": "^8.16.3",
@@ -58,6 +59,9 @@
     "typeorm": "^0.3.25",
     "winston": "^3.17.0",
     "winston-daily-rotate-file": "^5.0.0"
+  },
+  "optionalDependencies": {
+    "@aws-sdk/client-kms": "^3.700.0"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.2.0",

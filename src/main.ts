@@ -6,7 +6,6 @@ import { AppModule } from './app.module';
 import { Logger } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
-import { ErrorInterceptor } from './common/interceptors/error.interceptor';
 import { configureApp } from './app.setup';
 
 async function bootstrap() {
@@ -38,7 +37,7 @@ async function bootstrap() {
     }),
   );
 
-  app.useGlobalInterceptors(new LoggingInterceptor(), new ErrorInterceptor());
+  app.useGlobalInterceptors(new LoggingInterceptor());
 
   // Swagger configuration
   const config = new DocumentBuilder()
@@ -57,6 +56,6 @@ async function bootstrap() {
     credentials: true,
   });
   logger.log(`Application is running on: http://localhost:${port}`);
-  logger.log(`Logging and Error interceptors are active`);
+  logger.log(`Logging interceptor and global exception filter are active`);
 }
 bootstrap();

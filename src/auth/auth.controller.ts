@@ -8,10 +8,13 @@ import {
   HttpCode,
   HttpStatus,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { authThrottle, stellarThrottle } from '../common/throttler/throttle.config';
 import { AuthService } from './auth.service';
+import { AuditInterceptor } from '../audit/audit.interceptor';
+import { Audited } from '../audit/decorators/audited.decorator';
 import { StellarAuthService } from './services/stellar-auth.service';
 import { SignupDto } from './dto/signup.dto';
 import { LoginDto } from './dto/login.dto';
@@ -31,6 +34,7 @@ import {
 
 @ApiTags('auth')
 @Controller('auth')
+@UseInterceptors(AuditInterceptor)
 export class AuthController {
   constructor(
     private authService: AuthService,
@@ -132,6 +136,7 @@ export class AuthController {
   @ApiBearerAuth()
   @Throttle(stellarThrottle)
   @Post('stellar/link')
+  @Audited({ action: 'auth.wallet.link', targetType: 'user' })
   @ApiOperation({
     summary: 'Link a Stellar wallet to the signed-in account',
     description:
@@ -168,6 +173,7 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @Delete('stellar/wallet')
+  @Audited({ action: 'auth.wallet.unlink', targetType: 'user' })
   @ApiOperation({
     summary: 'Unlink the Stellar wallet from the signed-in account',
   })

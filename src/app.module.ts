@@ -13,14 +13,16 @@ import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 import { RolesGuard } from './auth/guards/roles.guard';
 import { RoomsModule } from './rooms/rooms.module';
 import { cacheConfig } from './config/cache.config';
-// import { CommonModule } from './common/common.module';
+import { envValidationSchema } from './config/env.validation';
+import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { AdminModule } from './admin/admin.module';
 import { GameModule } from './game/game.module';
 import { TokensModule } from './tokens/tokens.module';
 import { GameHistoryModule } from './game-history/game-history.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { XpModule } from './xp-level/xp.module';
-import { APP_GUARD } from '@nestjs/core';
+import { AuditModule } from './audit/audit.module';
+import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { AppThrottlerGuard } from './common/throttler/app-throttler.guard';
 import { defaultThrottle } from './common/throttler/throttle.config';
@@ -31,6 +33,10 @@ import { defaultThrottle } from './common/throttler/throttle.config';
     ConfigModule.forRoot({
       isGlobal: true, // Makes ConfigModule available globally
       envFilePath: '.env',
+      validationSchema: envValidationSchema,
+      validationOptions: {
+        abortEarly: false,
+      },
     }),
     ThrottlerModule.forRoot([defaultThrottle()]),
     // Drives periodic jobs such as RoomsService.checkAndCloseExpiredRooms.
@@ -109,7 +115,6 @@ import { defaultThrottle } from './common/throttler/throttle.config';
     AuthModule,
     GameSessionsModule,
     LyricsModule,
-    // CommonModule,
     RoomsModule,
     AdminModule,
     GameModule,
@@ -117,10 +122,12 @@ import { defaultThrottle } from './common/throttler/throttle.config';
     GameHistoryModule,
     NotificationsModule,
     XpModule,
+    AuditModule,
   ],
   controllers: [AppController],
   providers: [
     AppService,
+    { provide: APP_FILTER, useClass: AllExceptionsFilter },
     { provide: APP_GUARD, useClass: AppThrottlerGuard },
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },

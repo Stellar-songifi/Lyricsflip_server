@@ -442,6 +442,18 @@ Both backends follow the same escrow model: open a pot, both players fund it, th
 
 Using `custodial` together with `STELLAR_NETWORK=public` is **refused at boot**, because it would let the backend spend real player funds. In every mode the server holds the **resolver** key, which can settle pots but only in the ways the contract allows (see [The escrow contract](#the-escrow-contract)).
 
+### Key stores
+
+`STELLAR_KEY_STORE` decides which `IKeyStore` implementation the `KEY_STORE` provider resolves to - i.e. where the resolver's signing key actually lives:
+
+| Value            | Implementation                    | Behaviour                                                                                          |
+| ---------------- | ---------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `env` (default)  | `EnvKeyStore`/`NonCustodialKeyStore` | Resolver key (and, in custodial mode, the player-key seed) read from `STELLAR_RESOLVER_SECRET`/`STELLAR_CUSTODIAL_MASTER_SEED`. Fine for local development and testnet demos. |
+| `kms`            | `KmsKeyStore` + `AwsKmsSigner`     | Resolver signatures come from an AWS KMS asymmetric ed25519 signing key. No Stellar secret is ever read into this process's environment. Requires `STELLAR_KMS_KEY_ID` and `STELLAR_KMS_REGION`, and the `@aws-sdk/client-kms` package installed. |
+| `vault`          | `KmsKeyStore` + `VaultTransitSigner` | Resolver signatures come from a HashiCorp Vault Transit ed25519 key. Requires `STELLAR_VAULT_ADDR`, `STELLAR_VAULT_TOKEN` and `STELLAR_VAULT_TRANSIT_KEY`. |
+
+With `kms` or `vault`, `KmsKeyStore.getResolverKeypair()` throws rather than returning a keyless `Keypair` - callers that need to sign should move to `signHash(hash)` on the key store, which delegates to the remote signer. That migration is not yet complete for every `signAndSubmit` call site in `EscrowContractService`; today `kms`/`vault` are wired up end-to-end for key resolution and remote signing, but `EscrowContractService` still expects a `Keypair` for the resolver at its existing call sites, so pot settlement itself still needs the migration to `signHash` to run with `STELLAR_KEY_STORE=kms|vault`. See `KmsKeyStore` for provider setup and key-rotation steps, coordinated with the escrow contract's `set_resolver`.
+
 ### The wager lifecycle
 
 ```mermaid
@@ -642,9 +654,8 @@ All configuration comes from environment variables, loaded from `.env` by `@nest
 | `NODE_ENV`       | –                        | `production` hides validation messages and database error details, and drops the mock notification endpoints |
 | `FRONTEND_URL`   | `http://localhost:3000`  | CORS origin                                                           |
 | `LOG_LEVEL`      | `info`                   | Used by the Winston `LoggerService`                                   |
-| `JWT_SECRET`     | **required**             | The app refuses to start without it. Use a long random value          |
+| `JWT_SECRET`     | **required**             | The app refuses to start without it, and it must be at least 32 characters. Use a long random value |
 | `JWT_EXPIRES_IN` | `15m`                    | Any format accepted by `jsonwebtoken`. Refresh tokens are separate, opaque and valid for 30 days |
-| `JWT_EXPIRES_IN` | `7d`                     | Any format accepted by `jsonwebtoken`                                 |
 | `INVITATION_TTL_MINUTES` | `30`             | How long player two has to accept a session invitation before it is abandoned and player one refunded |
 
 **Database**
@@ -661,6 +672,7 @@ All configuration comes from environment variables, loaded from `.env` by `@nest
 | `STELLAR_SETTLEMENT_MODE`       | `mock`                          | `mock` or `stellar`                                                                             |
 | `STELLAR_NETWORK`               | `testnet`                       | `public`, `testnet`, `futurenet` or `standalone`                                                |
 | `STELLAR_CUSTODY_MODE`          | `non-custodial`                 | `custodial` is refused on `public`                                                              |
+| `STELLAR_KEY_STORE`             | `env`                           | `env`, `kms` or `vault`. See [Key stores](#key-stores)                                          |
 | `STELLAR_RPC_URL`               | per network                     | Soroban JSON-RPC endpoint                                                                       |
 | `STELLAR_HORIZON_URL`           | per network                     | Reported by `/stellar/info`                                                                     |
 | `STELLAR_NETWORK_PASSPHRASE`    | per network                     | Override for custom standalone networks                                                         |
@@ -844,9 +856,21 @@ Writes update the per-ID entry. Broader invalidation (`clearCache`) is currently
 ## Logging and errors
 
 - `LoggingInterceptor` logs every request and response, with method, URL, status and duration. Top-level `password`, `token`, `secret`, `key` and `authorization` fields are redacted.
-- `ErrorInterceptor` gives errors the shape shown in [Request lifecycle](#request-lifecycle) and logs them with context.
+- `AllExceptionsFilter` gives errors the shape shown in [Request lifecycle](#request-lifecycle) and logs them with context.
 - TypeORM logs queries and errors, and warns about queries slower than 250 ms.
 - `src/common/services/logger.service.ts` provides a Winston logger with daily-rotating files, but it is not yet registered as the app logger (issue #114).
+
+## Audit logging
+
+Admin and settlement actions leave a durable row in `audit_logs` (actor, action, target type/ID, a sanitized request payload, IP and timestamp), so disputes over a deletion or a settlement can be resolved against a record instead of guesswork.
+
+A handler opts in with `@Audited({ action, targetType })`, on a controller that also has `@UseInterceptors(AuditInterceptor)`; `AuditInterceptor` writes the row after the handler succeeds (never on a failed request) and never blocks or fails the response if the write itself fails. Currently applied to:
+
+- `DELETE /admin/users/:id`, `DELETE /admin/lyrics/:id`
+- `PUT /game-sessions/:id/complete-wagered`, `POST /game-sessions/:id/wager/reconcile`
+- `POST /auth/stellar/link`, `DELETE /auth/stellar/wallet`
+
+`GET /admin/audit-logs` (admin-only) lists rows with `actorId`, `action`, `targetType`, `targetId`, `limit` and `offset` filters. There is no write or delete endpoint - the table is append-only from the API's perspective; only direct database access can alter a row.
 
 ## Testing
 
