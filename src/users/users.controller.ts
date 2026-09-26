@@ -21,6 +21,8 @@ import { User } from './entities/user.entity';
 import { UserGroup } from './user-serialization';
 import { GetUser } from 'src/auth/decorators/user.decorator';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
+import { OptionalJwtAuthGuard } from 'src/auth/guards/optional-jwt-auth.guard';
+import { Public } from 'src/auth/decorators/public.decorator';
 import { Roles } from 'src/auth/roles/roles.decorator';
 import { Role } from 'src/auth/roles/role.enum';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
@@ -42,32 +44,39 @@ export class UsersController {
     return this.usersService.findAll(limit, offset);
   }
 
+  /**
+   * GET /users/me - Rich self-service profile.
+   * Returns the profile plus levelTitle, the linked wallet, the balance
+   * summary and stats. Declared before `:id` so `me` is not treated as an ID.
+   */
+  @UseGuards(JwtAuthGuard)
+  @Get('me')
+  @ApiOperation({ summary: 'Get your own rich profile' })
+  @ApiResponse({ status: 200, description: 'Profile with level, wallet, balance and stats.' })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  getMe(@GetUser() user: User) {
+    return this.usersService.getSelfProfile(user.id);
+  }
+
   @UseGuards(JwtAuthGuard)
   @Get('profile')
-  @ApiOperation({ summary: 'Get user profile' })
-  @ApiResponse({ status: 200, description: 'User profile data.' })
+  @ApiOperation({ summary: 'Get user profile (alias of /users/me)' })
+  @ApiResponse({ status: 200, description: 'Profile with level, wallet, balance and stats.' })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
   getProfile(@GetUser() user: User) {
-    return {
-      id: user.id,
-      username: user.username,
-      email: user.email,
-      xp: user.xp,
-      level: user.level,
-      preferredGenre: user.preferredGenre,
-      preferredDecade: user.preferredDecade,
-      createdAt: user.createdAt,
-      lastLoginAt: user.lastLoginAt,
-    };
+    return this.usersService.getSelfProfile(user.id);
   }
 
   /**
    * PATCH /users/me - Update the current user's own account.
    * Declared before `:id` so `me` is not treated as an ID.
    */
+  @UseGuards(JwtAuthGuard)
   @Patch('me')
   @SerializeOptions({ groups: [UserGroup.SELF] })
   @ApiOperation({ summary: 'Update your own account' })
   @ApiResponse({ status: 200, description: 'Account updated.' })
+  @ApiResponse({ status: 400, description: 'Invalid profile data.' })
   @ApiResponse({ status: 409, description: 'Username already exists.' })
   updateMe(@GetUser() user: User, @Body() updateProfileDto: UpdateProfileDto) {
     return this.usersService.update(user.id, updateProfileDto);
@@ -79,6 +88,7 @@ export class UsersController {
    * anonymized and deactivated; anonymized wager records are retained for
    * financial/audit purposes (see issue #130).
    */
+  /** DELETE /users/me - Delete the current user's own account. */
   @UseGuards(JwtAuthGuard)
   @Delete('me')
   @ApiOperation({ summary: 'Delete your own account' })
@@ -142,21 +152,29 @@ export class UsersController {
   }
 
   /**
-   * GET /users/leaderboard - Top users ranked by xp, level or username.
-   * Declared before `@Get(':id')` so the literal path is not swallowed by the
-   * wildcard route.
+   * GET /users/leaderboard - Public leaderboard ranked by xp, level or username.
+   * Supports weekly/monthly/all-time periods and genre filtering, excludes
+   * inactive (and optionally admin) accounts, and includes the caller's rank
+   * when authenticated. Declared before `@Get(':id')` so the literal path is
+   * not swallowed by the wildcard route.
    */
+  @Public()
+  @UseGuards(OptionalJwtAuthGuard)
   @Get('leaderboard')
-  @ApiOperation({ summary: 'Get the user leaderboard' })
-  @ApiResponse({ status: 200, description: 'Ranked users with pagination meta.' })
-  @ApiResponse({ status: 400, description: 'Invalid pagination, sort or order.' })
-  getLeaderboard(@Query() query: LeaderboardQueryDto) {
-    return this.usersService.getLeaderboard(
-      query.limit ?? 10,
-      query.offset ?? 0,
-      query.sort ?? 'xp',
-      query.order ?? 'DESC',
-    );
+  @ApiOperation({ summary: 'Get the public user leaderboard' })
+  @ApiResponse({ status: 200, description: 'Ranked users with pagination meta and caller rank.' })
+  @ApiResponse({ status: 400, description: 'Invalid pagination, sort, order, period or genre.' })
+  getLeaderboard(@Query() query: LeaderboardQueryDto, @GetUser() user?: User) {
+    return this.usersService.getLeaderboard({
+      limit: query.limit ?? 10,
+      offset: query.offset ?? 0,
+      sort: query.sort ?? 'xp',
+      order: query.order ?? 'DESC',
+      period: query.period ?? 'all',
+      genre: query.genre,
+      includeAdmins: query.includeAdmins ?? false,
+      currentUserId: user?.id,
+    });
   }
 
   /**

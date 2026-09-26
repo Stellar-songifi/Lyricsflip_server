@@ -54,6 +54,18 @@ export enum MusicDecade {
 }
 
 /**
+ * Time windows supported by the public leaderboard endpoint.
+ *
+ * `ALL` ranks by the lifetime `xp` column; `WEEKLY` and `MONTHLY` rank by XP
+ * earned inside the window, aggregated from `game_history`.
+ */
+export enum LeaderboardPeriod {
+  WEEKLY = 'weekly',
+  MONTHLY = 'monthly',
+  ALL = 'all',
+}
+
+/**
  * Fields without @Expose are public (id, username, xp, level, levelTitle,
  * createdAt). Fields in PRIVATE_USER_GROUPS appear only for the user themself
  * or an admin; see user-serialization.ts.

@@ -15,6 +15,11 @@ describe('AdminController', () => {
       meta: { total: 1, page: 1, limit: 5 },
     }),
     deleteUser: jest.fn().mockResolvedValue({ message: 'User deleted' }),
+    findInactiveLyrics: jest.fn().mockResolvedValue({
+      data: [{ id: 'lyric-1', title: 'Removed lyric', isActive: false }],
+      meta: { total: 1, page: 1, limit: 5 },
+    }),
+    restoreLyric: jest.fn().mockResolvedValue({ id: 'lyric-1', title: 'Removed lyric', isActive: true }),
   };
 
   // Mock user payloads for testing
@@ -82,6 +87,26 @@ describe('AdminController', () => {
       const userId = 'some-uuid';
       await controller.deleteUser(userId);
       expect(mockAdminService.deleteUser).toHaveBeenCalledWith(userId);
+    });
+  });
+
+  describe('GET /admin/lyrics?status=inactive', () => {
+    it('should allow an admin to list deactivated lyrics', async () => {
+      const result = await controller.findInactiveLyrics({ page: 1, limit: 5 });
+      expect(result).toBeDefined();
+      expect(result.data).toBeDefined();
+      expect(result.meta).toEqual({ total: 1, page: 1, limit: 5 });
+      expect(mockAdminService.findInactiveLyrics).toHaveBeenCalledWith({ page: 1, limit: 5 });
+    });
+  });
+
+  describe('POST /admin/lyrics/:id/restore', () => {
+    it('should allow an admin to restore a deactivated lyric', async () => {
+      const lyricId = 'lyric-1';
+      const result = await controller.restoreLyric(lyricId);
+      expect(result).toBeDefined();
+      expect(result.isActive).toBe(true);
+      expect(mockAdminService.restoreLyric).toHaveBeenCalledWith(lyricId);
     });
   });
 });

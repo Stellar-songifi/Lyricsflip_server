@@ -20,6 +20,8 @@ interface GameSession {
   score: number;
   streak: number;
   currentLyric?: any;
+  /** Lyric IDs already served to this player, to avoid repeats. */
+  seenLyricIds: Set<string>;
 }
 
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
@@ -86,6 +88,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       playerId: userId,
       score: 0,
       streak: 0,
+      seenLyricIds: new Set<string>(),
     });
 
     client.emit('connected', {
@@ -114,16 +117,33 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         return;
       }
 
-      // Get previously shown lyrics to avoid repetition
-      const excludeIds = session.currentLyric ? [session.currentLyric.id] : [];
+      // Exclude lyrics this player has already seen so they don't repeat.
+      const excludeIds = Array.from(session.seenLyricIds);
+      if (session.currentLyric) excludeIds.push(session.currentLyric.id);
 
-      const lyric = await this.gameLogicService.getRandomLyric({
+      let lyric = await this.gameLogicService.getRandomLyric({
         ...options,
         excludeIds,
       });
 
-      // Store current lyric in session
+      // Fall back gracefully when the unseen pool is exhausted: reset the
+      // seen set and retry so the player can keep playing.
+      if (!lyric && excludeIds.length > 0) {
+        session.seenLyricIds.clear();
+        lyric = await this.gameLogicService.getRandomLyric({
+          ...options,
+          excludeIds: session.currentLyric ? [session.currentLyric.id] : [],
+        });
+      }
+
+      if (!lyric) {
+        client.emit('error', { message: 'No lyrics available' });
+        return;
+      }
+
+      // Store current lyric in session and remember it as seen
       session.currentLyric = lyric;
+      session.seenLyricIds.add(lyric.id);
 
       // Send only the lyric snippet (hide answers)
       client.emit('newLyric', {

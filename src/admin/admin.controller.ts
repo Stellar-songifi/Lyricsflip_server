@@ -46,8 +46,11 @@ export class AdminController {
 
   // --- Lyrics Management ---
   @Get('lyrics')
-  findAllLyrics(@Query() query: PaginationQueryDto) {
-    return this.adminService.findAllLyrics(query);
+  findAllLyrics(
+    @Query() query: PaginationQueryDto,
+    @Query('status') status?: string,
+  ) {
+    return this.adminService.findAllLyrics(query, status);
   }
 
   @Post('lyrics/import')
@@ -59,6 +62,12 @@ export class AdminController {
   ) {
     const dryRun = body?.dryRun === true || body?.dryRun === 'true';
     return this.adminService.importLyrics(file, dryRun);
+  }
+
+  @Post('lyrics/:id/restore')
+  @Audited({ action: 'admin.lyric.restore', targetType: 'lyric' })
+  restoreLyric(@Param('id', ParseIntPipe) id: number) {
+    return this.adminService.restoreLyric(id);
   }
 
   @Delete('lyrics/:id')
