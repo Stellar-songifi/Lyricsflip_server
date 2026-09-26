@@ -9,6 +9,7 @@ import { Cache } from 'cache-manager';
 import { ConflictException, NotFoundException, BadRequestException } from '@nestjs/common';
 import { Role } from '../auth/roles/role.enum';
 import { Wager, WagerStatus } from '../tokens/entities/wager.entity';
+import { cacheConfig } from '../config/cache.config';
 
 describe('UsersService', () => {
   let service: UsersService;
@@ -238,6 +239,21 @@ describe('UsersService', () => {
       expect(mockUserRepository.findAndCount).toHaveBeenCalled();
       expect(mockCacheManager.set).toHaveBeenCalled();
       expect(result).toBeDefined();
+    });
+
+    it('should cache the leaderboard for 30 seconds (TTL in milliseconds)', async () => {
+      mockCacheManager.get.mockResolvedValue(null);
+      mockUserRepository.findAndCount.mockResolvedValue([[], 0]);
+
+      await service.getLeaderboard(10, 0, 'xp', 'DESC');
+
+      // cache-manager v7 TTLs are milliseconds; 30 would expire in 30 ms.
+      expect(cacheConfig.leaderboardTtlMs).toBe(30_000);
+      expect(mockCacheManager.set).toHaveBeenCalledWith(
+        'leaderboard:xp:DESC:10:0',
+        expect.any(Object),
+        30_000,
+      );
     });
 
     it('should throw BadRequestException for invalid limit', async () => {

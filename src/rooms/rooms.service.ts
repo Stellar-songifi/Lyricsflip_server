@@ -1,20 +1,67 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
   BadRequestException,
   ConflictException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Cron, CronExpression } from '@nestjs/schedule';
+import { LessThanOrEqual, Repository } from 'typeorm';
 import { Room } from './entities/room.entity';
 import { RoomUser } from './entities/room-user.entity';
 import { Lyrics } from '../lyrics/entities/lyrics.entity';
 import { CreateRoomDto } from './dto/create-room.dto';
 import { GuessLyricDto } from './dto/guess-lyric.dto';
+import { PlayerSummaryDto } from '../users/dto/public-user.dto';
 import * as stringSimilarity from 'string-similarity';
+import { GuessType } from '../game/dto/guess.dto';
+import { matchGuess } from '../game/guess-matcher';
+
+/** Lyric fields that are safe to show before a player has guessed. */
+export interface RoomLyricView {
+  id: number;
+  lyricSnippet: string;
+  category?: string;
+  genre?: string;
+  decade?: string;
+  // Only present once the requesting player has guessed.
+  artist?: string;
+  songTitle?: string;
+}
+
+/** Public summary of a player. Never carries other User fields. */
+export interface RoomPlayerView {
+  id: string;
+  username: string | null;
+  hasGuessed: boolean;
+  score: number;
+}
+
+export interface RoomStatusView {
+  id: string;
+  name: string;
+  createdAt: Date;
+  expiresAt: Date;
+  isClosed: boolean;
+  lyric: RoomLyricView;
+  players: RoomPlayerView[];
+}
+
+export interface RoomGuessResult {
+  roomId: string;
+  guessType: GuessType;
+  guess: string;
+  isCorrect: boolean;
+  score: number;
+  correctAnswer: string;
+  lyric: RoomLyricView;
+}
 
 @Injectable()
 export class RoomsService {
+  private readonly logger = new Logger(RoomsService.name);
+
   constructor(
     @InjectRepository(Room)
     private roomRepository: Repository<Room>,
@@ -29,7 +76,7 @@ export class RoomsService {
 
     if (createRoomDto.lyricId) {
       const foundLyric = await this.lyricsRepository.findOne({
-        where: { id: Number(createRoomDto.lyricId) },
+        where: { id: createRoomDto.lyricId, isActive: true },
       });
       if (!foundLyric) {
         throw new NotFoundException('Lyric not found');
@@ -39,6 +86,7 @@ export class RoomsService {
       // Get a random lyric
       const foundLyric = await this.lyricsRepository
         .createQueryBuilder('lyrics')
+        .where('lyrics.isActive = :isActive', { isActive: true })
         .orderBy('RANDOM()')
         .getOne();
       if (!foundLyric) {
@@ -60,16 +108,14 @@ export class RoomsService {
   async join(roomId: string, userId: string) {
     const room = await this.roomRepository.findOne({
       where: { id: roomId },
-      relations: ['roomUsers'],
+      relations: ['roomUsers', 'lyric'],
     });
 
     if (!room) {
       throw new NotFoundException('Room not found');
     }
 
-    if (room.isClosed) {
-      throw new BadRequestException('Room is closed');
-    }
+    this.assertPlayable(room);
 
     // Check if user already joined
     const existingRoomUser = await this.roomUserRepository.findOne({
@@ -88,7 +134,10 @@ export class RoomsService {
     return this.roomUserRepository.save(roomUser);
   }
 
-  async getRoomStatus(roomId: string, userId: string) {
+  async getRoomStatus(
+    roomId: string,
+    userId: string,
+  ): Promise<RoomStatusView> {
     const room = await this.roomRepository.findOne({
       where: { id: roomId },
       relations: ['lyric', 'roomUsers', 'roomUsers.user'],
@@ -104,17 +153,47 @@ export class RoomsService {
       throw new NotFoundException('User has not joined this room');
     }
 
-    // Don't send actual lyrics if user hasn't guessed yet
+    // Don't send actual lyrics if user hasn't guessed yet, and never the
+    // lyric's creator (a full User) if a caller happened to load it
+    const lyricFields: Partial<Lyrics> = { ...room.lyric };
+    delete lyricFields.createdBy;
+    const lyric = roomUser.hasGuessed
+      ? lyricFields
+      : { ...lyricFields, content: '' };
+
+    return {
+      ...room,
+      lyric,
+      // Room members are other players: expose only id and username
+      roomUsers: room.roomUsers.map(({ user, ...member }) => ({
+        ...member,
+        user: user ? PlayerSummaryDto.from(user) : undefined,
+      })),
+    };
+    return {
+      id: room.id,
+      name: room.name,
+      createdAt: room.createdAt,
+      expiresAt: room.expiresAt,
+      isClosed: room.isClosed,
+      // The answers stay hidden until this player has guessed.
+      lyric: this.toLyricView(room.lyric, roomUser.hasGuessed),
+      players: room.roomUsers.map((ru) => this.toPlayerView(ru)),
+    };
+    // Don't send actual lyrics if user hasn't guessed yet, or if the lyric
+    // has since been deactivated by an admin.
     const response = { ...room };
-    if (!roomUser.hasGuessed) {
+    if (!roomUser.hasGuessed || room.lyric?.isActive === false) {
       response.lyric = { ...room.lyric, content: '' };
     }
     return response;
-
-    return room;
   }
 
-  async submitGuess(roomId: string, userId: string, guessDto: GuessLyricDto) {
+  async submitGuess(
+    roomId: string,
+    userId: string,
+    guessDto: GuessLyricDto,
+  ): Promise<RoomGuessResult> {
     const roomUser = await this.roomUserRepository.findOne({
       where: { roomId, userId },
       relations: ['room', 'room.lyric'],
@@ -128,35 +207,85 @@ export class RoomsService {
       throw new ConflictException('User has already submitted a guess');
     }
 
-    if (roomUser.room.isClosed) {
-      throw new BadRequestException('Room is closed');
-    }
+    this.assertPlayable(roomUser.room);
 
-    // Calculate score based on string similarity
-    const similarity = stringSimilarity.compareTwoStrings(
-      guessDto.guess.toLowerCase(),
-      roomUser.room.lyric.content.toLowerCase(),
-    );
+    // Score against the artist or title, the same way solo play does.
+    const { lyric } = roomUser.room;
+    const correctAnswer =
+      guessDto.guessType === GuessType.ARTIST ? lyric.artist : lyric.songTitle;
+    const { isCorrect, points } = matchGuess(guessDto.guess, correctAnswer);
 
     roomUser.hasGuessed = true;
     roomUser.guess = guessDto.guess;
-    roomUser.score = similarity;
+    roomUser.score = points;
     roomUser.guessedAt = new Date();
 
-    return this.roomUserRepository.save(roomUser);
+    await this.roomUserRepository.save(roomUser);
+
+    return {
+      roomId,
+      guessType: guessDto.guessType,
+      guess: guessDto.guess,
+      isCorrect,
+      score: points,
+      correctAnswer,
+      lyric: this.toLyricView(lyric, true),
+    };
   }
 
-  async checkAndCloseExpiredRooms() {
-    const expiredRooms = await this.roomRepository.find({
-      where: {
-        isClosed: false,
-        expiresAt: new Date(),
-      },
-    });
+  private toLyricView(lyric: Lyrics, revealAnswer: boolean): RoomLyricView {
+    const view: RoomLyricView = {
+      id: lyric.id,
+      lyricSnippet: lyric.lyricSnippet,
+      category: lyric.category,
+      genre: lyric.genre,
+      decade: lyric.decade,
+    };
+    if (revealAnswer) {
+      view.artist = lyric.artist;
+      view.songTitle = lyric.songTitle;
+    }
+    return view;
+  }
 
-    for (const room of expiredRooms) {
-      room.isClosed = true;
-      await this.roomRepository.save(room);
+  private toPlayerView(roomUser: RoomUser): RoomPlayerView {
+    return {
+      id: roomUser.user?.id ?? roomUser.userId,
+      username: roomUser.user?.username ?? null,
+      hasGuessed: roomUser.hasGuessed,
+      score: roomUser.score,
+    };
+  }
+
+  /**
+   * Closes every open room whose expiresAt has passed, in a single UPDATE.
+   * Runs every minute; join and submitGuess also check expiresAt themselves,
+   * so a room is unplayable the moment it expires even between sweeps.
+   */
+  @Cron(CronExpression.EVERY_MINUTE)
+  async checkAndCloseExpiredRooms(): Promise<number> {
+    const result = await this.roomRepository.update(
+      { isClosed: false, expiresAt: LessThanOrEqual(new Date()) },
+      { isClosed: true },
+    );
+    const closed = result.affected ?? 0;
+    if (closed > 0) {
+      this.logger.log(`Closed ${closed} expired room(s)`);
+    }
+    return closed;
+  }
+
+  private assertPlayable(room: Room): void {
+    if (room.isClosed) {
+      throw new BadRequestException('Room is closed');
+    }
+
+    if (room.expiresAt && room.expiresAt.getTime() <= Date.now()) {
+      throw new BadRequestException('Room has expired');
+    }
+
+    if (room.lyric && room.lyric.isActive === false) {
+      throw new BadRequestException('Room lyric is no longer available');
     }
   }
 }

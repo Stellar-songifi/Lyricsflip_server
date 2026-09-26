@@ -1,9 +1,21 @@
-import { Logger, ServiceUnavailableException } from '@nestjs/common';
 import {
+  BadRequestException,
+  Logger,
+  ServiceUnavailableException,
+} from '@nestjs/common';
+import {
+  Account,
+  Address,
+  Asset,
+  Contract,
   Keypair,
+  Networks,
+  Operation,
   StrKey,
   Transaction,
+  TransactionBuilder,
   scValToNative,
+  xdr,
 } from '@stellar/stellar-sdk';
 import { EscrowContractService, PotStatus } from './escrow-contract.service';
 import { StellarRpcService, SubmitResult } from './stellar-rpc.service';
@@ -179,17 +191,108 @@ describe('EscrowContractService', () => {
       expect(rpc.toUnsigned).toHaveBeenCalledWith(preparedTransaction);
       expect(result).toEqual(unsigned);
     });
+  });
 
-    it('submits a wallet-signed stake without re-signing it', async () => {
-      const signedTransaction = { signed: true } as unknown as Transaction;
-      rpc.fromXdr.mockReturnValue(signedTransaction);
+  describe('submitSignedStake', () => {
+    let wallet: Keypair;
 
-      const result = await service.submitSignedStake('AAAA...');
+    /** A stake call, with any part swapped out to build a forgery. */
+    const stakeCall = ({
+      contractId = config.escrowContractId,
+      method = 'stake',
+      sessionId = SESSION_ID,
+      player = wallet.publicKey(),
+    } = {}) =>
+      new Contract(contractId).call(
+        method,
+        xdr.ScVal.scvBytes(Buffer.from(sessionId.replace(/-/g, ''), 'hex')),
+        new Address(player).toScVal(),
+      );
 
-      expect(rpc.fromXdr).toHaveBeenCalledWith('AAAA...');
-      expect(rpc.submit).toHaveBeenCalledWith(signedTransaction);
+    /** A signed envelope, as a wallet would hand it back. */
+    const signedEnvelope = (...operations: xdr.Operation[]) => {
+      const builder = new TransactionBuilder(
+        new Account(wallet.publicKey(), '1'),
+        { fee: '100', networkPassphrase: Networks.TESTNET },
+      );
+      operations.forEach((operation) => builder.addOperation(operation));
+      const transaction = builder.setTimeout(180).build();
+      transaction.sign(wallet);
+      return transaction.toXDR();
+    };
+
+    beforeEach(() => {
+      wallet = Keypair.random();
+      rpc.fromXdr.mockImplementation(
+        (envelope: string) => new Transaction(envelope, Networks.TESTNET),
+      );
+    });
+
+    it('submits the stake issued for this session and player without re-signing it', async () => {
+      const result = await service.submitSignedStake(
+        signedEnvelope(stakeCall()),
+        SESSION_ID,
+        wallet.publicKey(),
+      );
+
+      expect(rpc.submit).toHaveBeenCalledTimes(1);
       expect(rpc.signAndSubmit).not.toHaveBeenCalled();
       expect(result).toEqual(confirmed);
+    });
+
+    it.each([
+      [
+        'a different session',
+        () => stakeCall({ sessionId: '00000000-0000-4000-8000-000000000000' }),
+      ],
+      [
+        'the wrong contract',
+        () =>
+          stakeCall({
+            contractId: StrKey.encodeContract(Keypair.random().rawPublicKey()),
+          }),
+      ],
+      [
+        'the wrong player',
+        () => stakeCall({ player: Keypair.random().publicKey() }),
+      ],
+      ['the wrong function', () => stakeCall({ method: 'resolve' })],
+      [
+        'a payment',
+        () =>
+          Operation.payment({
+            destination: Keypair.random().publicKey(),
+            asset: Asset.native(),
+            amount: '1',
+          }),
+      ],
+    ])('rejects %s before it reaches the network', async (_, operation) => {
+      await expect(
+        service.submitSignedStake(
+          signedEnvelope(operation()),
+          SESSION_ID,
+          wallet.publicKey(),
+        ),
+      ).rejects.toThrow(BadRequestException);
+      expect(rpc.submit).not.toHaveBeenCalled();
+    });
+
+    it('rejects a stake bundled with other operations', async () => {
+      await expect(
+        service.submitSignedStake(
+          signedEnvelope(stakeCall(), stakeCall()),
+          SESSION_ID,
+          wallet.publicKey(),
+        ),
+      ).rejects.toThrow(BadRequestException);
+      expect(rpc.submit).not.toHaveBeenCalled();
+    });
+
+    it('rejects an envelope that does not parse', async () => {
+      await expect(
+        service.submitSignedStake('not-xdr', SESSION_ID, wallet.publicKey()),
+      ).rejects.toThrow(BadRequestException);
+      expect(rpc.submit).not.toHaveBeenCalled();
     });
   });
 

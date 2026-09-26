@@ -1,4 +1,4 @@
-import { Exclude } from 'class-transformer';
+import { Exclude, Expose } from 'class-transformer';
 import {
   Entity,
   PrimaryGeneratedColumn,
@@ -10,6 +10,7 @@ import {
 } from 'typeorm';
 import { GameSession } from '../../game-sessions/entities/game-session.entity';
 import { Role } from 'src/auth/roles/role.enum';
+import { PRIVATE_USER_GROUPS } from '../user-serialization';
 
 export enum UserLevel {
   GOSSIP_ROOKIE = 'Gossip Rookie',
@@ -52,11 +53,17 @@ export enum MusicDecade {
   TWENTY_TWENTIES = '2020s',
 }
 
+/**
+ * Fields without @Expose are public (id, username, xp, level, levelTitle,
+ * createdAt). Fields in PRIVATE_USER_GROUPS appear only for the user themself
+ * or an admin; see user-serialization.ts.
+ */
 @Entity('users')
 export class User {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
+  @Expose({ groups: PRIVATE_USER_GROUPS })
   @Index()
   @Column({ type: 'varchar', length: 255, unique: true })
   email: string;
@@ -64,11 +71,14 @@ export class User {
   @Column({ unique: true })
   username: string;
 
+  @Expose({ groups: PRIVATE_USER_GROUPS })
   @Column({ type: 'varchar', length: 255, nullable: true })
   name: string;
 
-  @Column()
-  @Exclude() // Exclude password from serialization
+  // Never loaded unless a query asks for it (only the password login does),
+  // and never serialized even if it is.
+  @Column({ select: false })
+  @Exclude()
   passwordHash: string;
 
   @Column({ default: 0 })
@@ -87,12 +97,15 @@ export class User {
   @CreateDateColumn()
   createdAt: Date;
 
+  @Expose({ groups: PRIVATE_USER_GROUPS })
   @UpdateDateColumn()
   updatedAt: Date;
 
+  @Expose({ groups: PRIVATE_USER_GROUPS })
   @Column({ nullable: true })
   lastLoginAt?: Date;
 
+  @Expose({ groups: PRIVATE_USER_GROUPS })
   @Column({
     type: 'varchar',
     length: 20,
@@ -101,6 +114,7 @@ export class User {
   }) // Default role for new users
   role: Role; // 'user' or 'admin'
 
+  @Expose({ groups: PRIVATE_USER_GROUPS })
   @Column({ type: 'boolean', default: true })
   isActive: boolean;
 
@@ -118,11 +132,13 @@ export class User {
    * Null until the user links a wallet by signing a SEP-10 challenge; wagered
    * matches are unavailable until then.
    */
+  @Expose({ groups: PRIVATE_USER_GROUPS })
   @Index()
   @Column({ type: 'varchar', length: 56, nullable: true, unique: true })
   stellarAddress?: string | null;
 
   /** When wallet ownership was last proved via SEP-10. */
+  @Expose({ groups: PRIVATE_USER_GROUPS })
   @Column({ type: 'timestamp', nullable: true })
   stellarAddressVerifiedAt?: Date | null;
 
@@ -135,9 +151,11 @@ export class User {
    * than an int because a 7-decimal token passes the safe-integer range at
    * around 900 million tokens.
    */
+  @Expose({ groups: PRIVATE_USER_GROUPS })
   @Column({ type: 'bigint', default: '1000000000' })
   mockBalance: string; // 100.0000000 LYRIC
 
+  @Expose({ groups: PRIVATE_USER_GROUPS })
   @Column({
     type: 'enum',
     enum: MusicGenre,
@@ -145,6 +163,7 @@ export class User {
   })
   preferredGenre?: MusicGenre;
 
+  @Expose({ groups: PRIVATE_USER_GROUPS })
   @Column({
     type: 'enum',
     enum: MusicDecade,
@@ -152,7 +171,7 @@ export class User {
   })
   preferredDecade?: MusicDecade;
 
+  @Exclude()
   @OneToMany(() => GameSession, gameSession => gameSession.player)
-
   gameSessions: GameSession[];
 }

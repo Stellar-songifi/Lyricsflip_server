@@ -11,6 +11,8 @@ import {
   ValidationPipe,
 } from '@nestjs/common';
 
+import { Throttle } from '@nestjs/throttler';
+import { guessThrottle } from '../common/throttler/throttle.config';
 import {
   GameLyricResponse,
   GuessResultResponse,
@@ -20,6 +22,8 @@ import { GameLogicService } from './game.service';
 import { RandomLyricOptionsDto } from './dto/random-lyrics-option.dto';
 import { MultipleLyricsDto } from './dto/multiple-lyrics.dto';
 import { GuessDto } from './dto/guess.dto';
+import { GetUser } from 'src/auth/decorators/user.decorator';
+import { User } from 'src/users/entities/user.entity';
 
 @Controller('game')
 export class GameController {
@@ -34,6 +38,7 @@ export class GameController {
   async getRandomLyric(
     @Query(new ValidationPipe({ transform: true }))
     options: RandomLyricOptionsDto,
+    @GetUser() user: User,
   ): Promise<GameLyricResponse> {
     this.logger.log(
       `Getting random lyric with options: ${JSON.stringify(options)}`,
@@ -41,9 +46,12 @@ export class GameController {
 
     try {
       const lyric = await this.gameLogicService.getRandomLyric(options);
+      const round = await this.gameLogicService.issueRound(user.id, lyric.id);
 
       // Return only the fields needed for the game (hide correct answers)
       return {
+        roundId: round.id,
+        expiresAt: round.expiresAt,
         id: lyric.id,
         lyricSnippet: lyric.lyricSnippet,
         category: lyric.category,
@@ -62,6 +70,7 @@ export class GameController {
   @Get('lyrics/multiple')
   async getMultipleRandomLyrics(
     @Query(new ValidationPipe({ transform: true })) options: MultipleLyricsDto,
+    @GetUser() user: User,
   ): Promise<GameLyricResponse[]> {
     this.logger.log(`Getting ${options.count} random lyrics`);
 
@@ -77,13 +86,24 @@ export class GameController {
         options,
       );
 
-      return lyrics.map((lyric) => ({
-        id: lyric.id,
-        lyricSnippet: lyric.lyricSnippet,
-        category: lyric.category,
-        decade: lyric.decade,
-        genre: lyric.genre,
-      }));
+      return Promise.all(
+        lyrics.map(async (lyric) => {
+          const round = await this.gameLogicService.issueRound(
+            user.id,
+            lyric.id,
+          );
+
+          return {
+            roundId: round.id,
+            expiresAt: round.expiresAt,
+            id: lyric.id,
+            lyricSnippet: lyric.lyricSnippet,
+            category: lyric.category,
+            decade: lyric.decade,
+            genre: lyric.genre,
+          };
+        }),
+      );
     } catch (error) {
       this.logger.error('Error fetching multiple lyrics', error.stack);
       throw error;
@@ -93,12 +113,14 @@ export class GameController {
   /**
    * POST /game/guess - Submit a guess for evaluation
    */
+  @Throttle(guessThrottle)
   @Post('guess')
   @HttpCode(HttpStatus.OK)
   async checkGuess(
     @Body(new ValidationPipe()) guessDto: GuessDto,
+    @GetUser() user: User,
   ): Promise<GuessResultResponse> {
-    this.logger.log(`Checking guess for lyric ${guessDto.lyricId}`);
+    this.logger.log(`Checking guess for round ${guessDto.roundId}`);
 
     // Validate the guess
     const validation = this.gameLogicService.validateGuess(guessDto.guessValue);
@@ -107,7 +129,9 @@ export class GameController {
     }
 
     try {
-      const result = await this.gameLogicService.checkGuess(guessDto);
+      // The answer is only revealed here, after guessRound has closed the
+      // round, so it cannot be used to score the same lyric again.
+      const result = await this.gameLogicService.guessRound(user.id, guessDto);
 
       return {
         isCorrect: result.isCorrect,
@@ -127,7 +151,9 @@ export class GameController {
   @Get('stats')
   async getLyricStats(
     @Query(new ValidationPipe({ transform: true }))
-    options: Partial<RandomLyricOptionsDto>,
+    // Every field is optional already. Partial<> erases the class at runtime,
+    // which silently disables validation, so the DTO is used directly.
+    options: RandomLyricOptionsDto,
   ): Promise<GameStatsResponse> {
     this.logger.log('Getting lyric statistics');
 

@@ -61,6 +61,9 @@ export class Lyrics {
   // AddSetNullToLyricsCreatedBy for the corresponding schema change.
   @ManyToOne(() => User, { eager: true, nullable: true, onDelete: "SET NULL" })
   createdBy: User | null
+  // Not eager: every lyric response would otherwise embed its creator
+  @ManyToOne(() => User, { nullable: false, onDelete: "CASCADE" })
+  createdBy: User
 
   @CreateDateColumn()
   createdAt: Date

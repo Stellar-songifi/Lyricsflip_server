@@ -9,6 +9,8 @@ import {
   HttpStatus,
   UseGuards,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
+import { authThrottle, stellarThrottle } from '../common/throttler/throttle.config';
 import { AuthService } from './auth.service';
 import { StellarAuthService } from './services/stellar-auth.service';
 import { SignupDto } from './dto/signup.dto';
@@ -36,6 +38,7 @@ export class AuthController {
   ) {}
 
   @Public()
+  @Throttle(authThrottle)
   @Post('signup')
   @ApiOperation({ summary: 'Sign up a new user' })
   @ApiResponse({ status: 201, description: 'User signed up successfully.' })
@@ -44,6 +47,7 @@ export class AuthController {
   }
 
   @Public()
+  @Throttle(authThrottle)
   @Post('login')
   @ApiOperation({ summary: 'Login a user' })
   @ApiResponse({ status: 200, description: 'User logged in successfully.' })
@@ -92,6 +96,7 @@ export class AuthController {
   }
 
   @Public()
+  @Throttle(stellarThrottle)
   @Post('stellar/challenge')
   @ApiOperation({
     summary: 'Request a SEP-10 challenge transaction for a Stellar account',
@@ -109,6 +114,7 @@ export class AuthController {
   }
 
   @Public()
+  @Throttle(stellarThrottle)
   @Post('stellar/login')
   @ApiOperation({
     summary: 'Authenticate with a signed SEP-10 challenge',
@@ -124,6 +130,7 @@ export class AuthController {
 
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
+  @Throttle(stellarThrottle)
   @Post('stellar/link')
   @ApiOperation({
     summary: 'Link a Stellar wallet to the signed-in account',

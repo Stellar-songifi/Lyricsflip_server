@@ -8,6 +8,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { IsNull, Repository } from 'typeorm';
 import { JwtService } from '@nestjs/jwt';
+import { Repository } from 'typeorm';
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
 import { SignupDto } from './dto/signup.dto';
@@ -15,6 +16,7 @@ import { LoginDto } from './dto/login.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { JwtPayload } from './interfaces/jwt-payload.interface';
 import { Role } from './roles/role.enum';
+import { AuthResult, AuthTokenService } from './services/auth-token.service';
 import { User } from 'src/users/entities/user.entity';
 import { RefreshToken } from './entities/refresh-token.entity';
 
@@ -45,6 +47,11 @@ export class AuthService {
     const email = signupDto.email.trim().toLowerCase();
     const username = signupDto.username.trim();
     const { password } = signupDto;
+    private authTokenService: AuthTokenService,
+  ) {}
+
+  async signup(signupDto: SignupDto): Promise<AuthResult> {
+    const { username, email, password } = signupDto;
 
     // Check if user already exists
     const existingUser = await this.userRepository
@@ -102,6 +109,17 @@ export class AuthService {
     const user = await this.userRepository
       .createQueryBuilder('user')
       .where('LOWER(user.email) = LOWER(:email)', { email })
+    return this.authTokenService.issueToken(user);
+  }
+
+  async login(loginDto: LoginDto): Promise<AuthResult> {
+    const { email, password } = loginDto;
+
+    // passwordHash is select: false, so it must be requested explicitly
+    const user = await this.userRepository
+      .createQueryBuilder('user')
+      .addSelect('user.passwordHash')
+      .where('user.email = :email', { email })
       .getOne();
 
     if (!user) {
@@ -122,6 +140,10 @@ export class AuthService {
     if (!isPasswordValid) {
       throw new UnauthorizedException('Invalid credentials');
     }
+
+    // Checked after the password so account status is not revealed to
+    // someone who does not know it. Same message as the wallet flow.
+    this.authTokenService.assertActive(user);
 
     // Update last login timestamp
     user.lastLoginAt = new Date();
@@ -236,6 +258,7 @@ export class AuthService {
     );
 
     return { accessToken, refreshToken: rawRefreshToken };
+    return this.authTokenService.issueToken(user);
   }
 
   /**

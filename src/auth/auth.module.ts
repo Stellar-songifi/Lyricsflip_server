@@ -7,6 +7,7 @@ import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { StellarAuthService } from './services/stellar-auth.service';
+import { AuthTokenService } from './services/auth-token.service';
 import { User } from 'src/users/entities/user.entity';
 import { RefreshToken } from './entities/refresh-token.entity';
 
@@ -28,7 +29,7 @@ import { RefreshToken } from './entities/refresh-token.entity';
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, StellarAuthService, JwtStrategy],
+  providers: [AuthService, StellarAuthService, AuthTokenService, JwtStrategy],
   exports: [JwtStrategy, PassportModule, AuthService, StellarAuthService],
 })
 export class AuthModule {}

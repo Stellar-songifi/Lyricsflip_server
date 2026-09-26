@@ -16,6 +16,8 @@ import { GameSessionsService } from './game-sessions.service';
 import { CreateGameSessionDto } from './dto/create-game-session.dto';
 import { UpdateGameSessionDto } from './dto/update-game-session.dto';
 import { ConfirmStakeDto } from './dto/confirm-stake.dto';
+import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
+import { CompleteWageredGameDto } from './dto/complete-wagered-game.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { Role } from '../auth/roles/role.enum';
@@ -25,9 +27,7 @@ import {
   ApiTags,
   ApiOperation,
   ApiResponse,
-  ApiQuery,
   ApiParam,
-  ApiBody,
 } from '@nestjs/swagger';
 
 @ApiTags('game-sessions')
@@ -47,74 +47,84 @@ export class GameSessionsController {
   }
 
   @Get()
-  @ApiOperation({ summary: 'Get all game sessions' })
+  @ApiOperation({
+    summary: 'Get your game sessions (every session, for admins)',
+  })
   @ApiResponse({ status: 200, description: 'List of game sessions.' })
-  findAll() {
-    return this.gameSessionsService.findAll();
+  @ApiResponse({ status: 400, description: 'Invalid pagination values.' })
+  findAll(@Query() { limit, offset }: PaginationQueryDto) {
+    return this.gameSessionsService.findAll(limit, offset);
+  findAll(@GetUser() user: User) {
+    return this.gameSessionsService.findAll(user);
   }
 
   @Get('top-scores')
   @ApiOperation({ summary: 'Get top scores' })
-  @ApiQuery({ name: 'limit', required: false, type: Number })
   @ApiResponse({ status: 200, description: 'Top scores.' })
-  getTopScores(@Query('limit') limit: number) {
-    return this.gameSessionsService.getTopScores(limit);
+  @ApiResponse({ status: 400, description: 'Invalid pagination values.' })
+  getTopScores(@Query() { limit, offset }: PaginationQueryDto) {
+    return this.gameSessionsService.getTopScores(limit, offset);
   }
 
   @Get('my-recent')
   @ApiOperation({ summary: 'Get recent games for user' })
-  @ApiQuery({ name: 'limit', required: false, type: Number })
   @ApiResponse({ status: 200, description: 'Recent games for user.' })
-  getRecentGames(@GetUser() user: User, @Query('limit') limit: number) {
-    return this.gameSessionsService.getRecentGames(user.id, limit);
+  @ApiResponse({ status: 400, description: 'Invalid pagination values.' })
+  getRecentGames(
+    @GetUser() user: User,
+    @Query() { limit, offset }: PaginationQueryDto,
+  ) {
+    return this.gameSessionsService.getRecentGames(user.id, limit, offset);
   }
 
   @Get(':id')
   @ApiOperation({ summary: 'Get a game session by ID' })
   @ApiResponse({ status: 200, description: 'Game session details.' })
-  findOne(@Param('id') id: string) {
-    return this.gameSessionsService.findOne(id);
+  @ApiResponse({ status: 403, description: 'Not a player in this session.' })
+  findOne(@Param('id') id: string, @GetUser() user: User) {
+    return this.gameSessionsService.findOne(id, user);
   }
 
   @Patch(':id')
-  @ApiOperation({ summary: 'Update a game session' })
+  @ApiOperation({ summary: "Update a game session's category" })
   @ApiResponse({ status: 200, description: 'Game session updated.' })
+  @ApiResponse({ status: 403, description: 'Not a player in this session.' })
   update(
     @Param('id') id: string,
     @Body() updateGameSessionDto: UpdateGameSessionDto,
+    @GetUser() user: User,
   ) {
-    return this.gameSessionsService.update(id, updateGameSessionDto);
+    return this.gameSessionsService.update(id, updateGameSessionDto, user);
   }
 
   @Delete(':id')
   @ApiOperation({ summary: 'Delete a game session' })
   @ApiResponse({ status: 200, description: 'Game session deleted.' })
-  remove(@Param('id') id: string) {
-    return this.gameSessionsService.remove(id);
+  @ApiResponse({ status: 403, description: 'Not a player in this session.' })
+  @ApiResponse({
+    status: 409,
+    description: 'The session has a wager that is not settled or refunded.',
+  })
+  remove(@Param('id') id: string, @GetUser() user: User) {
+    return this.gameSessionsService.remove(id, user);
   }
 
+  // Scores decide who is paid the pot, so players must not be able to post
+  // them. Admin only until scores are computed server-side from gameplay.
+  @Roles(Role.Admin)
   @Put(':id/complete-wagered')
   @ApiOperation({
-    summary: 'Complete a wagered game session and resolve wager',
+    summary: 'Complete a wagered game session and resolve wager (Admin only)',
   })
   @ApiParam({ name: 'id', description: 'Game session ID' })
-  @ApiBody({
-    schema: {
-      type: 'object',
-      properties: {
-        playerOneScore: { type: 'number', description: 'Score for player one' },
-        playerTwoScore: { type: 'number', description: 'Score for player two' },
-      },
-      required: ['playerOneScore', 'playerTwoScore'],
-    },
-  })
   @ApiResponse({
     status: 200,
     description: 'Wagered game completed and wager resolved.',
   })
   async completeWageredGame(
     @Param('id') id: string,
-    @Body() body: { playerOneScore: number; playerTwoScore: number },
+    @Body() body: CompleteWageredGameDto,
+    @GetUser() user: User,
   ): Promise<{
     gameSession: any;
     wagerResult?: any;
@@ -124,7 +134,34 @@ export class GameSessionsController {
       id,
       body.playerOneScore,
       body.playerTwoScore,
+      user,
     );
+  }
+
+  @Post(':id/accept')
+  @ApiOperation({
+    summary: 'Accept an invitation to a session',
+    description:
+      'Only the invited player two can accept. For a wager this is when their ' +
+      'stake is taken, or returned in `pendingSignatures` for their wallet to sign.',
+  })
+  @ApiParam({ name: 'id', description: 'Game session ID' })
+  @ApiResponse({ status: 200, description: 'Invitation accepted.' })
+  @ApiResponse({ status: 410, description: 'Invitation expired.' })
+  @HttpCode(HttpStatus.OK)
+  accept(@Param('id') id: string, @GetUser() user: User) {
+    return this.gameSessionsService.accept(id, user);
+  }
+
+  @Post(':id/decline')
+  @ApiOperation({
+    summary: "Decline an invitation to a session; refunds player one's stake",
+  })
+  @ApiParam({ name: 'id', description: 'Game session ID' })
+  @ApiResponse({ status: 200, description: 'Invitation declined.' })
+  @HttpCode(HttpStatus.OK)
+  decline(@Param('id') id: string, @GetUser() user: User) {
+    return this.gameSessionsService.decline(id, user);
   }
 
   @Post(':id/stake')
@@ -183,23 +220,26 @@ export class GameSessionsController {
   @ApiOperation({ summary: 'Get wager information for a session' })
   @ApiParam({ name: 'id', description: 'Game session ID' })
   @ApiResponse({ status: 200, description: 'Wager information.' })
-  async getSessionWager(@Param('id') id: string): Promise<any> {
-    return await this.gameSessionsService.getSessionWager(id);
+  @ApiResponse({ status: 403, description: 'Not a player in this session.' })
+  async getSessionWager(
+    @Param('id') id: string,
+    @GetUser() user: User,
+  ): Promise<any> {
+    return await this.gameSessionsService.getSessionWager(id, user);
   }
 
   @Get('wagers/my-history')
   @ApiOperation({ summary: 'Get user wager history' })
-  @ApiQuery({
-    name: 'limit',
-    required: false,
-    type: Number,
-    description: 'Limit number of results',
-  })
   @ApiResponse({ status: 200, description: 'User wager history.' })
+  @ApiResponse({ status: 400, description: 'Invalid pagination values.' })
   async getUserWagers(
     @GetUser() user: User,
-    @Query('limit') limit: number,
+    @Query() { limit, offset }: PaginationQueryDto,
   ): Promise<any[]> {
-    return await this.gameSessionsService.getUserWagers(user.id, limit);
+    return await this.gameSessionsService.getUserWagers(
+      user.id,
+      limit,
+      offset,
+    );
   }
 }

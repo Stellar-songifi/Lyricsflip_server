@@ -144,24 +144,41 @@ describe('WagerService', () => {
       mockWagerRepository.findOne.mockResolvedValue(null);
     };
 
-    it('opens the escrow, stakes both players and marks the wager staked', async () => {
+    it('opens the escrow and stakes only player one', async () => {
       happyPreconditions();
       mockTokenService.openEscrow.mockResolvedValue(
         confirmed({ txHash: 'mock:escrow' }),
       );
-      mockTokenService.stakeTokens
-        .mockResolvedValueOnce(confirmed({ txHash: 'mock:stakeA' }))
-        .mockResolvedValueOnce(confirmed({ txHash: 'mock:stakeB' }));
+      mockTokenService.stakeTokens.mockResolvedValue(
+        confirmed({ txHash: 'mock:stakeA' }),
+      );
 
       const result = await service.createWager(createWagerDto);
 
       expect(result.success).toBe(true);
-      expect(result.wager?.status).toBe(WagerStatus.STAKED);
+      expect(result.wager?.status).toBe(WagerStatus.AWAITING_STAKES);
       expect(result.wager?.escrowTxHash).toBe('mock:escrow');
       expect(result.wager?.playerAStakeTxHash).toBe('mock:stakeA');
-      expect(result.wager?.playerBStakeTxHash).toBe('mock:stakeB');
-      expect(result.message).toContain('Wager on!');
-      expect(result.message).toContain('20.0 LYRIC');
+      expect(result.wager?.playerBStakeTxHash).toBeNull();
+      expect(result.message).toContain('Waiting for your opponent to accept');
+    });
+
+    it('moves no funds for player two before they accept', async () => {
+      happyPreconditions();
+      mockTokenService.openEscrow.mockResolvedValue(confirmed());
+      mockTokenService.stakeTokens.mockResolvedValue(confirmed());
+
+      await service.createWager(createWagerDto);
+
+      expect(mockTokenService.stakeTokens).toHaveBeenCalledTimes(1);
+      expect(mockTokenService.stakeTokens).toHaveBeenCalledWith(
+        mockPlayerA.id,
+        expect.anything(),
+      );
+      expect(mockTokenService.stakeTokens).not.toHaveBeenCalledWith(
+        mockPlayerB.id,
+        expect.anything(),
+      );
     });
 
     it('records the settlement mode of the backend that handled it', async () => {
@@ -295,19 +312,19 @@ describe('WagerService', () => {
       expect(lastSaved.status).toBe(WagerStatus.FAILED);
     });
 
-    it('refunds the pot when only one stake lands', async () => {
+    it("refunds the pot when player one's stake fails", async () => {
       happyPreconditions();
       mockTokenService.openEscrow.mockResolvedValue(confirmed());
-      mockTokenService.stakeTokens
-        .mockResolvedValueOnce(confirmed({ txHash: 'mock:stakeA' }))
-        .mockResolvedValueOnce(failed('player B is broke'));
+      mockTokenService.stakeTokens.mockResolvedValueOnce(
+        failed('player A is broke'),
+      );
       mockTokenService.refundEscrow.mockResolvedValue(confirmed());
 
       const result = await service.createWager(createWagerDto);
 
       expect(result.success).toBe(false);
       expect(mockTokenService.refundEscrow).toHaveBeenCalledTimes(1);
-      expect(result.message).toContain('player B is broke');
+      expect(result.message).toContain('player A is broke');
       expect(result.message).toContain('has been refunded');
       expect(result.wager?.status).toBe(WagerStatus.FAILED);
     });
@@ -315,9 +332,9 @@ describe('WagerService', () => {
     it('flags a failed refund as needing an operator', async () => {
       happyPreconditions();
       mockTokenService.openEscrow.mockResolvedValue(confirmed());
-      mockTokenService.stakeTokens
-        .mockResolvedValueOnce(confirmed())
-        .mockResolvedValueOnce(failed('stake rejected'));
+      mockTokenService.stakeTokens.mockResolvedValueOnce(
+        failed('stake rejected'),
+      );
       mockTokenService.refundEscrow.mockResolvedValue(failed('rpc timeout'));
 
       const result = await service.createWager(createWagerDto);
@@ -326,13 +343,14 @@ describe('WagerService', () => {
       expect(result.message).toContain('Needs operator attention');
     });
 
-    it('returns unsigned transactions when the wallet must sign', async () => {
+    it("returns only player one's unsigned transaction when the wallet must sign", async () => {
       happyPreconditions();
       const unsignedTransaction = { xdr: 'AAA', network: 'testnet' } as any;
       mockTokenService.openEscrow.mockResolvedValue(confirmed());
       mockTokenService.stakeTokens.mockResolvedValue({
-        success: true,
+        success: false,
         status: SettlementStatus.PENDING_SIGNATURE,
+        txHash: 'unsigned-hash',
         unsignedTransaction,
       });
 
@@ -340,12 +358,89 @@ describe('WagerService', () => {
 
       expect(result.success).toBe(true);
       expect(result.wager?.status).toBe(WagerStatus.AWAITING_STAKES);
-      expect(result.pendingSignatures).toHaveLength(2);
-      expect(result.pendingSignatures?.[0]).toEqual({
-        userId: mockPlayerA.id,
-        transaction: unsignedTransaction,
+      expect(result.pendingSignatures).toEqual([
+        { userId: mockPlayerA.id, transaction: unsignedTransaction },
+      ]);
+      // Not recorded until the signed transaction is confirmed.
+      expect(result.wager?.playerAStakeTxHash).toBeNull();
+      expect(mockTokenService.stakeTokens).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('acceptWager', () => {
+    const awaiting = (overrides: Partial<Wager> = {}) =>
+      wagerRow({
+        status: WagerStatus.AWAITING_STAKES,
+        playerAStakeTxHash: 'mock:stakeA',
+        ...overrides,
       });
-      expect(result.message).toContain('Waiting for players to sign');
+
+    it('stakes player two and marks the wager staked', async () => {
+      mockWagerRepository.findOne.mockResolvedValue(awaiting());
+      mockTokenService.stakeTokens.mockResolvedValue(
+        confirmed({ txHash: 'mock:stakeB' }),
+      );
+
+      const result = await service.acceptWager(SESSION_ID, mockPlayerB.id);
+
+      expect(mockTokenService.stakeTokens).toHaveBeenCalledWith(
+        mockPlayerB.id,
+        expect.objectContaining({ sessionId: SESSION_ID }),
+      );
+      expect(result.success).toBe(true);
+      expect(result.wager?.playerBStakeTxHash).toBe('mock:stakeB');
+      expect(result.wager?.status).toBe(WagerStatus.STAKED);
+    });
+
+    it('stays awaiting stakes while player one has not signed', async () => {
+      mockWagerRepository.findOne.mockResolvedValue(
+        awaiting({ playerAStakeTxHash: null }),
+      );
+      mockTokenService.stakeTokens.mockResolvedValue(
+        confirmed({ txHash: 'mock:stakeB' }),
+      );
+
+      const result = await service.acceptWager(SESSION_ID, mockPlayerB.id);
+
+      expect(result.wager?.status).toBe(WagerStatus.AWAITING_STAKES);
+    });
+
+    it("returns player two's unsigned transaction when their wallet must sign", async () => {
+      const unsignedTransaction = { xdr: 'BBB', network: 'testnet' } as any;
+      mockWagerRepository.findOne.mockResolvedValue(awaiting());
+      mockTokenService.stakeTokens.mockResolvedValue({
+        success: false,
+        status: SettlementStatus.PENDING_SIGNATURE,
+        unsignedTransaction,
+      });
+
+      const result = await service.acceptWager(SESSION_ID, mockPlayerB.id);
+
+      expect(result.success).toBe(true);
+      expect(result.pendingSignatures).toEqual([
+        { userId: mockPlayerB.id, transaction: unsignedTransaction },
+      ]);
+      expect(result.wager?.playerBStakeTxHash).toBeNull();
+    });
+
+    it('refuses anyone but the invited player', async () => {
+      mockWagerRepository.findOne.mockResolvedValue(awaiting());
+
+      await expect(
+        service.acceptWager(SESSION_ID, mockPlayerA.id),
+      ).rejects.toThrow(BadRequestException);
+      expect(mockTokenService.stakeTokens).not.toHaveBeenCalled();
+    });
+
+    it('refuses to stake player two twice', async () => {
+      mockWagerRepository.findOne.mockResolvedValue(
+        awaiting({ playerBStakeTxHash: 'mock:stakeB' }),
+      );
+
+      const result = await service.acceptWager(SESSION_ID, mockPlayerB.id);
+
+      expect(result.success).toBe(false);
+      expect(mockTokenService.stakeTokens).not.toHaveBeenCalled();
     });
   });
 
@@ -367,6 +462,13 @@ describe('WagerService', () => {
       expect(result.success).toBe(true);
       expect(result.wager?.status).toBe(WagerStatus.AWAITING_STAKES);
       expect(result.message).toContain('Waiting for your opponent');
+      // The backend checks the envelope is this player's stake, so it needs
+      // to know whose it is.
+      expect(mockTokenService.confirmStake).toHaveBeenCalledWith(
+        mockPlayerA.id,
+        'signed-xdr',
+        expect.objectContaining({ sessionId: SESSION_ID }),
+      );
     });
 
     it('moves the wager to staked once both stakes are confirmed', async () => {
@@ -697,14 +799,18 @@ describe('WagerService', () => {
         leftJoinAndSelect: jest.fn().mockReturnThis(),
         where: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
-        limit: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
         getMany: jest.fn().mockResolvedValue([row]),
       };
       mockWagerRepository.createQueryBuilder.mockReturnValue(mockQueryBuilder);
 
-      const result = await service.getUserWagers(mockPlayerA.id, 10);
+      const result = await service.getUserWagers(mockPlayerA.id, 10, 20);
 
       expect(result).toEqual([row]);
+      // take/skip page by wager; .limit() would count joined rows
+      expect(mockQueryBuilder.take).toHaveBeenCalledWith(10);
+      expect(mockQueryBuilder.skip).toHaveBeenCalledWith(20);
       expect(mockQueryBuilder.where).toHaveBeenCalledWith(
         'wager.playerAId = :userId OR wager.playerBId = :userId',
         { userId: mockPlayerA.id },
