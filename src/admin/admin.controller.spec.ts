@@ -10,9 +10,10 @@ describe('AdminController', () => {
   let service: AdminService;
 
   const mockAdminService = {
-    findAllUsers: jest
-      .fn()
-      .mockResolvedValue([{ id: '1', email: 'user@test.com' }]),
+    findAllUsers: jest.fn().mockResolvedValue({
+      data: [{ id: '1', email: 'user@test.com' }],
+      meta: { total: 1, page: 1, limit: 5 },
+    }),
     deleteUser: jest.fn().mockResolvedValue({ message: 'User deleted' }),
   };
 
@@ -58,9 +59,21 @@ describe('AdminController', () => {
 
   describe('GET /admin/users', () => {
     it('should allow an admin to find all users', async () => {
-      const result = await controller.findAllUsers({ limit: 5, offset: 10 });
+      const result = await controller.findAllUsers({ page: 1, limit: 5 });
       expect(result).toBeDefined();
-      expect(mockAdminService.findAllUsers).toHaveBeenCalledWith(5, 10);
+      expect(result.data).toBeDefined();
+      expect(result.meta).toEqual({ total: 1, page: 1, limit: 5 });
+      expect(mockAdminService.findAllUsers).toHaveBeenCalledWith({ page: 1, limit: 5 });
+    });
+
+    it('should pass sorting options through to the service', async () => {
+      await controller.findAllUsers({ page: 2, limit: 10, sortBy: 'email', sortOrder: 'DESC' });
+      expect(mockAdminService.findAllUsers).toHaveBeenCalledWith({
+        page: 2,
+        limit: 10,
+        sortBy: 'email',
+        sortOrder: 'DESC',
+      });
     });
   });
 

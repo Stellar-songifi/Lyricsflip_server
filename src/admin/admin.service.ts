@@ -21,6 +21,11 @@ export interface LyricsImportReport {
   rows: LyricsImportRowReport[];
 }
 
+export interface PaginatedResult<T> {
+  data: T[];
+  meta: { total: number; page: number; limit: number };
+}
+
 @Injectable()
 export class AdminService {
   constructor(
@@ -28,8 +33,18 @@ export class AdminService {
     private lyricsService: LyricsService,
   ) {}
 
-  findAllUsers(limit?: number, offset?: number) {
-    return this.usersService.findAll(limit, offset);
+  async findAllUsers(
+    page = 1,
+    limit = 20,
+    sortBy?: string,
+    sortOrder: 'ASC' | 'DESC' = 'DESC',
+  ): Promise<PaginatedResult<unknown>> {
+    const offset = (page - 1) * limit;
+    const [data, total] = await Promise.all([
+      this.usersService.findAll(limit, offset, sortBy, sortOrder),
+      this.usersService.count(),
+    ]);
+    return { data, meta: { total, page, limit } };
   }
 
   async deleteUser(id: string) {
@@ -37,8 +52,25 @@ export class AdminService {
     return result.message || 'User deleted successfully';
   }
 
-  findAllLyrics(limit?: number, offset?: number) {
-    return this.lyricsService.findAll(undefined, undefined, limit, offset);
+  async findAllLyrics(
+    page = 1,
+    limit = 20,
+    sortBy?: string,
+    sortOrder: 'ASC' | 'DESC' = 'DESC',
+  ): Promise<PaginatedResult<unknown>> {
+    const offset = (page - 1) * limit;
+    const [data, total] = await Promise.all([
+      this.lyricsService.findAll(
+        undefined,
+        undefined,
+        limit,
+        offset,
+        sortBy,
+        sortOrder,
+      ),
+      this.lyricsService.count(),
+    ]);
+    return { data, meta: { total, page, limit } };
   }
 
   deleteLyric(id: number) {

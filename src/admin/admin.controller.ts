@@ -34,8 +34,8 @@ export class AdminController {
   // --- User Management ---
   @Get('users')
   @SerializeOptions({ groups: [UserGroup.ADMIN] })
-  findAllUsers(@Query() { limit, offset }: PaginationQueryDto) {
-    return this.adminService.findAllUsers(limit, offset);
+  findAllUsers(@Query() query: PaginationQueryDto) {
+    return this.adminService.findAllUsers(query);
   }
 
   @Delete('users/:id')
@@ -46,8 +46,8 @@ export class AdminController {
 
   // --- Lyrics Management ---
   @Get('lyrics')
-  findAllLyrics(@Query() { limit, offset }: PaginationQueryDto) {
-    return this.adminService.findAllLyrics(limit, offset);
+  findAllLyrics(@Query() query: PaginationQueryDto) {
+    return this.adminService.findAllLyrics(query);
   }
 
   @Post('lyrics/import')
