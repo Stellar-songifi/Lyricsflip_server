@@ -180,13 +180,6 @@ export class RoomsService {
       lyric: this.toLyricView(room.lyric, roomUser.hasGuessed),
       players: room.roomUsers.map((ru) => this.toPlayerView(ru)),
     };
-    // Don't send actual lyrics if user hasn't guessed yet, or if the lyric
-    // has since been deactivated by an admin.
-    const response = { ...room };
-    if (!roomUser.hasGuessed || room.lyric?.isActive === false) {
-      response.lyric = { ...room.lyric, content: '' };
-    }
-    return response;
   }
 
   async submitGuess(
