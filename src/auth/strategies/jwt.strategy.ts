@@ -36,6 +36,12 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     if (!user.isActive) {
       throw new UnauthorizedException(INACTIVE_USER_MESSAGE);
     }
+    // A token minted before the user's tokenVersion was bumped (password
+    // change, or a future "log out everywhere") is rejected even though it
+    // has not expired yet.
+    if ((payload.tokenVersion ?? 0) !== user.tokenVersion) {
+      throw new UnauthorizedException('Token has been revoked');
+    }
 
     return user;
   }

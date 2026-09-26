@@ -253,6 +253,20 @@ export class StellarAuthService {
     user.stellarAddressVerifiedAt = new Date();
     await this.userRepository.save(user);
 
+    const payload: JwtPayload = {
+      sub: user.id,
+      email: user.email,
+      username: user.username,
+      role: user.role,
+      tokenVersion: user.tokenVersion,
+    };
+
+    const { passwordHash: _passwordHash, ...userWithoutPassword } = user;
+
+    return {
+      accessToken: this.jwtService.sign(payload),
+      user: userWithoutPassword,
+    };
     return this.authTokenService.issueToken(user);
   }
 

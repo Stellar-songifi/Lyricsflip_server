@@ -8,6 +8,7 @@ import {
 import { Observable } from 'rxjs';
 import { tap } from 'rxjs/operators';
 import { Request, Response } from 'express';
+import { redact } from '../utils/redact.util';
 
 @Injectable()
 export class LoggingInterceptor implements NestInterceptor {
@@ -20,8 +21,11 @@ export class LoggingInterceptor implements NestInterceptor {
     const userAgent = headers['user-agent'] || 'Unknown';
     const startTime = Date.now();
 
-    // Log incoming request
-    this.logger.log(`Incoming Request: ${method} ${url}`, {
+    // Log incoming request. The full body (redacted) is only useful for
+    // local debugging, so it is logged at `debug` level; every request still
+    // gets a `log`-level line without the body.
+    this.logger.log(`Incoming Request: ${method} ${url}`);
+    this.logger.debug(`Incoming Request body: ${method} ${url}`, {
       method,
       url,
       body: this.sanitizeBody(body),
@@ -34,12 +38,16 @@ export class LoggingInterceptor implements NestInterceptor {
 
     return next.handle().pipe(
       tap({
-        next: (responseData) => {
+        next: () => {
           const endTime = Date.now();
           const responseTime = endTime - startTime;
           const { statusCode } = response;
 
-          // Log successful response
+          // Log successful response. Response size comes from the
+          // Content-Length header (set by Express once the body is
+          // serialized) instead of re-stringifying the payload here.
+          const responseSize = response.getHeader('content-length');
+
           this.logger.log(
             `Outgoing Response: ${method} ${url} - ${statusCode} - ${responseTime}ms`,
             {
@@ -47,7 +55,7 @@ export class LoggingInterceptor implements NestInterceptor {
               url,
               statusCode,
               responseTime: `${responseTime}ms`,
-              responseSize: JSON.stringify(responseData).length,
+              responseSize,
               timestamp: new Date().toISOString(),
             },
           );
@@ -77,21 +85,6 @@ export class LoggingInterceptor implements NestInterceptor {
   private sanitizeBody(body: any): any {
     if (!body) return body;
 
-    const sensitiveFields = [
-      'password',
-      'token',
-      'secret',
-      'key',
-      'authorization',
-    ];
-    const sanitized = { ...body };
-
-    sensitiveFields.forEach((field) => {
-      if (sanitized[field]) {
-        sanitized[field] = '***REDACTED***';
-      }
-    });
-
-    return sanitized;
+    return redact(body);
   }
 }

@@ -15,6 +15,8 @@ import { AuthService } from './auth.service';
 import { StellarAuthService } from './services/stellar-auth.service';
 import { SignupDto } from './dto/signup.dto';
 import { LoginDto } from './dto/login.dto';
+import { RefreshTokenDto } from './dto/refresh-token.dto';
+import { ChangePasswordDto } from './dto/change-password.dto';
 import { StellarChallengeDto, StellarVerifyDto } from './dto/stellar-auth.dto';
 import { Public } from './decorators/public.decorator';
 import { GetUser } from './decorators/user.decorator';
@@ -52,6 +54,45 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   async login(@Body(ValidationPipe) loginDto: LoginDto) {
     return this.authService.login(loginDto);
+  }
+
+  @Public()
+  @Post('refresh')
+  @ApiOperation({ summary: 'Exchange a refresh token for a new token pair' })
+  @ApiResponse({ status: 200, description: 'New access and refresh tokens.' })
+  @ApiResponse({ status: 401, description: 'Refresh token invalid or expired.' })
+  @HttpCode(HttpStatus.OK)
+  async refresh(@Body(ValidationPipe) dto: RefreshTokenDto) {
+    return this.authService.refresh(dto.refreshToken);
+  }
+
+  @Public()
+  @Post('logout')
+  @ApiOperation({ summary: 'Revoke a refresh token' })
+  @ApiResponse({ status: 200, description: 'Refresh token revoked.' })
+  @HttpCode(HttpStatus.OK)
+  async logout(@Body(ValidationPipe) dto: RefreshTokenDto) {
+    await this.authService.logout(dto.refreshToken);
+    return { message: 'Logged out' };
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @Post('change-password')
+  @ApiOperation({
+    summary: 'Change the signed-in user’s password',
+    description:
+      'Invalidates every outstanding access token and refresh token for the account.',
+  })
+  @ApiResponse({ status: 200, description: 'Password changed.' })
+  @ApiResponse({ status: 401, description: 'Current password is incorrect.' })
+  @HttpCode(HttpStatus.OK)
+  async changePassword(
+    @GetUser() user: User,
+    @Body(ValidationPipe) dto: ChangePasswordDto,
+  ) {
+    await this.authService.changePassword(user.id, dto);
+    return { message: 'Password changed. Please log in again.' };
   }
 
   @Public()
