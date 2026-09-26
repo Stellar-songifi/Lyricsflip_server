@@ -22,6 +22,8 @@ import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { VerifyEmailDto } from './dto/verify-email.dto';
 import { ResendVerificationDto } from './dto/resend-verification.dto';
+import { ForgotPasswordDto } from './dto/forgot-password.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 import { StellarChallengeDto, StellarVerifyDto } from './dto/stellar-auth.dto';
 import { Public } from './decorators/public.decorator';
 import { GetUser } from './decorators/user.decorator';
@@ -112,6 +114,39 @@ export class AuthController {
   async resendVerification(@Body(ValidationPipe) dto: ResendVerificationDto) {
     await this.authService.resendVerification(dto.email);
     return { message: 'If the account exists, a verification email has been sent.' };
+  }
+
+  @Public()
+  @Throttle(authThrottle)
+  @Post('forgot-password')
+  @ApiOperation({
+    summary: 'Request a password reset link',
+    description:
+      'Always responds with success so the endpoint cannot be used to probe ' +
+      'which addresses are registered.',
+  })
+  @ApiResponse({ status: 200, description: 'Reset email sent if the account exists.' })
+  @HttpCode(HttpStatus.OK)
+  async forgotPassword(@Body(ValidationPipe) dto: ForgotPasswordDto) {
+    await this.authService.forgotPassword(dto.email);
+    return { message: 'If the account exists, a password reset email has been sent.' };
+  }
+
+  @Public()
+  @Throttle(authThrottle)
+  @Post('reset-password')
+  @ApiOperation({
+    summary: 'Reset a password with a single-use token',
+    description:
+      'Consumes the token emailed by forgot-password, updates the password, and ' +
+      'revokes every outstanding session for the account.',
+  })
+  @ApiResponse({ status: 200, description: 'Password reset.' })
+  @ApiResponse({ status: 400, description: 'Token invalid, expired, or already used.' })
+  @HttpCode(HttpStatus.OK)
+  async resetPassword(@Body(ValidationPipe) dto: ResetPasswordDto) {
+    await this.authService.resetPassword(dto.token, dto.password);
+    return { message: 'Password reset. Please log in again.' };
   }
 
   @UseGuards(JwtAuthGuard)

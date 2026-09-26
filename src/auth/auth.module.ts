@@ -10,13 +10,15 @@ import { StellarAuthService } from './services/stellar-auth.service';
 import { AuthTokenService } from './services/auth-token.service';
 import { MailerService } from './services/mailer.service';
 import { EmailVerificationService } from './services/email-verification.service';
+import { PasswordResetService } from './services/password-reset.service';
 import { User } from 'src/users/entities/user.entity';
 import { RefreshToken } from './entities/refresh-token.entity';
 import { EmailToken } from './entities/email-token.entity';
+import { PasswordResetToken } from './entities/password-reset-token.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([User, RefreshToken, EmailToken]),
+    TypeOrmModule.forFeature([User, RefreshToken, EmailToken, PasswordResetToken]),
     PassportModule.register({ defaultStrategy: 'jwt' }),
     JwtModule.registerAsync({
       imports: [ConfigModule],
@@ -38,8 +40,9 @@ import { EmailToken } from './entities/email-token.entity';
     AuthTokenService,
     MailerService,
     EmailVerificationService,
+    PasswordResetService,
     JwtStrategy,
   ],
-  exports: [JwtStrategy, PassportModule, AuthService, StellarAuthService, EmailVerificationService],
+  exports: [JwtStrategy, PassportModule, AuthService, StellarAuthService, EmailVerificationService, PasswordResetService],
 })
 export class AuthModule {}
