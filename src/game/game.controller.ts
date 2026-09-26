@@ -165,14 +165,6 @@ export class GameController {
     }
   }
 
-  /**
-   * GET /game/health - Health check endpoint
-   */
-  @Get('health')
-  getHealth(): { status: string; timestamp: string } {
-    return {
-      status: 'OK',
-      timestamp: new Date().toISOString(),
-    };
-  }
+  // /game/health has been replaced by the dedicated /health/live and
+  // /health/ready endpoints provided by HealthModule (#199).
 }

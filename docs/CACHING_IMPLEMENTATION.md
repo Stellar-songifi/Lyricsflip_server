@@ -1,5 +1,40 @@
 # Lyrics Caching Implementation
 
+## Redis Store (multi-instance / production)
+
+When `REDIS_URL` is set, the cache is backed by Redis via `@keyv/redis`.  All
+application instances share the same store, so an invalidation on one instance
+is immediately visible to all others — fixing the stale-cache problem described
+in issue #109.
+
+Set `REDIS_URL` to a full Redis connection URI, e.g.:
+
+```
+REDIS_URL=redis://localhost:6379
+REDIS_URL=redis://:password@redis-host:6379/0
+```
+
+When `REDIS_URL` is **not** set the app falls back to an in-memory store
+(suitable for local development and CI where Redis is not available).
+
+### Prefix-based namespace invalidation
+
+All cache keys are prefixed (see *Cache Keys Structure* below).  To invalidate
+an entire namespace — for example, all random-lyrics entries — call
+`cache.del()` for each key in that namespace, or use the `clearCache()` helper
+in `LyricsService`.  With Redis every `del` is propagated to all connected
+instances, so there is no split-brain between pods.
+
+### Running Redis locally
+
+```bash
+docker compose up -d redis
+```
+
+The supplied `docker-compose.yml` starts Redis 7 on the default port 6379.
+
+---
+
 ## Overview
 
 This document describes the implementation of in-memory caching for the Lyrics API to improve performance and reduce unnecessary database hits.

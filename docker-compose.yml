@@ -1,0 +1,47 @@
+version: '3.9'
+
+# Local development stack for LyricsFlip server.
+# Starts PostgreSQL and Redis; the NestJS app itself is run with `npm run start:dev`.
+#
+# Usage:
+#   docker compose up -d        # start services
+#   docker compose down -v      # stop and remove volumes
+#
+# The app's .env should contain:
+#   DB_HOST=localhost  DB_PORT=5432  DB_USERNAME=lyricflip  DB_PASSWORD=lyricflip  DB_NAME=lyricflip
+#   REDIS_URL=redis://localhost:6379
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: lyricflip
+      POSTGRES_PASSWORD: lyricflip
+      POSTGRES_DB: lyricflip
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U lyricflip']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  postgres_data:
+  redis_data:
