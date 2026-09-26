@@ -10,13 +10,72 @@
 //! else: `resolve` can only pay a player of that pot, and `refund` can only
 //! return each stake to the player who made it. That bounds what a compromised
 //! backend key can do to picking the wrong winner, rather than draining escrow.
+//!
+//! ## Events
+//!
+//! Every state-changing call publishes an event so indexers, explorers and
+//! the backend can follow pot activity without polling `get_pot`:
+//!
+//! | Function       | Topics                       | Data                              |
+//! |----------------|-------------------------------|------------------------------------|
+//! | `open_pot`     | `("open", session_id)`        | `(player_a, player_b, stake)`      |
+//! | `stake`        | `("stake", session_id)`       | `(player, is_player_a)`            |
+//! | `resolve`      | `("resolve", session_id)`     | `(winner, payout)`                 |
+//! | `refund`       | `("refund", session_id)`      | `(player_a, player_b)`             |
+//! | `set_resolver` | `("resolver", ())`            | `(old_resolver, new_resolver)`     |
+//! | `claim_refund` | `("claim", session_id)`       | `(player, amount)`                 |
+//! | `set_admin`    | `("admin", ())`               | `(old_admin, new_admin)`           |
+//! | `upgrade`      | `("upgrade", ())`             | `new_wasm_hash`                    |
+//!
+//! ## Admin rotation and upgrades
+//!
+//! The admin can rotate itself via `set_admin`, and can upgrade the
+//! contract's WASM in place via `upgrade` (using
+//! `env.deployer().update_current_contract_wasm`), so fixing a bug no
+//! longer requires a redeploy to a new contract ID that strands in-flight
+//! pots. Storage carries a version key, bumped by the `migrate` hook, which
+//! an operator calls after `upgrade` to run any storage transformation the
+//! new WASM needs — see the deploy/upgrade procedure below.
+//!
+//! ### Upgrade procedure
+//!
+//! 1. `stellar contract build` the new WASM and `stellar contract upload`
+//!    it to get its hash.
+//! 2. Call `upgrade(new_wasm_hash)`, authorised by the admin.
+//! 3. Call `migrate()`, authorised by the admin, so any storage
+//!    transformation the new version needs runs exactly once.
+//! 4. Confirm `get_version` reports `CURRENT_VERSION` and `get_pot` still
+//!    reads existing pots correctly.
+//!
+//! ## Reclaiming a stuck stake
+//!
+//! If the resolver key is lost, or the backend that holds it is shut down,
+//! staked funds would otherwise be locked forever — rotating the resolver
+//! needs the admin, who may also be unavailable. Every pot therefore carries
+//! a `deadline_ledger`, set by `open_pot` to `CLAIM_WINDOW_LEDGERS` ledgers in
+//! the future. Once that deadline has passed, each player may call
+//! `claim_refund` themselves to recover their own stake, with no resolver or
+//! admin involved. `resolve` remains available up until a player claims;
+//! once any player has claimed, `resolve` is permanently blocked for that
+//! pot, since it no longer holds both stakes.
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, token, Address, BytesN, Env,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, BytesN,
+    Env,
 };
+
+/// The current storage layout version. Bumped whenever `migrate` needs to
+/// transform existing storage after an `upgrade`.
+pub const CURRENT_VERSION: u32 = 1;
 
 /// A game session ID: the 16 bytes of the backend's session UUID.
 pub type SessionId = BytesN<16>;
+
+/// How many ledgers after `open_pot` a pot's claim deadline falls. Roughly a
+/// week, assuming a five second average ledger close time. After this many
+/// ledgers have passed, players may reclaim their own stake themselves via
+/// `claim_refund`, even if the resolver never calls `resolve` or `refund`.
+pub const CLAIM_WINDOW_LEDGERS: u32 = 120_960;
 
 #[contracttype]
 #[derive(Clone)]
@@ -25,6 +84,8 @@ pub enum DataKey {
     Config,
     /// The pot for one game session.
     Pot(SessionId),
+    /// The storage layout version, checked and updated by `migrate`.
+    Version,
 }
 
 #[contracttype]
@@ -61,6 +122,9 @@ pub struct Pot {
     pub funded_a: bool,
     pub funded_b: bool,
     pub status: PotStatus,
+    /// The ledger sequence after which either player may reclaim their own
+    /// stake themselves via `claim_refund`, regardless of the resolver.
+    pub deadline_ledger: u32,
 }
 
 #[contracterror]
@@ -77,6 +141,11 @@ pub enum Error {
     NotAPlayer = 8,
     InvalidStake = 9,
     SamePlayer = 10,
+    /// `claim_refund` was called before the pot's claim deadline.
+    DeadlineNotReached = 11,
+    /// The calling player has no stake left in the pot to reclaim — either
+    /// they never staked, or they already claimed it back.
+    NothingToClaim = 12,
 }
 
 #[contract]
@@ -84,17 +153,15 @@ pub struct EscrowContract;
 
 #[contractimpl]
 impl EscrowContract {
-    /// Sets the admin, the staking token and the resolver. Callable once.
-    pub fn initialize(
-        env: Env,
-        admin: Address,
-        token: Address,
-        resolver: Address,
-    ) -> Result<(), Error> {
-        if env.storage().instance().has(&DataKey::Config) {
-            return Err(Error::AlreadyInitialized);
-        }
-
+    /// Sets the admin, the staking token and the resolver.
+    ///
+    /// This runs atomically as part of deployment (`stellar contract
+    /// deploy --wasm ... -- --admin ... --token ... --resolver ...`), so
+    /// there is no window between deploy and initialization for an attacker
+    /// to front-run: the contract is never live with unset, or someone
+    /// else's, configuration. There is deliberately no separate `initialize`
+    /// entrypoint any more, so this can never be called a second time.
+    pub fn __constructor(env: Env, admin: Address, token: Address, resolver: Address) {
         admin.require_auth();
 
         env.storage().instance().set(
@@ -105,8 +172,76 @@ impl EscrowContract {
                 resolver,
             },
         );
+        env.storage().instance().set(&DataKey::Version, &CURRENT_VERSION);
+    }
+
+    /// Rotates the admin. Only the current admin may call this, so losing
+    /// the admin key is still unrecoverable, but a routine key rotation —
+    /// or handing the contract to a new multisig or DAO — no longer needs a
+    /// redeploy.
+    pub fn set_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        let mut config = Self::config(&env)?;
+        config.admin.require_auth();
+        let old_admin = config.admin.clone();
+        config.admin = new_admin.clone();
+        env.storage().instance().set(&DataKey::Config, &config);
+
+        env.events()
+            .publish((symbol_short!("admin"), ()), (old_admin, new_admin));
 
         Ok(())
+    }
+
+    /// Upgrades the contract's WASM in place, keeping the same contract ID
+    /// and all existing storage (pots, config) intact. Only the admin may
+    /// call this. Fixing a bug no longer strands in-flight pots on the old
+    /// contract ID — callers keep using the same address after an upgrade.
+    ///
+    /// `new_wasm_hash` must already be installed on the network (uploaded
+    /// via `stellar contract upload`) before calling this.
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
+        let config = Self::config(&env)?;
+        config.admin.require_auth();
+
+        env.deployer()
+            .update_current_contract_wasm(new_wasm_hash.clone());
+
+        env.events()
+            .publish((symbol_short!("upgrade"), ()), new_wasm_hash);
+
+        Ok(())
+    }
+
+    /// Migration hook, run after `upgrade` to bring existing storage up to
+    /// `CURRENT_VERSION`. A no-op today since the layout hasn't changed yet,
+    /// but this is where a future upgrade adds its storage transformation,
+    /// gated on the stored version so it only runs once. Only the admin may
+    /// call this.
+    pub fn migrate(env: Env) -> Result<(), Error> {
+        let config = Self::config(&env)?;
+        config.admin.require_auth();
+
+        let stored_version: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::Version)
+            .unwrap_or(0);
+
+        if stored_version < CURRENT_VERSION {
+            // Future storage transformations go here, gated on
+            // `stored_version`, before bumping it to `CURRENT_VERSION`.
+            env.storage().instance().set(&DataKey::Version, &CURRENT_VERSION);
+        }
+
+        Ok(())
+    }
+
+    /// Reads the storage layout version.
+    pub fn get_version(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::Version)
+            .unwrap_or(0)
     }
 
     /// Rotates the resolver key. Only the admin may call this, which is what
@@ -114,8 +249,13 @@ impl EscrowContract {
     pub fn set_resolver(env: Env, new_resolver: Address) -> Result<(), Error> {
         let mut config = Self::config(&env)?;
         config.admin.require_auth();
-        config.resolver = new_resolver;
+        let old_resolver = config.resolver.clone();
+        config.resolver = new_resolver.clone();
         env.storage().instance().set(&DataKey::Config, &config);
+
+        env.events()
+            .publish((symbol_short!("resolver"), ()), (old_resolver, new_resolver));
+
         Ok(())
     }
 
@@ -143,17 +283,23 @@ impl EscrowContract {
             return Err(Error::PotAlreadyExists);
         }
 
+        let deadline_ledger = env.ledger().sequence() + CLAIM_WINDOW_LEDGERS;
+
         env.storage().persistent().set(
-            &DataKey::Pot(session_id),
+            &DataKey::Pot(session_id.clone()),
             &Pot {
-                player_a,
-                player_b,
+                player_a: player_a.clone(),
+                player_b: player_b.clone(),
                 stake,
                 funded_a: false,
                 funded_b: false,
                 status: PotStatus::Open,
+                deadline_ledger,
             },
         );
+
+        env.events()
+            .publish((symbol_short!("open"), session_id), (player_a, player_b, stake));
 
         Ok(())
     }
@@ -201,7 +347,10 @@ impl EscrowContract {
 
         env.storage()
             .persistent()
-            .set(&DataKey::Pot(session_id), &pot);
+            .set(&DataKey::Pot(session_id.clone()), &pot);
+
+        env.events()
+            .publish((symbol_short!("stake"), session_id), (player, is_a));
 
         Ok(())
     }
@@ -214,7 +363,11 @@ impl EscrowContract {
 
         let mut pot = Self::pot(&env, &session_id)?;
 
-        if pot.status != PotStatus::Funded {
+        // `funded_a`/`funded_b` are also checked (not just `status`) because a
+        // player may have already reclaimed their stake via `claim_refund`
+        // after the deadline passed, which clears their funded flag but
+        // leaves `status` at `Funded` if the other player hasn't claimed.
+        if pot.status != PotStatus::Funded || !pot.funded_a || !pot.funded_b {
             return Err(Error::PotNotFunded);
         }
 
@@ -233,7 +386,10 @@ impl EscrowContract {
         pot.status = PotStatus::Resolved;
         env.storage()
             .persistent()
-            .set(&DataKey::Pot(session_id), &pot);
+            .set(&DataKey::Pot(session_id.clone()), &pot);
+
+        env.events()
+            .publish((symbol_short!("resolve"), session_id), (winner, payout));
 
         Ok(payout)
     }
@@ -266,9 +422,82 @@ impl EscrowContract {
         pot.status = PotStatus::Refunded;
         env.storage()
             .persistent()
-            .set(&DataKey::Pot(session_id), &pot);
+            .set(&DataKey::Pot(session_id.clone()), &pot);
+
+        env.events().publish(
+            (symbol_short!("refund"), session_id),
+            (pot.player_a.clone(), pot.player_b.clone()),
+        );
 
         Ok(())
+    }
+
+    /// Lets a player reclaim their own stake once a pot's claim deadline has
+    /// passed, without needing the resolver at all. This is the player's
+    /// self-service escape hatch if the resolver key is lost or the backend
+    /// is shut down — see `CLAIM_WINDOW_LEDGERS`.
+    ///
+    /// Only the calling player's own stake is ever moved: `claim_refund`
+    /// authorises against the `player` argument, and only pays out (and
+    /// clears) that player's own `funded_a`/`funded_b` flag. A player can
+    /// never claim another player's stake, and cannot claim twice — the
+    /// second call fails with `NothingToClaim` because the flag is already
+    /// cleared.
+    ///
+    /// Once any player has claimed, `resolve` can no longer be called on
+    /// this pot (see the comment in `resolve`), so the resolver cannot pay
+    /// out a pot that no longer holds both stakes.
+    pub fn claim_refund(env: Env, session_id: SessionId, player: Address) -> Result<i128, Error> {
+        player.require_auth();
+
+        let config = Self::config(&env)?;
+        let mut pot = Self::pot(&env, &session_id)?;
+
+        if pot.status == PotStatus::Resolved || pot.status == PotStatus::Refunded {
+            return Err(Error::PotNotFunded);
+        }
+
+        if env.ledger().sequence() <= pot.deadline_ledger {
+            return Err(Error::DeadlineNotReached);
+        }
+
+        let is_a = player == pot.player_a;
+        let is_b = player == pot.player_b;
+
+        if !is_a && !is_b {
+            return Err(Error::NotAPlayer);
+        }
+
+        let has_stake = if is_a { pot.funded_a } else { pot.funded_b };
+        if !has_stake {
+            return Err(Error::NothingToClaim);
+        }
+
+        token::Client::new(&env, &config.token).transfer(
+            &env.current_contract_address(),
+            &player,
+            &pot.stake,
+        );
+
+        if is_a {
+            pot.funded_a = false;
+        } else {
+            pot.funded_b = false;
+        }
+
+        if !pot.funded_a && !pot.funded_b {
+            pot.status = PotStatus::Refunded;
+        }
+
+        let amount = pot.stake;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Pot(session_id.clone()), &pot);
+
+        env.events()
+            .publish((symbol_short!("claim"), session_id), (player, amount));
+
+        Ok(amount)
     }
 
     /// Reads a pot. Used by the backend to reconcile its database against the
