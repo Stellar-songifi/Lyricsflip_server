@@ -20,6 +20,8 @@ import { User } from './entities/user.entity';
 import { UserGroup } from './user-serialization';
 import { GetUser } from 'src/auth/decorators/user.decorator';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
+import { OptionalJwtAuthGuard } from 'src/auth/guards/optional-jwt-auth.guard';
+import { Public } from 'src/auth/decorators/public.decorator';
 import { Roles } from 'src/auth/roles/roles.decorator';
 import { Role } from 'src/auth/roles/role.enum';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
@@ -121,21 +123,29 @@ export class UsersController {
   }
 
   /**
-   * GET /users/leaderboard - Top users ranked by xp, level or username.
-   * Declared before `@Get(':id')` so the literal path is not swallowed by the
-   * wildcard route.
+   * GET /users/leaderboard - Public leaderboard ranked by xp, level or username.
+   * Supports weekly/monthly/all-time periods and genre filtering, excludes
+   * inactive (and optionally admin) accounts, and includes the caller's rank
+   * when authenticated. Declared before `@Get(':id')` so the literal path is
+   * not swallowed by the wildcard route.
    */
+  @Public()
+  @UseGuards(OptionalJwtAuthGuard)
   @Get('leaderboard')
-  @ApiOperation({ summary: 'Get the user leaderboard' })
-  @ApiResponse({ status: 200, description: 'Ranked users with pagination meta.' })
-  @ApiResponse({ status: 400, description: 'Invalid pagination, sort or order.' })
-  getLeaderboard(@Query() query: LeaderboardQueryDto) {
-    return this.usersService.getLeaderboard(
-      query.limit ?? 10,
-      query.offset ?? 0,
-      query.sort ?? 'xp',
-      query.order ?? 'DESC',
-    );
+  @ApiOperation({ summary: 'Get the public user leaderboard' })
+  @ApiResponse({ status: 200, description: 'Ranked users with pagination meta and caller rank.' })
+  @ApiResponse({ status: 400, description: 'Invalid pagination, sort, order, period or genre.' })
+  getLeaderboard(@Query() query: LeaderboardQueryDto, @GetUser() user?: User) {
+    return this.usersService.getLeaderboard({
+      limit: query.limit ?? 10,
+      offset: query.offset ?? 0,
+      sort: query.sort ?? 'xp',
+      order: query.order ?? 'DESC',
+      period: query.period ?? 'all',
+      genre: query.genre,
+      includeAdmins: query.includeAdmins ?? false,
+      currentUserId: user?.id,
+    });
   }
 
   @Get(':id')
