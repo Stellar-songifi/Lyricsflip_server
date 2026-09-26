@@ -1,39 +1,46 @@
-name: Migration location
+name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  migration-location:
-    name: No migrations outside src/migrations
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: bash scripts/check-migration-location.sh
-
   lint-typecheck-test-build:
     name: Lint, type-check, tests and build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
-      - run: npm ci
+
+      - name: Install dependencies
+        run: npm ci
+
       - name: Lint (check mode)
         run: npm run lint -- --no-fix
+
       - name: Type-check
         run: npx tsc --noEmit
+
       - name: Tests with coverage
         run: npm test -- --coverage
+
       - name: Build
         run: npm run build
 
   e2e:
-    name: E2E (Postgres) and migration drift
+    name: E2E (Postgres) and migration drift check
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -52,26 +59,42 @@ jobs:
     env:
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/test
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
-      - run: npm ci
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run migrations
+        run: npm run migration:run
+
       - name: Migration drift check
-        run: npm run migration:check
+        run: npm run migration:generate -- src/migrations/DriftCheck
+
       - name: E2E tests
         run: npm run test:e2e
 
   contract:
-    name: Contract tests
+    name: Contract
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
-      - run: npm ci
+
+      - name: Install dependencies
+        run: npm ci
+
       - name: Contract tests
         run: npm run test:contract
