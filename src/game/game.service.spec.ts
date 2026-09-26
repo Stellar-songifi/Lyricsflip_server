@@ -65,6 +65,7 @@ describe('GameLogicService', () => {
     const mockRepository = {
       findOne: jest.fn(),
       createQueryBuilder: jest.fn().mockReturnValue(queryBuilder),
+      increment: jest.fn().mockResolvedValue(undefined),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -232,6 +233,125 @@ describe('GameLogicService', () => {
           'No lyrics found matching the specified criteria',
         ),
       );
+    });
+
+    // --- issue #175: timesUsed increment ---
+
+    it('increments timesUsed atomically when a lyric is served', async () => {
+      queryBuilder.getOne.mockResolvedValue(mockLyric);
+
+      await service.getRandomLyric();
+
+      expect(repository.increment).toHaveBeenCalledWith(
+        { id: mockLyric.id },
+        'timesUsed',
+        1,
+      );
+    });
+
+    // --- issue #175: difficulty filter ---
+
+    it('applies difficulty filter when provided', async () => {
+      queryBuilder.getOne.mockResolvedValue(mockLyric);
+
+      await service.getRandomLyric({ difficulty: 3 });
+
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith(
+        'lyrics.difficulty = :difficulty',
+        { difficulty: 3 },
+      );
+    });
+
+    it('does not apply difficulty filter when omitted', async () => {
+      queryBuilder.getOne.mockResolvedValue(mockLyric);
+
+      await service.getRandomLyric();
+
+      const difficultyCall = (queryBuilder.andWhere as jest.Mock).mock.calls.find(
+        ([sql]: [string]) => sql.includes('difficulty'),
+      );
+      expect(difficultyCall).toBeUndefined();
+    });
+
+    // --- issue #176: preference fallback ---
+
+    it('falls back to preferredGenre when no explicit genre is given', async () => {
+      queryBuilder.getOne.mockResolvedValue(mockLyric);
+
+      await service.getRandomLyric({ preferredGenre: 'Pop' });
+
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith(
+        'lyrics.genre = :genre',
+        { genre: Genre.Pop },
+      );
+    });
+
+    it('falls back to preferredDecade when no explicit decade is given', async () => {
+      queryBuilder.getOne.mockResolvedValue(mockLyric);
+
+      await service.getRandomLyric({ preferredDecade: '2020s' });
+
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith(
+        'lyrics.decade = :decade',
+        { decade: '2020s' },
+      );
+    });
+
+    it('explicit genre overrides preferredGenre', async () => {
+      queryBuilder.getOne.mockResolvedValue(mockLyric);
+
+      await service.getRandomLyric({
+        genre: Genre.HipHop,
+        preferredGenre: 'Pop',
+      });
+
+      // Should use the explicit genre, not the preference
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith(
+        'lyrics.genre = :genre',
+        { genre: Genre.HipHop },
+      );
+    });
+
+    it('does not apply preferredGenre when ignorePreferences is true', async () => {
+      queryBuilder.getOne.mockResolvedValue(mockLyric);
+
+      await service.getRandomLyric({
+        preferredGenre: 'Pop',
+        ignorePreferences: true,
+      });
+
+      const genreCall = (queryBuilder.andWhere as jest.Mock).mock.calls.find(
+        ([sql]: [string]) => sql.includes('genre'),
+      );
+      expect(genreCall).toBeUndefined();
+    });
+
+    it('retries without preferences when preference-filtered pool is empty', async () => {
+      // First call (with preference) returns nothing; second call (without) returns a lyric
+      queryBuilder.getOne
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(mockLyric);
+
+      const result = await service.getRandomLyric({ preferredGenre: 'Pop' });
+
+      expect(result.id).toBe(mockLyric.id);
+      // Two query-builder chains were created: one with preference, one without
+      expect(repository.createQueryBuilder).toHaveBeenCalledTimes(2);
+    });
+
+    it('never returns empty result because of preferences (acceptance criterion)', async () => {
+      // Simulate: preference pool empty, but global pool has a lyric
+      queryBuilder.getOne
+        .mockResolvedValueOnce(null)  // preference-filtered → empty
+        .mockResolvedValueOnce(mockLyric);  // no preference → hit
+
+      const result = await service.getRandomLyric({
+        preferredGenre: 'Pop',
+        preferredDecade: '2020s',
+      });
+
+      expect(result).toBeDefined();
+      expect(result.id).toBe(mockLyric.id);
     });
   });
 
