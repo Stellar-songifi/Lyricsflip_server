@@ -9,13 +9,13 @@ import {
   UseGuards,
   Query,
   ParseIntPipe,
-  Body,
 } from '@nestjs/common';
 // Value imports: `import type` erases these classes from the decorator
 // metadata, so Nest could neither inject the service nor validate the DTOs.
 import { LyricsService } from './lyrics.service';
 import { CreateLyricsDto } from './dto/create-lyrics.dto';
 import { UpdateLyricsDto } from './dto/update-lyrics.dto';
+import { SearchLyricsQueryDto } from './dto/search-lyrics-query.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import {
@@ -67,8 +67,6 @@ export class LyricsController {
     return AdminLyricDto.from(
       await this.lyricsService.create(createLyricsDto, user),
     );
-  create(@Body() createLyricsDto: CreateLyricsDto, @GetUser() user: User) {
-    return this.lyricsService.create(createLyricsDto, user);
   }
 
   @ApiOperation({ summary: 'Get filtered lyrics' })
@@ -171,6 +169,24 @@ export class LyricsController {
   @Get('artist/:artist')
   getLyricsByArtist(@Param('artist') artist: string) {
     return this.lyricsService.getLyricsByCategory('artist', artist);
+  }
+
+  // Full-text search spans answer fields (title/artist), so it is admin only.
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Search lyrics (Admin only)' })
+  @ApiQuery({
+    name: 'q',
+    required: true,
+    description: 'Search term matched against lyric fields',
+  })
+  @ApiOkResponse({ description: 'Matching lyrics.', type: [AdminLyricDto] })
+  @ApiBadRequestResponse({ description: 'The query failed validation.' })
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.Admin)
+  @Get('search')
+  async search(@Query() query: SearchLyricsQueryDto): Promise<AdminLyricDto[]> {
+    const lyrics = await this.lyricsService.searchLyrics(query.q);
+    return lyrics.map((lyric) => AdminLyricDto.from(lyric));
   }
 
   @ApiOperation({ summary: 'Get lyrics by ID' })
