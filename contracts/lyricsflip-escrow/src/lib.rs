@@ -15,6 +15,13 @@ use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, token, Address, BytesN, Env,
 };
 
+/// Ledgers per day at ~5s per ledger.
+const DAY_IN_LEDGERS: u32 = 17_280;
+/// Expected maximum match length plus a generous margin: 30 days.
+pub const TTL_EXTEND_TO: u32 = 30 * DAY_IN_LEDGERS;
+/// Refresh whenever remaining life drops below this: 15 days.
+pub const TTL_THRESHOLD: u32 = TTL_EXTEND_TO / 2;
+
 /// A game session ID: the 16 bytes of the backend's session UUID.
 pub type SessionId = BytesN<16>;
 
@@ -96,6 +103,7 @@ impl EscrowContract {
         }
 
         admin.require_auth();
+        Self::extend_instance(&env);
 
         env.storage().instance().set(
             &DataKey::Config,
@@ -143,8 +151,9 @@ impl EscrowContract {
             return Err(Error::PotAlreadyExists);
         }
 
-        env.storage().persistent().set(
-            &DataKey::Pot(session_id),
+        Self::save_pot(
+            &env,
+            &session_id,
             &Pot {
                 player_a,
                 player_b,
@@ -199,9 +208,7 @@ impl EscrowContract {
             pot.status = PotStatus::Funded;
         }
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::Pot(session_id), &pot);
+        Self::save_pot(&env, &session_id, &pot);
 
         Ok(())
     }
@@ -231,9 +238,7 @@ impl EscrowContract {
         );
 
         pot.status = PotStatus::Resolved;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Pot(session_id), &pot);
+        Self::save_pot(&env, &session_id, &pot);
 
         Ok(payout)
     }
@@ -264,9 +269,7 @@ impl EscrowContract {
         }
 
         pot.status = PotStatus::Refunded;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Pot(session_id), &pot);
+        Self::save_pot(&env, &session_id, &pot);
 
         Ok(())
     }
@@ -282,7 +285,9 @@ impl EscrowContract {
         Self::config(&env)
     }
 
+    /// Every entry point loads the config, so this keeps the instance alive.
     fn config(env: &Env) -> Result<Config, Error> {
+        Self::extend_instance(env);
         env.storage()
             .instance()
             .get(&DataKey::Config)
@@ -290,10 +295,30 @@ impl EscrowContract {
     }
 
     fn pot(env: &Env, session_id: &SessionId) -> Result<Pot, Error> {
+        let key = DataKey::Pot(session_id.clone());
+        let pot: Pot = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::PotNotFound)?;
         env.storage()
             .persistent()
-            .get(&DataKey::Pot(session_id.clone()))
-            .ok_or(Error::PotNotFound)
+            .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND_TO);
+        Ok(pot)
+    }
+
+    fn save_pot(env: &Env, session_id: &SessionId, pot: &Pot) {
+        let key = DataKey::Pot(session_id.clone());
+        env.storage().persistent().set(&key, pot);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND_TO);
+    }
+
+    fn extend_instance(env: &Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
     }
 }
 
