@@ -20,6 +20,10 @@ import { SignupDto } from './dto/signup.dto';
 import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
+import { VerifyEmailDto } from './dto/verify-email.dto';
+import { ResendVerificationDto } from './dto/resend-verification.dto';
+import { ForgotPasswordDto } from './dto/forgot-password.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 import { StellarChallengeDto, StellarVerifyDto } from './dto/stellar-auth.dto';
 import { Public } from './decorators/public.decorator';
 import { GetUser } from './decorators/user.decorator';
@@ -80,16 +84,85 @@ export class AuthController {
     return { message: 'Logged out' };
   }
 
+  @Public()
+  @Throttle(authThrottle)
+  @Post('verify-email')
+  @ApiOperation({
+    summary: 'Verify an email address with a single-use token',
+    description:
+      'Consumes the token emailed at signup and marks the account as verified.',
+  })
+  @ApiResponse({ status: 200, description: 'Email verified.' })
+  @ApiResponse({ status: 400, description: 'Token invalid, expired, or already used.' })
+  @HttpCode(HttpStatus.OK)
+  async verifyEmail(@Body(ValidationPipe) dto: VerifyEmailDto) {
+    await this.authService.verifyEmail(dto.token);
+    return { message: 'Email verified' };
+  }
+
+  @Public()
+  @Throttle(authThrottle)
+  @Post('resend-verification')
+  @ApiOperation({
+    summary: 'Resend the email verification link',
+    description:
+      'Always responds with success so the endpoint cannot be used to probe ' +
+      'which addresses are registered.',
+  })
+  @ApiResponse({ status: 200, description: 'Verification email sent if needed.' })
+  @HttpCode(HttpStatus.OK)
+  async resendVerification(@Body(ValidationPipe) dto: ResendVerificationDto) {
+    await this.authService.resendVerification(dto.email);
+    return { message: 'If the account exists, a verification email has been sent.' };
+  }
+
+  @Public()
+  @Throttle(authThrottle)
+  @Post('forgot-password')
+  @ApiOperation({
+    summary: 'Request a password reset link',
+    description:
+      'Always responds with success so the endpoint cannot be used to probe ' +
+      'which addresses are registered.',
+  })
+  @ApiResponse({ status: 200, description: 'Reset email sent if the account exists.' })
+  @HttpCode(HttpStatus.OK)
+  async forgotPassword(@Body(ValidationPipe) dto: ForgotPasswordDto) {
+    await this.authService.forgotPassword(dto.email);
+    return { message: 'If the account exists, a password reset email has been sent.' };
+  }
+
+  @Public()
+  @Throttle(authThrottle)
+  @Post('reset-password')
+  @ApiOperation({
+    summary: 'Reset a password with a single-use token',
+    description:
+      'Consumes the token emailed by forgot-password, updates the password, and ' +
+      'revokes every outstanding session for the account.',
+  })
+  @ApiResponse({ status: 200, description: 'Password reset.' })
+  @ApiResponse({ status: 400, description: 'Token invalid, expired, or already used.' })
+  @HttpCode(HttpStatus.OK)
+  async resetPassword(@Body(ValidationPipe) dto: ResetPasswordDto) {
+    await this.authService.resetPassword(dto.token, dto.password);
+    return { message: 'Password reset. Please log in again.' };
+  }
+
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
+  @Throttle(authThrottle)
   @Post('change-password')
+  @Audited({ action: 'auth.password.change', targetType: 'user' })
   @ApiOperation({
     summary: 'Change the signed-in user’s password',
     description:
-      'Invalidates every outstanding access token and refresh token for the account.',
+      'Requires the current password, enforces the password strength policy, ' +
+      'and invalidates every other outstanding session for the account.',
   })
   @ApiResponse({ status: 200, description: 'Password changed.' })
   @ApiResponse({ status: 401, description: 'Current password is incorrect.' })
+  @ApiResponse({ status: 400, description: 'New password does not meet the strength policy.' })
   @HttpCode(HttpStatus.OK)
   async changePassword(
     @GetUser() user: User,
@@ -150,41 +223,6 @@ export class AuthController {
   })
   @HttpCode(HttpStatus.OK)
   async linkWallet(
-    @GetUser() user: User,
-    @Body(ValidationPipe) dto: StellarVerifyDto,
-  ) {
-    return this.stellarAuthService.linkWallet(user.id, dto.transaction);
-  }
+    @GetUser() user: User
 
-  @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth()
-  @Get('stellar/wallet')
-  @ApiOperation({
-    summary: 'The Stellar wallet linked to the signed-in account',
-  })
-  @ApiResponse({ status: 200, description: 'Linked wallet, or null.' })
-  getWallet(@GetUser() user: User) {
-    return {
-      stellarAddress: user.stellarAddress ?? null,
-      verifiedAt: user.stellarAddressVerifiedAt ?? null,
-    };
-  }
-
-  @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth()
-  @Delete('stellar/wallet')
-  @Audited({ action: 'auth.wallet.unlink', targetType: 'user' })
-  @ApiOperation({
-    summary: 'Unlink the Stellar wallet from the signed-in account',
-  })
-  @ApiResponse({ status: 200, description: 'Wallet unlinked.' })
-  @ApiResponse({
-    status: 409,
-    description: 'User has a wager in progress.',
-  })
-  @HttpCode(HttpStatus.OK)
-  async unlinkWallet(@GetUser() user: User) {
-    await this.stellarAuthService.unlinkWallet(user.id);
-    return { message: 'Stellar wallet unlinked' };
-  }
-}
+/* … truncated 1110 chars — edit only what you need near the top … */

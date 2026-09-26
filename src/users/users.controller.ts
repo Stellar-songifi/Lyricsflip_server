@@ -43,38 +43,46 @@ export class UsersController {
     return this.usersService.findAll(limit, offset);
   }
 
+  /**
+   * GET /users/me - Rich self-service profile.
+   * Returns the profile plus levelTitle, the linked wallet, the balance
+   * summary and stats. Declared before `:id` so `me` is not treated as an ID.
+   */
+  @UseGuards(JwtAuthGuard)
+  @Get('me')
+  @ApiOperation({ summary: 'Get your own rich profile' })
+  @ApiResponse({ status: 200, description: 'Profile with level, wallet, balance and stats.' })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  getMe(@GetUser() user: User) {
+    return this.usersService.getSelfProfile(user.id);
+  }
+
   @UseGuards(JwtAuthGuard)
   @Get('profile')
-  @ApiOperation({ summary: 'Get user profile' })
-  @ApiResponse({ status: 200, description: 'User profile data.' })
+  @ApiOperation({ summary: 'Get user profile (alias of /users/me)' })
+  @ApiResponse({ status: 200, description: 'Profile with level, wallet, balance and stats.' })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
   getProfile(@GetUser() user: User) {
-    return {
-      id: user.id,
-      username: user.username,
-      email: user.email,
-      xp: user.xp,
-      level: user.level,
-      preferredGenre: user.preferredGenre,
-      preferredDecade: user.preferredDecade,
-      createdAt: user.createdAt,
-      lastLoginAt: user.lastLoginAt,
-    };
+    return this.usersService.getSelfProfile(user.id);
   }
 
   /**
    * PATCH /users/me - Update the current user's own account.
    * Declared before `:id` so `me` is not treated as an ID.
    */
+  @UseGuards(JwtAuthGuard)
   @Patch('me')
   @SerializeOptions({ groups: [UserGroup.SELF] })
   @ApiOperation({ summary: 'Update your own account' })
   @ApiResponse({ status: 200, description: 'Account updated.' })
+  @ApiResponse({ status: 400, description: 'Invalid profile data.' })
   @ApiResponse({ status: 409, description: 'Username already exists.' })
   updateMe(@GetUser() user: User, @Body() updateProfileDto: UpdateProfileDto) {
     return this.usersService.update(user.id, updateProfileDto);
   }
 
   /** DELETE /users/me - Delete the current user's own account. */
+  @UseGuards(JwtAuthGuard)
   @Delete('me')
   @ApiOperation({ summary: 'Delete your own account' })
   @ApiResponse({ status: 200, description: 'Account deleted.' })

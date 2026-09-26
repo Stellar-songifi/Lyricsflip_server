@@ -1,44 +1,37 @@
 import {
-  Entity,
-  PrimaryGeneratedColumn,
   Column,
-  ManyToOne,
-  JoinColumn,
   CreateDateColumn,
+  Entity,
   Index,
+  JoinColumn,
+  ManyToOne,
+  PrimaryGeneratedColumn,
 } from 'typeorm';
-import { User } from '../../users/entities/user.entity';
+import { User } from './user.entity';
 
-/**
- * A rotating refresh token, stored as a SHA-256 hash rather than the raw
- * value so a database leak alone cannot be used to mint access tokens.
- * Each refresh consumes (revokes) the row it was issued against and creates
- * a new one, so a stolen and reused token is detectable: the legitimate
- * client's next refresh will fail because its token was already revoked.
- */
 @Entity('refresh_tokens')
 export class RefreshToken {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @ManyToOne(() => User, { onDelete: 'CASCADE', nullable: false })
-  @JoinColumn({ name: 'userId' })
-  user: User;
-
-  @Column({ type: 'uuid' })
   @Index()
+  @Column({ name: 'user_id' })
   userId: string;
 
+  @ManyToOne(() => User, { onDelete: 'CASCADE' })
+  @JoinColumn({ name: 'user_id' })
+  user: User;
+
   @Index({ unique: true })
-  @Column({ type: 'varchar', length: 64 })
+  @Column({ name: 'token_hash' })
   tokenHash: string;
 
-  @Column({ type: 'timestamp' })
+  @Column({ name: 'expires_at', type: 'timestamptz' })
   expiresAt: Date;
 
-  @Column({ type: 'timestamp', nullable: true })
+  @Column({ name: 'revoked_at', type: 'timestamptz', nullable: true })
   revokedAt: Date | null;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
 }
