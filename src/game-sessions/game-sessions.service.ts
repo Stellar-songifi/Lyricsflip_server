@@ -2,10 +2,19 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ConflictException,
+  ForbiddenException,
   Inject,
+  Logger,
+  ForbiddenException,
+  GoneException,
+  Inject,
+  Logger,
+  OnApplicationBootstrap,
+  OnApplicationShutdown,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { LessThan, Repository } from 'typeorm';
 import {
   GameSession,
   GameSessionStatus,
@@ -15,7 +24,8 @@ import { CreateGameSessionDto } from './dto/create-game-session.dto';
 import { UpdateGameSessionDto } from './dto/update-game-session.dto';
 import { User } from '../users/entities/user.entity';
 import { WagerService } from '../tokens/services/wager.service';
-import { Wager } from '../tokens/entities/wager.entity';
+import { Wager, WagerStatus } from '../tokens/entities/wager.entity';
+import { Role } from '../auth/roles/role.enum';
 import {
   TOKEN_SERVICE,
   ITokenService,
@@ -46,8 +56,31 @@ export type CreateGameSessionResponse = GameSession & {
   }>;
 };
 
+/** Wager states in which no funds are left in escrow. */
+const TERMINAL_WAGER_STATUSES = [
+  WagerStatus.WON,
+  WagerStatus.REFUNDED,
+  WagerStatus.FAILED,
+];
+
 @Injectable()
 export class GameSessionsService {
+  /** Every settlement decision is written here: who, with what, and the result. */
+  private readonly auditLogger = new Logger('SettlementAudit');
+/** How long player two has to accept an invitation. */
+const INVITATION_TTL_MS =
+  Number(process.env.INVITATION_TTL_MINUTES ?? 30) * 60 * 1000;
+
+/** How often unanswered invitations are swept up and refunded. */
+const INVITATION_SWEEP_INTERVAL_MS = 60 * 1000;
+
+@Injectable()
+export class GameSessionsService
+  implements OnApplicationBootstrap, OnApplicationShutdown
+{
+  private readonly logger = new Logger(GameSessionsService.name);
+  private expirySweep?: NodeJS.Timeout;
+
   constructor(
     @InjectRepository(GameSession)
     private readonly gameSessionRepository: Repository<GameSession>,
@@ -175,13 +208,168 @@ export class GameSessionsService {
     return savedGameSession;
   }
 
+  async findAll(limit: number = 20, offset: number = 0): Promise<GameSession[]> {
+  /** Admins see every session; everyone else sees the ones they play in. */
+  async findAll(user: User): Promise<GameSession[]> {
+    if (user.role === Role.Admin) {
+      return this.gameSessionRepository.find({
+        relations: ['player'],
+      });
+    }
+
+  onApplicationBootstrap(): void {
+    this.expirySweep = setInterval(() => {
+      this.expireInvitations().catch((error: Error) =>
+        this.logger.error('Error expiring invitations', error.stack),
+      );
+    }, INVITATION_SWEEP_INTERVAL_MS);
+    this.expirySweep.unref();
+  }
+
+  onApplicationShutdown(): void {
+    clearInterval(this.expirySweep);
+  }
+
+  /**
+   * Player two accepts an invitation. For a wager this is when, and the only
+   * way, their stake is taken (or handed back to them to sign).
+   */
+  async accept(
+    sessionId: string,
+    user: User,
+  ): Promise<CreateGameSessionResponse> {
+    const gameSession = await this.requireInvitation(sessionId, user);
+
+    if (this.isExpired(gameSession)) {
+      await this.abandonInvitation(gameSession);
+      throw new GoneException('This invitation has expired');
+    }
+
+    if (!this.isWagered(gameSession)) {
+      gameSession.status = GameSessionStatus.IN_PROGRESS;
+      return this.gameSessionRepository.save(gameSession);
+    }
+
+    const wagerResult = await this.wagerService.acceptWager(sessionId, user.id);
+
+    if (!wagerResult.success) {
+      throw new BadRequestException(
+        `Failed to accept wager: ${wagerResult.message}`,
+      );
+    }
+
+    gameSession.status = GameSessionStatus.IN_PROGRESS;
+    const saved = await this.gameSessionRepository.save(gameSession);
+
+    return {
+      ...saved,
+      wager: wagerResult.wager,
+      ...(wagerResult.pendingSignatures?.length
+        ? { pendingSignatures: wagerResult.pendingSignatures }
+        : {}),
+    };
+  }
+
+  /** Player two declines an invitation; player one's stake is refunded. */
+  async decline(
+    sessionId: string,
+    user: User,
+  ): Promise<{ gameSession: GameSession; wagerResult?: WagerResult }> {
+    const gameSession = await this.requireInvitation(sessionId, user);
+    return this.abandonInvitation(gameSession);
+  }
+
+  /** Abandons invitations left unanswered too long, refunding player one. */
+  async expireInvitations(): Promise<number> {
+    const expired = await this.gameSessionRepository.find({
+      where: {
+        status: GameSessionStatus.WAITING_FOR_PLAYER,
+        createdAt: LessThan(new Date(Date.now() - INVITATION_TTL_MS)),
+      },
+    });
+
+    for (const gameSession of expired) {
+      await this.abandonInvitation(gameSession);
+    }
+
+    return expired.length;
+  }
+
+  private async requireInvitation(
+    sessionId: string,
+    user: User,
+  ): Promise<GameSession> {
+    const gameSession = await this.gameSessionRepository.findOne({
+      where: { id: sessionId },
+    });
+
+    if (!gameSession) {
+      throw new NotFoundException(
+        `Game session with ID "${sessionId}" not found`,
+      );
+    }
+
+    if (gameSession.playerTwoId !== user.id) {
+      throw new ForbiddenException('You were not invited to this session');
+    }
+
+    if (gameSession.status !== GameSessionStatus.WAITING_FOR_PLAYER) {
+      throw new BadRequestException(
+        `This invitation is no longer open (status: ${gameSession.status})`,
+      );
+    }
+
+    return gameSession;
+  }
+
+  private async abandonInvitation(
+    gameSession: GameSession,
+  ): Promise<{ gameSession: GameSession; wagerResult?: WagerResult }> {
+    gameSession.status = GameSessionStatus.ABANDONED;
+    const saved = await this.gameSessionRepository.save(gameSession);
+
+    if (!this.isWagered(gameSession)) {
+      return { gameSession: saved };
+    }
+
+    // Only player one can have staked, so this returns their stake in full.
+    const wagerResult = await this.wagerService.resolveWagerAsDraw(
+      gameSession.id,
+    );
+
+    if (!wagerResult.success) {
+      this.logger.error(
+        `Refund for abandoned invitation ${gameSession.id} failed: ${wagerResult.message}`,
+      );
+    }
+
+    return { gameSession: saved, wagerResult };
+  }
+
+  private isWagered(gameSession: GameSession): boolean {
+    return gameSession.mode === GameMode.WAGERED || gameSession.hasWager;
+  }
+
+  private isExpired(gameSession: GameSession): boolean {
+    return gameSession.createdAt.getTime() <= Date.now() - INVITATION_TTL_MS;
+  }
+
   async findAll(): Promise<GameSession[]> {
     return this.gameSessionRepository.find({
+      where: [{ player: { id: user.id } }, { playerTwoId: user.id }],
       relations: ['player'],
+      order: { createdAt: 'DESC' },
+      take: limit,
+      skip: offset,
     });
   }
 
-  async findOne(id: string): Promise<GameSession> {
+  /**
+   * Loads a session. When `user` is given, it must be one of the session's
+   * players or an admin; internal callers that have already decided who may
+   * act omit it.
+   */
+  async findOne(id: string, user?: User): Promise<GameSession> {
     const gameSession = await this.gameSessionRepository.findOne({
       where: { id },
       relations: ['player'],
@@ -191,22 +379,54 @@ export class GameSessionsService {
       throw new NotFoundException(`Game session with ID "${id}" not found`);
     }
 
+    if (user) {
+      this.assertParticipant(gameSession, user);
+    }
+
     return gameSession;
   }
 
   async update(
     id: string,
     updateGameSessionDto: UpdateGameSessionDto,
+    user: User,
   ): Promise<GameSession> {
-    const gameSession = await this.findOne(id);
-    Object.assign(gameSession, updateGameSessionDto);
+    const gameSession = await this.findOne(id, user);
+    // Only the fields the narrow DTO allows; anything else was already
+    // rejected by validation, and is not copied even if it slipped through.
+    if (updateGameSessionDto.category !== undefined) {
+      gameSession.category = updateGameSessionDto.category;
+    }
     return this.gameSessionRepository.save(gameSession);
   }
 
-  async remove(id: string): Promise<void> {
+  async remove(id: string, user: User): Promise<void> {
+    await this.findOne(id, user);
+
+    // Deleting the session would orphan a pot that still holds stakes.
+    const wager = await this.wagerService.getWagerBySessionId(id);
+    if (wager && !TERMINAL_WAGER_STATUSES.includes(wager.status)) {
+      throw new ConflictException(
+        `This session has a wager that is still ${wager.status}; it cannot be deleted until it is settled or refunded`,
+      );
+    }
+
     const result = await this.gameSessionRepository.delete(id);
     if (result.affected === 0) {
       throw new NotFoundException(`Game session with ID "${id}" not found`);
+    }
+  }
+
+  async getTopScores(
+    limit: number = 10,
+    offset: number = 0,
+  ): Promise<GameSession[]> {
+  private assertParticipant(gameSession: GameSession, user: User): void {
+    const isParticipant =
+      gameSession.player?.id === user.id || gameSession.playerTwoId === user.id;
+
+    if (!isParticipant && user.role !== Role.Admin) {
+      throw new ForbiddenException('You are not a player in this session');
     }
   }
 
@@ -215,6 +435,7 @@ export class GameSessionsService {
       where: { status: GameSessionStatus.COMPLETED },
       order: { score: 'DESC' },
       take: limit,
+      skip: offset,
       relations: ['player'],
     });
   }
@@ -222,11 +443,13 @@ export class GameSessionsService {
   async getRecentGames(
     userId: string,
     limit: number = 5,
+    offset: number = 0,
   ): Promise<GameSession[]> {
     return this.gameSessionRepository.find({
       where: { player: { id: userId } },
       order: { createdAt: 'DESC' },
       take: limit,
+      skip: offset,
       relations: ['player'],
     });
   }
@@ -250,12 +473,16 @@ export class GameSessionsService {
   }
 
   /**
-   * Completes a wagered game session and resolves the wager
+   * Completes a wagered game session and resolves the wager.
+   *
+   * Scores decide who is paid, so this is an admin action (enforced on the
+   * route) and every call is audit-logged with who triggered it.
    */
   async completeWageredGame(
     sessionId: string,
     playerOneScore: number,
     playerTwoScore: number,
+    triggeredBy: User,
   ): Promise<{
     gameSession: GameSession;
     wagerResult?: any;
@@ -324,6 +551,20 @@ export class GameSessionsService {
     const updatedGameSession =
       await this.gameSessionRepository.save(gameSession);
 
+    this.auditLogger.log(
+      JSON.stringify({
+        event: 'wager.settlement',
+        sessionId,
+        triggeredBy: { id: triggeredBy.id, role: triggeredBy.role },
+        playerOneScore,
+        playerTwoScore,
+        winnerId: gameSession.winnerId ?? null,
+        success: Boolean(wagerResult?.success),
+        wagerStatus: wagerResult?.wager?.status ?? null,
+        settlementTxHash: wagerResult?.wager?.settlementTxHash ?? null,
+      }),
+    );
+
     return {
       gameSession: updatedGameSession,
       wagerResult,
@@ -388,16 +629,21 @@ export class GameSessionsService {
   }
 
   /**
-   * Gets wager information for a session
+   * Gets wager information for a session the user plays in
    */
-  async getSessionWager(sessionId: string): Promise<Wager | null> {
+  async getSessionWager(sessionId: string, user: User): Promise<Wager | null> {
+    await this.findOne(sessionId, user);
     return this.wagerService.getWagerBySessionId(sessionId);
   }
 
   /**
    * Gets user's wager history
    */
-  async getUserWagers(userId: string, limit: number = 10): Promise<Wager[]> {
-    return this.wagerService.getUserWagers(userId, limit);
+  async getUserWagers(
+    userId: string,
+    limit: number = 10,
+    offset: number = 0,
+  ): Promise<Wager[]> {
+    return this.wagerService.getUserWagers(userId, limit, offset);
   }
 }

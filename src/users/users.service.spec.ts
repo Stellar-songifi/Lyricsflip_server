@@ -6,8 +6,10 @@ import { User, MusicGenre, MusicDecade, UserLevel } from './entities/user.entity
 import { UpdateUserPreferencesDto } from './dto/update-user-preferences.dto';
 import { Repository } from 'typeorm';
 import { Cache } from 'cache-manager';
-import { NotFoundException, BadRequestException } from '@nestjs/common';
+import { ConflictException, NotFoundException, BadRequestException } from '@nestjs/common';
 import { Role } from '../auth/roles/role.enum';
+import { Wager, WagerStatus } from '../tokens/entities/wager.entity';
+import { cacheConfig } from '../config/cache.config';
 
 describe('UsersService', () => {
   let service: UsersService;
@@ -20,6 +22,10 @@ describe('UsersService', () => {
     save: jest.fn(),
     remove: jest.fn(),
     findAndCount: jest.fn(),
+  };
+
+  const mockWagerRepository = {
+    findOne: jest.fn(),
   };
 
   const mockCacheManager = {
@@ -37,6 +43,10 @@ describe('UsersService', () => {
           useValue: mockUserRepository,
         },
         {
+          provide: getRepositoryToken(Wager),
+          useValue: mockWagerRepository,
+        },
+        {
           provide: CACHE_MANAGER,
           useValue: mockCacheManager,
         },
@@ -50,6 +60,55 @@ describe('UsersService', () => {
 
   afterEach(() => {
     jest.clearAllMocks();
+  });
+
+  describe('remove', () => {
+    const mockUser: User = {
+      id: 'user-123',
+      email: 'test@example.com',
+      username: 'testuser',
+      name: 'Test User',
+      passwordHash: 'hashedpassword',
+      xp: 100,
+      level: 2,
+      levelTitle: UserLevel.GOSSIP_ROOKIE,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      role: Role.User,
+      isActive: true,
+      mockBalance: '1000000000',
+      preferredGenre: undefined,
+      preferredDecade: undefined,
+      gameSessions: [],
+    };
+
+    it('soft-deletes and anonymizes the user when no wager is active', async () => {
+      mockUserRepository.findOne.mockResolvedValue({ ...mockUser });
+      mockWagerRepository.findOne.mockResolvedValue(null);
+      mockUserRepository.save.mockImplementation((u) => Promise.resolve(u));
+
+      const result = await service.remove('user-123');
+
+      expect(mockUserRepository.remove).not.toHaveBeenCalled();
+      const saved = mockUserRepository.save.mock.calls[0][0];
+      expect(saved.isActive).toBe(false);
+      expect(saved.email).toContain('deleted-user-123');
+      expect(saved.username).toBe('deleted_user-123');
+      expect(result.message).toContain('deactivated');
+    });
+
+    it('throws ConflictException when the user has a non-terminal wager', async () => {
+      mockUserRepository.findOne.mockResolvedValue({ ...mockUser });
+      mockWagerRepository.findOne.mockResolvedValue({
+        id: 'wager-1',
+        status: WagerStatus.STAKED,
+      });
+
+      await expect(service.remove('user-123')).rejects.toThrow(
+        ConflictException,
+      );
+      expect(mockUserRepository.save).not.toHaveBeenCalled();
+    });
   });
 
   it('should be defined', () => {
@@ -180,6 +239,21 @@ describe('UsersService', () => {
       expect(mockUserRepository.findAndCount).toHaveBeenCalled();
       expect(mockCacheManager.set).toHaveBeenCalled();
       expect(result).toBeDefined();
+    });
+
+    it('should cache the leaderboard for 30 seconds (TTL in milliseconds)', async () => {
+      mockCacheManager.get.mockResolvedValue(null);
+      mockUserRepository.findAndCount.mockResolvedValue([[], 0]);
+
+      await service.getLeaderboard(10, 0, 'xp', 'DESC');
+
+      // cache-manager v7 TTLs are milliseconds; 30 would expire in 30 ms.
+      expect(cacheConfig.leaderboardTtlMs).toBe(30_000);
+      expect(mockCacheManager.set).toHaveBeenCalledWith(
+        'leaderboard:xp:DESC:10:0',
+        expect.any(Object),
+        30_000,
+      );
     });
 
     it('should throw BadRequestException for invalid limit', async () => {

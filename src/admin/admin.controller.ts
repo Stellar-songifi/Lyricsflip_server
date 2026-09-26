@@ -6,12 +6,16 @@ import {
   UseGuards,
   ParseUUIDPipe,
   ParseIntPipe,
+  Query,
+  SerializeOptions,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/roles/roles.decorator';
 import { Role } from '../auth/roles/role.enum';
 import { AdminService } from './admin.service';
+import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
+import { UserGroup } from '../users/user-serialization';
 
 @Controller('admin')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -21,8 +25,9 @@ export class AdminController {
 
   // --- User Management ---
   @Get('users')
-  findAllUsers() {
-    return this.adminService.findAllUsers();
+  @SerializeOptions({ groups: [UserGroup.ADMIN] })
+  findAllUsers(@Query() { limit, offset }: PaginationQueryDto) {
+    return this.adminService.findAllUsers(limit, offset);
   }
 
   @Delete('users/:id')
@@ -32,8 +37,8 @@ export class AdminController {
 
   // --- Lyrics Management ---
   @Get('lyrics')
-  findAllLyrics() {
-    return this.adminService.findAllLyrics();
+  findAllLyrics(@Query() { limit, offset }: PaginationQueryDto) {
+    return this.adminService.findAllLyrics(limit, offset);
   }
 
   @Delete('lyrics/:id')

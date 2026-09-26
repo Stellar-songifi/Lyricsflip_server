@@ -1,4 +1,4 @@
-import { Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Logger, NotFoundException } from '@nestjs/common';
 import { Keypair } from '@stellar/stellar-sdk';
 import { Repository } from 'typeorm';
 import { Transaction } from '@stellar/stellar-sdk';
@@ -288,10 +288,18 @@ describe('StellarTokenService', () => {
   });
 
   describe('confirmStake', () => {
-    it('submits the signed XDR the wallet returned', async () => {
-      const result = await service.confirmStake('SIGNED_XDR', context);
+    it("submits the signed XDR as the caller's stake for this session", async () => {
+      const result = await service.confirmStake(
+        'user-a',
+        'SIGNED_XDR',
+        context,
+      );
 
-      expect(escrow.submitSignedStake).toHaveBeenCalledWith('SIGNED_XDR');
+      expect(escrow.submitSignedStake).toHaveBeenCalledWith(
+        'SIGNED_XDR',
+        SESSION_ID,
+        addressA,
+      );
       expect(result).toMatchObject({
         success: true,
         status: SettlementStatus.CONFIRMED,
@@ -301,13 +309,23 @@ describe('StellarTokenService', () => {
     it('reports a rejected envelope as a failure', async () => {
       escrow.submitSignedStake.mockRejectedValue(new Error('bad envelope'));
 
-      const result = await service.confirmStake('GARBAGE', context);
+      const result = await service.confirmStake('user-a', 'GARBAGE', context);
 
       expect(result).toMatchObject({
         success: false,
         status: SettlementStatus.FAILED,
       });
       expect(result.message).toMatch(/bad envelope/);
+    });
+
+    it('passes a forged envelope back to the client as a 400', async () => {
+      escrow.submitSignedStake.mockRejectedValue(
+        new BadRequestException('not the stake issued for this session'),
+      );
+
+      await expect(
+        service.confirmStake('user-a', 'FORGED', context),
+      ).rejects.toThrow(BadRequestException);
     });
   });
 

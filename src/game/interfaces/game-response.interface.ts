@@ -1,4 +1,7 @@
 export interface GameLyricResponse {
+  /** The round to guess against with `POST /game/guess`. */
+  roundId: string;
+  expiresAt: Date;
   id: number;
   lyricSnippet: string;
   // Note: We don't include songTitle and artist in the response to avoid spoilers

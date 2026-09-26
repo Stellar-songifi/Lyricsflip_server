@@ -9,10 +9,14 @@ import {
   HttpStatus,
   UseGuards,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
+import { authThrottle, stellarThrottle } from '../common/throttler/throttle.config';
 import { AuthService } from './auth.service';
 import { StellarAuthService } from './services/stellar-auth.service';
 import { SignupDto } from './dto/signup.dto';
 import { LoginDto } from './dto/login.dto';
+import { RefreshTokenDto } from './dto/refresh-token.dto';
+import { ChangePasswordDto } from './dto/change-password.dto';
 import { StellarChallengeDto, StellarVerifyDto } from './dto/stellar-auth.dto';
 import { Public } from './decorators/public.decorator';
 import { GetUser } from './decorators/user.decorator';
@@ -34,6 +38,7 @@ export class AuthController {
   ) {}
 
   @Public()
+  @Throttle(authThrottle)
   @Post('signup')
   @ApiOperation({ summary: 'Sign up a new user' })
   @ApiResponse({ status: 201, description: 'User signed up successfully.' })
@@ -42,6 +47,7 @@ export class AuthController {
   }
 
   @Public()
+  @Throttle(authThrottle)
   @Post('login')
   @ApiOperation({ summary: 'Login a user' })
   @ApiResponse({ status: 200, description: 'User logged in successfully.' })
@@ -51,6 +57,46 @@ export class AuthController {
   }
 
   @Public()
+  @Post('refresh')
+  @ApiOperation({ summary: 'Exchange a refresh token for a new token pair' })
+  @ApiResponse({ status: 200, description: 'New access and refresh tokens.' })
+  @ApiResponse({ status: 401, description: 'Refresh token invalid or expired.' })
+  @HttpCode(HttpStatus.OK)
+  async refresh(@Body(ValidationPipe) dto: RefreshTokenDto) {
+    return this.authService.refresh(dto.refreshToken);
+  }
+
+  @Public()
+  @Post('logout')
+  @ApiOperation({ summary: 'Revoke a refresh token' })
+  @ApiResponse({ status: 200, description: 'Refresh token revoked.' })
+  @HttpCode(HttpStatus.OK)
+  async logout(@Body(ValidationPipe) dto: RefreshTokenDto) {
+    await this.authService.logout(dto.refreshToken);
+    return { message: 'Logged out' };
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @Post('change-password')
+  @ApiOperation({
+    summary: 'Change the signed-in user’s password',
+    description:
+      'Invalidates every outstanding access token and refresh token for the account.',
+  })
+  @ApiResponse({ status: 200, description: 'Password changed.' })
+  @ApiResponse({ status: 401, description: 'Current password is incorrect.' })
+  @HttpCode(HttpStatus.OK)
+  async changePassword(
+    @GetUser() user: User,
+    @Body(ValidationPipe) dto: ChangePasswordDto,
+  ) {
+    await this.authService.changePassword(user.id, dto);
+    return { message: 'Password changed. Please log in again.' };
+  }
+
+  @Public()
+  @Throttle(stellarThrottle)
   @Post('stellar/challenge')
   @ApiOperation({
     summary: 'Request a SEP-10 challenge transaction for a Stellar account',
@@ -68,6 +114,7 @@ export class AuthController {
   }
 
   @Public()
+  @Throttle(stellarThrottle)
   @Post('stellar/login')
   @ApiOperation({
     summary: 'Authenticate with a signed SEP-10 challenge',
@@ -83,6 +130,7 @@ export class AuthController {
 
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
+  @Throttle(stellarThrottle)
   @Post('stellar/link')
   @ApiOperation({
     summary: 'Link a Stellar wallet to the signed-in account',

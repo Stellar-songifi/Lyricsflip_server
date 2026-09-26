@@ -1,41 +1,46 @@
 import {
   Controller,
   Get,
-  Post,
   Body,
   Patch,
   Param,
   Delete,
   Query,
   UseGuards,
+  ParseUUIDPipe,
+  SerializeOptions,
 } from '@nestjs/common';
 import { UsersService } from './users.service';
-import { CreateUserDto } from './dto/create-user.dto';
-import { UpdateUserDto } from './dto/update-user.dto';
+import { AdminUpdateUserDto, UpdateProfileDto } from './dto/update-user.dto';
 import { UpdateUserPreferencesDto } from './dto/update-user-preferences.dto';
+import { LeaderboardQueryDto } from './dto/leaderboard-query.dto';
+import { PublicUserDto } from './dto/public-user.dto';
+import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
 import { User } from './entities/user.entity';
+import { UserGroup } from './user-serialization';
 import { GetUser } from 'src/auth/decorators/user.decorator';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
-import { ApiTags, ApiOperation, ApiQuery, ApiResponse } from '@nestjs/swagger';
+import { Roles } from 'src/auth/roles/roles.decorator';
+import { Role } from 'src/auth/roles/role.enum';
+import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 
+// Accounts are created through POST /auth/signup; there is no POST /users.
 @ApiTags('users')
 @Controller('users')
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 
-  @Post()
-  @ApiOperation({ summary: 'Create a new user' })
-  @ApiResponse({ status: 201, description: 'User created.' })
-  create(@Body() createUserDto: CreateUserDto) {
-    return this.usersService.create(createUserDto);
+  @Get()
+  @Roles(Role.Admin)
+  @SerializeOptions({ groups: [UserGroup.ADMIN] })
+  @ApiOperation({ summary: 'List all users (admin only)' })
+  @ApiResponse({ status: 200, description: 'List of users.' })
+  @ApiResponse({ status: 400, description: 'Invalid pagination values.' })
+  @ApiResponse({ status: 403, description: 'Not an admin.' })
+  findAll(@Query() { limit, offset }: PaginationQueryDto) {
+    return this.usersService.findAll(limit, offset);
   }
 
-  @Get()
-  @ApiOperation({ summary: 'Get all users' })
-  @ApiResponse({ status: 200, description: 'List of users.' })
-  findAll() {
-    return this.usersService.findAll();
-  }
   @UseGuards(JwtAuthGuard)
   @Get('profile')
   @ApiOperation({ summary: 'Get user profile' })
@@ -52,6 +57,27 @@ export class UsersController {
       createdAt: user.createdAt,
       lastLoginAt: user.lastLoginAt,
     };
+  }
+
+  /**
+   * PATCH /users/me - Update the current user's own account.
+   * Declared before `:id` so `me` is not treated as an ID.
+   */
+  @Patch('me')
+  @SerializeOptions({ groups: [UserGroup.SELF] })
+  @ApiOperation({ summary: 'Update your own account' })
+  @ApiResponse({ status: 200, description: 'Account updated.' })
+  @ApiResponse({ status: 409, description: 'Username already exists.' })
+  updateMe(@GetUser() user: User, @Body() updateProfileDto: UpdateProfileDto) {
+    return this.usersService.update(user.id, updateProfileDto);
+  }
+
+  /** DELETE /users/me - Delete the current user's own account. */
+  @Delete('me')
+  @ApiOperation({ summary: 'Delete your own account' })
+  @ApiResponse({ status: 200, description: 'Account deleted.' })
+  removeMe(@GetUser() user: User) {
+    return this.usersService.remove(user.id);
   }
 
   /**
@@ -101,44 +127,43 @@ export class UsersController {
    */
   @Get('leaderboard')
   @ApiOperation({ summary: 'Get the user leaderboard' })
-  @ApiQuery({ name: 'limit', required: false, example: 10 })
-  @ApiQuery({ name: 'offset', required: false, example: 0 })
-  @ApiQuery({ name: 'sort', required: false, enum: ['xp', 'level', 'username'] })
-  @ApiQuery({ name: 'order', required: false, enum: ['ASC', 'DESC'] })
   @ApiResponse({ status: 200, description: 'Ranked users with pagination meta.' })
   @ApiResponse({ status: 400, description: 'Invalid pagination, sort or order.' })
-  getLeaderboard(
-    @Query('limit') limit?: string,
-    @Query('offset') offset?: string,
-    @Query('sort') sort?: string,
-    @Query('order') order?: string,
-  ) {
+  getLeaderboard(@Query() query: LeaderboardQueryDto) {
     return this.usersService.getLeaderboard(
-      limit === undefined ? 10 : Number(limit),
-      offset === undefined ? 0 : Number(offset),
-      sort ?? 'xp',
-      (order ?? 'DESC') as 'ASC' | 'DESC',
+      query.limit ?? 10,
+      query.offset ?? 0,
+      query.sort ?? 'xp',
+      query.order ?? 'DESC',
     );
   }
 
   @Get(':id')
-  @ApiOperation({ summary: 'Get user by ID' })
-  @ApiResponse({ status: 200, description: 'User data.' })
-  findOne(@Param('id') id: string) {
-    return this.usersService.findOne(id);
+  @ApiOperation({ summary: 'Get a user’s public profile by ID' })
+  @ApiResponse({ status: 200, description: 'Public user data.', type: PublicUserDto })
+  async findOne(@Param('id', ParseUUIDPipe) id: string): Promise<PublicUserDto> {
+    return PublicUserDto.from(await this.usersService.findOne(id));
   }
 
   @Patch(':id')
-  @ApiOperation({ summary: 'Update user by ID' })
+  @Roles(Role.Admin)
+  @SerializeOptions({ groups: [UserGroup.ADMIN] })
+  @ApiOperation({ summary: 'Update any user by ID (admin only)' })
   @ApiResponse({ status: 200, description: 'User updated.' })
-  update(@Param('id') id: string, @Body() updateUserDto: UpdateUserDto) {
+  @ApiResponse({ status: 403, description: 'Not an admin.' })
+  update(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() updateUserDto: AdminUpdateUserDto,
+  ) {
     return this.usersService.update(id, updateUserDto);
   }
 
   @Delete(':id')
-  @ApiOperation({ summary: 'Delete user by ID' })
+  @Roles(Role.Admin)
+  @ApiOperation({ summary: 'Delete any user by ID (admin only)' })
   @ApiResponse({ status: 200, description: 'User deleted.' })
-  remove(@Param('id') id: string) {
+  @ApiResponse({ status: 403, description: 'Not an admin.' })
+  remove(@Param('id', ParseUUIDPipe) id: string) {
     return this.usersService.remove(id);
   }
 }

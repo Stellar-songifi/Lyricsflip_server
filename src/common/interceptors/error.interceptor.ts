@@ -10,6 +10,7 @@ import {
 import { Observable, throwError } from 'rxjs';
 import { catchError } from 'rxjs/operators';
 import { Request } from 'express';
+import { redact } from '../utils/redact.util';
 
 export interface ErrorResponse {
   statusCode: number;
@@ -191,15 +192,6 @@ export class ErrorInterceptor implements NestInterceptor {
   private sanitizeBody(body: any): any {
     if (!body) return body;
 
-    const sensitiveFields = ['password', 'token', 'secret', 'key', 'authorization'];
-    const sanitized = { ...body };
-
-    sensitiveFields.forEach(field => {
-      if (sanitized[field]) {
-        sanitized[field] = '***REDACTED***';
-      }
-    });
-
-    return sanitized;
+    return redact(body);
   }
 }

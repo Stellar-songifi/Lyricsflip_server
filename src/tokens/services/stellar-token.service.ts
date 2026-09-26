@@ -127,17 +127,28 @@ export class StellarTokenService implements ITokenService {
   }
 
   async confirmStake(
+    userId: string,
     signedXdr: string,
     context: EscrowContext,
   ): Promise<TokenTransactionResult> {
     try {
-      const result = await this.escrow.submitSignedStake(signedXdr);
+      const address = await this.requireAddress(userId);
+      const result = await this.escrow.submitSignedStake(
+        signedXdr,
+        context.sessionId,
+        address,
+      );
 
       return this.toTransactionResult(
         result,
         `Stake of ${fromStroops(context.stake)} LYRIC confirmed`,
       );
     } catch (error) {
+      // A rejected envelope is the client's mistake, not a settlement failure.
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+
       return this.toFailure(error, 'confirm the stake');
     }
   }

@@ -1,5 +1,12 @@
-import { IsOptional, IsString, IsArray, IsNumber } from 'class-validator';
+import {
+  IsOptional,
+  IsString,
+  IsArray,
+  IsNumber,
+  IsEnum,
+} from 'class-validator';
 import { Transform, Type } from 'class-transformer';
+import { Genre, toGenre } from 'src/lyrics/entities/genre.enum';
 
 export class RandomLyricOptionsDto {
   @IsOptional()
@@ -13,9 +20,11 @@ export class RandomLyricOptionsDto {
   decade?: string;
 
   @IsOptional()
-  @IsString()
-  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
-  genre?: string;
+  @IsEnum(Genre, {
+    message: `genre must be one of: ${Object.values(Genre).join(', ')}`,
+  })
+  @Transform(({ value }) => toGenre(value))
+  genre?: Genre;
 
   @IsOptional()
   @IsArray()
