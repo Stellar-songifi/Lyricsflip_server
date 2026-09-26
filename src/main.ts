@@ -3,39 +3,37 @@ import { NestExpressApplication } from '@nestjs/platform-express';
 import helmet from 'helmet';
 import { helmetOptions } from './common/security/helmet.config';
 import { AppModule } from './app.module';
-import { Logger } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
+import { LoggerService } from './common/services/logger.service';
 import { configureApp } from './app.setup';
 
 async function bootstrap() {
-  const app = await NestFactory.create<NestExpressApplication>(AppModule);
-  const logger = new Logger('Bootstrap');
+  // Instantiate the Winston logger before the app so bootstrap messages
+  // also go through it.
+  const winstonLogger = new LoggerService();
 
-  // Global validation pipe and response serializer
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    // Suppress Nest's default console logger; our Winston instance takes over.
+    bufferLogs: true,
+  });
+
+  // Register Winston as the app-wide logger (replaces Nest's default).
+  app.useLogger(winstonLogger);
+  app.flushLogs();
+
+  // Global validation pipe and response serializer (shared with e2e tests)
   configureApp(app);
+
   // Behind a load balancer, set TRUST_PROXY (e.g. 1 for one hop) so rate
   // limiting sees the real client IP instead of the proxy's.
   if (process.env.TRUST_PROXY) {
     const hops = Number(process.env.TRUST_PROXY);
-    (app as NestExpressApplication).set(
-      'trust proxy',
-      Number.isNaN(hops) ? process.env.TRUST_PROXY : hops,
-    );
+    app.set('trust proxy', Number.isNaN(hops) ? process.env.TRUST_PROXY : hops);
   }
 
   app.disable('x-powered-by');
   app.use(helmet(helmetOptions));
-
-  // This is a Global validation pipe
-  app.useGlobalPipes(
-    new ValidationPipe({
-      whitelist: true,
-      forbidNonWhitelisted: true,
-      transform: true,
-      disableErrorMessages: process.env.NODE_ENV === 'production',
-    }),
-  );
 
   app.useGlobalInterceptors(new LoggingInterceptor());
 
@@ -48,14 +46,17 @@ async function bootstrap() {
   const document = SwaggerModule.createDocument(app, config);
   SwaggerModule.setup('api/docs', app, document);
 
-  const port = process.env.PORT ?? 3000;
-  await app.listen(port);
-
   app.enableCors({
     origin: process.env.FRONTEND_URL || 'http://localhost:3000',
     credentials: true,
   });
-  logger.log(`Application is running on: http://localhost:${port}`);
-  logger.log(`Logging interceptor and global exception filter are active`);
+
+  const port = process.env.PORT ?? 3000;
+  await app.listen(port);
+
+  winstonLogger.log(
+    `Application is running on http://localhost:${port}`,
+    'Bootstrap',
+  );
 }
 bootstrap();

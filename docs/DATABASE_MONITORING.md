@@ -27,3 +27,37 @@ Install and Configure Grafana: Set up a Grafana server. Add your Prometheus inst
 Import a Dashboard: The Grafana community provides many pre-built dashboards. You can import a popular PostgreSQL dashboard (like this one) and it will automatically populate with data from your Prometheus source, giving you instant visibility into your database's health.
 
 This setup provides a powerful, real-time dashboard for monitoring database performance and health, which is crucial for maintaining a reliable production application.
+
+---
+
+## TypeORM Query Logging and Connection Pool Configuration
+
+The following environment variables control how TypeORM logs SQL and manages
+the connection pool.  Set them in `.env` or your deployment config.
+
+| Variable | Default | Description |
+|---|---|---|
+| `DB_LOGGING` | `error` (prod) / `error,warn,slow` (dev) | Comma-separated TypeORM log levels, or `all` to log every query, or `false` to disable logging entirely. Accepted levels: `query`, `error`, `schema`, `warn`, `info`, `log`, `slow`. |
+| `DB_POOL_SIZE` | `10` | Maximum number of simultaneous connections in the pg pool. Increase for high-concurrency workloads; keep low for serverless deployments where connections are expensive. |
+| `DB_SLOW_QUERY_THRESHOLD_MS` | `250` | TypeORM emits a `slow` log entry for any query that takes longer than this many milliseconds.  Slow-query entries are included when `DB_LOGGING` contains `slow`. |
+
+### Recommended production settings
+
+```dotenv
+DB_LOGGING=error,slow          # only errors and slow queries
+DB_POOL_SIZE=20                # tune to (max_connections / num_pods) − headroom
+DB_SLOW_QUERY_THRESHOLD_MS=500 # flag queries over 500 ms
+```
+
+Logging all queries (`DB_LOGGING=all` or `DB_LOGGING=query`) in production is
+**strongly discouraged**: it is noisy, degrades performance, and can leak
+parameter values (including tokens or hashed passwords that happen to appear in
+a query) into your log aggregator.
+
+### Slow query monitoring
+
+When a query exceeds `DB_SLOW_QUERY_THRESHOLD_MS`, TypeORM writes a warning
+that includes the SQL text and the actual duration.  Feed these into your log
+aggregator and alert on them — a sudden increase in slow queries is usually the
+first sign of a missing index or lock contention.
+

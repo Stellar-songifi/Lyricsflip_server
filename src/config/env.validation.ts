@@ -48,6 +48,19 @@ export const envValidationSchema = Joi.object({
   DB_REPLICA_PASSWORD: Joi.string().optional(),
   DB_REPLICA_NAME: Joi.string().optional(),
 
+  // TypeORM logging and pool configuration (#202)
+  // DB_LOGGING: 'all', 'false', or comma-separated TypeORM log levels
+  //   e.g. 'error,warn,slow'  (default: 'error' in prod, 'error,warn,slow' in dev)
+  DB_LOGGING: Joi.string().optional(),
+  DB_POOL_SIZE: Joi.number().integer().min(1).default(10),
+  DB_SLOW_QUERY_THRESHOLD_MS: Joi.number().integer().min(0).default(250),
+
+  // Redis cache (#201). Optional: when unset the app falls back to memory cache.
+  REDIS_URL: Joi.string().uri().optional(),
+
+  // Winston file logging (#200). Set to 'true' to write rotating log files.
+  LOG_TO_FILE: Joi.string().valid('true', 'false').default('false'),
+
   // Stellar / Soroban settlement. Kept permissive here - loadStellarConfig
   // (src/stellar/stellar.config.ts) re-validates format and cross-field
   // requirements (e.g. contract IDs only when STELLAR_SETTLEMENT_MODE=stellar).
