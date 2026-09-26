@@ -11,7 +11,7 @@ import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { GameSession } from 'src/game-sessions/entities/game-session.entity';
 import { Genre, Lyrics } from 'src/lyrics/entities/lyrics.entity';
-import { GameLogicService, GuessDto } from './game.service';
+import { GameLogicService, LyricGuessDto } from './game.service';
 import { GuessType } from './dto/guess.dto';
 import { GameRound } from './entities/game-round.entity';
 import { User } from 'src/users/entities/user.entity';
@@ -484,7 +484,7 @@ describe('GameLogicService', () => {
   });
 
   describe('checkGuess', () => {
-    const mockGuessDto: GuessDto = {
+    const mockGuessDto: LyricGuessDto = {
       lyricId: 1,
       guessType: GuessType.ARTIST,
       guessValue: 'Test Artist',
@@ -510,7 +510,7 @@ describe('GameLogicService', () => {
     });
 
     it('should return correct result for exact song title match', async () => {
-      const songTitleGuess: GuessDto = {
+      const songTitleGuess: LyricGuessDto = {
         ...mockGuessDto,
         guessType: GuessType.SONG_TITLE,
         guessValue: 'Test Song',
@@ -527,7 +527,7 @@ describe('GameLogicService', () => {
     });
 
     it('should handle case-insensitive matches', async () => {
-      const caseInsensitiveGuess: GuessDto = {
+      const caseInsensitiveGuess: LyricGuessDto = {
         ...mockGuessDto,
         guessValue: 'test artist',
       };
@@ -539,7 +539,7 @@ describe('GameLogicService', () => {
     });
 
     it('should handle partial matches', async () => {
-      const partialGuess: GuessDto = {
+      const partialGuess: LyricGuessDto = {
         ...mockGuessDto,
         guessValue: 'Test',
       };
@@ -552,7 +552,7 @@ describe('GameLogicService', () => {
     });
 
     it('should ignore punctuation and whitespace', async () => {
-      const punctuatedGuess: GuessDto = {
+      const punctuatedGuess: LyricGuessDto = {
         ...mockGuessDto,
         guessValue: '  Test, Artist!!!  ',
       };
@@ -564,7 +564,7 @@ describe('GameLogicService', () => {
     });
 
     it('should return incorrect result for wrong guess', async () => {
-      const wrongGuess: GuessDto = {
+      const wrongGuess: LyricGuessDto = {
         ...mockGuessDto,
         guessValue: 'Wrong Artist',
       };
@@ -581,7 +581,7 @@ describe('GameLogicService', () => {
     });
 
     it('should not give partial points for very short guesses', async () => {
-      const shortGuess: GuessDto = {
+      const shortGuess: LyricGuessDto = {
         ...mockGuessDto,
         guessValue: 'Te',
       };
@@ -782,7 +782,7 @@ describe('GameLogicService', () => {
     it('should handle database errors in checkGuess', async () => {
       repository.findOne.mockRejectedValue(new Error('Database error'));
 
-      const guessDto: GuessDto = {
+      const guessDto: LyricGuessDto = {
         lyricId: 1,
         guessType: GuessType.ARTIST,
         guessValue: 'Test Artist',
