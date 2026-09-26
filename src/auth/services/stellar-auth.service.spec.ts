@@ -11,6 +11,7 @@ import { Repository } from 'typeorm';
 import { StellarAuthService } from './stellar-auth.service';
 import { AuthTokenService } from './auth-token.service';
 import { User } from '../../users/entities/user.entity';
+import { Wager, WagerStatus } from '../../tokens/entities/wager.entity';
 import type { StellarConfig } from '../../stellar/stellar.config';
 
 const stellarConfig = {
@@ -28,6 +29,7 @@ describe('StellarAuthService', () => {
     save: jest.Mock;
     update: jest.Mock;
   };
+  let wagerRepository: { findOne: jest.Mock };
   let jwtService: { sign: jest.Mock };
   let serverSecret: string;
   let wallet: Keypair;
@@ -45,10 +47,13 @@ describe('StellarAuthService', () => {
       save: jest.fn((user) => Promise.resolve(user)),
       update: jest.fn().mockResolvedValue({ affected: 1 }),
     };
+    wagerRepository = { findOne: jest.fn().mockResolvedValue(null) };
     jwtService = { sign: jest.fn().mockReturnValue('a.jwt.token') };
 
     service = new StellarAuthService(
       userRepository as unknown as Repository<User>,
+      wagerRepository as unknown as Repository<Wager>,
+      jwtService as unknown as JwtService,
       new AuthTokenService(jwtService as unknown as JwtService),
       configOf({ STELLAR_WEB_AUTH_SECRET: serverSecret }),
       stellarConfig,
@@ -394,6 +399,44 @@ describe('StellarAuthService', () => {
         { id: 'user-1' },
         { stellarAddress: null, stellarAddressVerifiedAt: null },
       );
+    });
+
+    it.each([
+      WagerStatus.PENDING,
+      WagerStatus.AWAITING_STAKES,
+      WagerStatus.STAKED,
+      WagerStatus.SETTLING,
+    ])('refuses to unlink while a wager is %s', async (status) => {
+      wagerRepository.findOne.mockResolvedValueOnce({
+        id: 'wager-1',
+        status,
+      });
+
+      await expect(service.unlinkWallet('user-1')).rejects.toThrow(
+        ConflictException,
+      );
+      expect(userRepository.update).not.toHaveBeenCalled();
+    });
+
+    it('allows unlinking once the wager has settled', async () => {
+      wagerRepository.findOne.mockResolvedValueOnce(null);
+
+      await expect(service.unlinkWallet('user-1')).resolves.toBeUndefined();
+      expect(userRepository.update).toHaveBeenCalled();
+    });
+  });
+
+  describe('linkWallet with an active wager', () => {
+    it('refuses to relink while the user has an active wager', async () => {
+      wagerRepository.findOne.mockResolvedValueOnce({
+        id: 'wager-1',
+        status: WagerStatus.STAKED,
+      });
+
+      await expect(
+        service.linkWallet('user-1', signedChallengeFor(wallet)),
+      ).rejects.toThrow(ConflictException);
+      expect(userRepository.findOne).not.toHaveBeenCalled();
     });
   });
 });

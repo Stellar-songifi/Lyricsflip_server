@@ -9,6 +9,11 @@ import { JwtStrategy } from './strategies/jwt.strategy';
 import { StellarAuthService } from './services/stellar-auth.service';
 import { AuthTokenService } from './services/auth-token.service';
 import { User } from 'src/users/entities/user.entity';
+import { Wager } from '../tokens/entities/wager.entity';
+
+@Module({
+  imports: [
+    TypeOrmModule.forFeature([User, Wager]),
 import { RefreshToken } from './entities/refresh-token.entity';
 
 @Module({

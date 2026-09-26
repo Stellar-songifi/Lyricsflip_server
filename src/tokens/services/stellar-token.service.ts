@@ -158,7 +158,7 @@ export class StellarTokenService implements ITokenService {
     context: EscrowContext,
   ): Promise<TokenTransactionResult> {
     try {
-      const winnerAddress = await this.requireAddress(winnerId);
+      const winnerAddress = await this.addressForPlayer(winnerId, context);
 
       const result = await this.escrow.resolve(
         this.keyStore.getResolverKeypair(),
@@ -266,6 +266,35 @@ export class StellarTokenService implements ITokenService {
         submission.error ??
         'Transaction is still unconfirmed; the pot has not moved on-chain.',
     };
+  }
+
+  /**
+   * Resolves a player to the address a payout must go to: the one recorded on
+   * the on-chain pot, not whatever is currently linked to their account.
+   *
+   * A player can unlink or relink their wallet in the window between staking
+   * and settlement being blocked elsewhere, but this is the line that actually
+   * decides where the money goes, so it never trusts the live `stellarAddress`
+   * for a payout. Falling back to `requireAddress` only covers a pot the
+   * backend cannot read (or one from before this existed), and only for a
+   * player who currently has an address linked.
+   */
+  private async addressForPlayer(
+    userId: string,
+    context: EscrowContext,
+  ): Promise<string> {
+    const pot = await this.escrow.getPot(context.sessionId);
+
+    if (pot) {
+      if (userId === context.playerAId) {
+        return pot.playerA;
+      }
+      if (userId === context.playerBId) {
+        return pot.playerB;
+      }
+    }
+
+    return this.requireAddress(userId);
   }
 
   /**

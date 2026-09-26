@@ -52,6 +52,15 @@ export interface StellarConfig {
   readonly webAuthDomain: string;
   /** Whether the network is a test network (enables friendbot funding). */
   readonly isTestNetwork: boolean;
+  /**
+   * How long a player's unsigned stake transaction stays valid before the
+   * network rejects it, in seconds.
+   *
+   * Separate from the timeout every other invocation uses: a stake is the one
+   * transaction a player, not the backend, has to sign, so it is the one whose
+   * window needs to be configurable per deployment (`STELLAR_STAKE_TX_TIMEOUT_SECONDS`).
+   */
+  readonly stakeTxTimeoutSeconds: number;
 }
 
 const NETWORK_PASSPHRASES: Record<string, string> = {
@@ -144,6 +153,8 @@ export function loadStellarConfig(configService: ConfigService): StellarConfig {
     webAuthDomain:
       configService.get<string>('STELLAR_WEB_AUTH_DOMAIN') ?? 'localhost',
     isTestNetwork: network !== 'public',
+    stakeTxTimeoutSeconds:
+      configService.get<number>('STELLAR_STAKE_TX_TIMEOUT_SECONDS') ?? 180,
   };
 
   if (config.settlementMode === 'stellar') {

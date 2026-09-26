@@ -350,6 +350,32 @@ describe('StellarTokenService', () => {
       expect(escrow.resolve).not.toHaveBeenCalled();
       expect(result.status).toBe(SettlementStatus.FAILED);
     });
+
+    it('pays the address the pot recorded, even if the winner unlinked or relinked since', async () => {
+      // The pot staked addressB for user-b, but the account now points
+      // somewhere else (or nowhere) — the payout must still go to addressB.
+      const potAddress = Keypair.random().publicKey();
+      escrow.getPot.mockResolvedValue({
+        playerA: addressA,
+        playerB: potAddress,
+        stake: context.stake,
+        fundedA: true,
+        fundedB: true,
+        status: PotStatus.FUNDED,
+      });
+      userRepository.findOne.mockResolvedValue(
+        verifiedUser('user-b', addressB),
+      );
+
+      const result = await service.releaseToWinner('user-b', context);
+
+      expect(escrow.resolve).toHaveBeenCalledWith(
+        resolver,
+        SESSION_ID,
+        potAddress,
+      );
+      expect(result.success).toBe(true);
+    });
   });
 
   describe('refundEscrow', () => {
