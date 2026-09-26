@@ -1,4 +1,5 @@
 import {
+  Body,
   Controller,
   Get,
   Post,
@@ -51,7 +52,7 @@ export class LyricsController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.Admin)
   @Post()
-  create(createLyricsDto: CreateLyricsDto, @GetUser() user: User) {
+  create(@Body() createLyricsDto: CreateLyricsDto, @GetUser() user: User) {
     return this.lyricsService.create(createLyricsDto, user);
   }
 
@@ -175,7 +176,7 @@ export class LyricsController {
   @Patch(':id')
   update(
     @Param('id', ParseIntPipe) id: number,
-    updateLyricsDto: UpdateLyricsDto,
+    @Body() updateLyricsDto: UpdateLyricsDto,
     @GetUser() user: User,
   ) {
     return this.lyricsService.update(id, updateLyricsDto, user);
