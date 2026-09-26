@@ -90,6 +90,7 @@ export class StellarRpcService {
     contractId: string,
     method: string,
     args: xdr.ScVal[],
+    timeoutSeconds: number = TRANSACTION_TIMEOUT_SECONDS,
   ): Promise<Transaction> {
     const source = await this.loadAccount(sourcePublicKey);
     const contract = new Contract(contractId);
@@ -99,7 +100,7 @@ export class StellarRpcService {
       networkPassphrase: this.config.networkPassphrase,
     })
       .addOperation(contract.call(method, ...args))
-      .setTimeout(TRANSACTION_TIMEOUT_SECONDS)
+      .setTimeout(timeoutSeconds)
       .build();
 
     try {

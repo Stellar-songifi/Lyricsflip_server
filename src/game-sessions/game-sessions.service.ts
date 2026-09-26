@@ -2,6 +2,10 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Inject,
+  Logger,
   ForbiddenException,
   GoneException,
   Inject,
@@ -20,7 +24,8 @@ import { CreateGameSessionDto } from './dto/create-game-session.dto';
 import { UpdateGameSessionDto } from './dto/update-game-session.dto';
 import { User } from '../users/entities/user.entity';
 import { WagerService } from '../tokens/services/wager.service';
-import { Wager } from '../tokens/entities/wager.entity';
+import { Wager, WagerStatus } from '../tokens/entities/wager.entity';
+import { Role } from '../auth/roles/role.enum';
 import {
   TOKEN_SERVICE,
   ITokenService,
@@ -33,6 +38,7 @@ import {
 } from '../stellar/amount.util';
 import type { WagerResult } from '../tokens/services/wager.service';
 import type { UnsignedTransaction } from '../stellar/services/stellar-rpc.service';
+import { sanitizeForDisplay } from '../common/utils/sanitize.util';
 
 /**
  * A created session, plus the wager handshake when there is one.
@@ -50,6 +56,17 @@ export type CreateGameSessionResponse = GameSession & {
   }>;
 };
 
+/** Wager states in which no funds are left in escrow. */
+const TERMINAL_WAGER_STATUSES = [
+  WagerStatus.WON,
+  WagerStatus.REFUNDED,
+  WagerStatus.FAILED,
+];
+
+@Injectable()
+export class GameSessionsService {
+  /** Every settlement decision is written here: who, with what, and the result. */
+  private readonly auditLogger = new Logger('SettlementAudit');
 /** How long player two has to accept an invitation. */
 const INVITATION_TTL_MS =
   Number(process.env.INVITATION_TTL_MINUTES ?? 30) * 60 * 1000;
@@ -138,7 +155,7 @@ export class GameSessionsService
           where: { id: playerTwoId },
         });
         throw new BadRequestException(
-          `${playerTwo?.username || 'Player Two'} has insufficient tokens for this wager`,
+          `${sanitizeForDisplay(playerTwo?.username) || 'Player Two'} has insufficient tokens for this wager`,
         );
       }
     }
@@ -190,6 +207,15 @@ export class GameSessionsService
 
     return savedGameSession;
   }
+
+  async findAll(limit: number = 20, offset: number = 0): Promise<GameSession[]> {
+  /** Admins see every session; everyone else sees the ones they play in. */
+  async findAll(user: User): Promise<GameSession[]> {
+    if (user.role === Role.Admin) {
+      return this.gameSessionRepository.find({
+        relations: ['player'],
+      });
+    }
 
   onApplicationBootstrap(): void {
     this.expirySweep = setInterval(() => {
@@ -330,11 +356,20 @@ export class GameSessionsService
 
   async findAll(): Promise<GameSession[]> {
     return this.gameSessionRepository.find({
+      where: [{ player: { id: user.id } }, { playerTwoId: user.id }],
       relations: ['player'],
+      order: { createdAt: 'DESC' },
+      take: limit,
+      skip: offset,
     });
   }
 
-  async findOne(id: string): Promise<GameSession> {
+  /**
+   * Loads a session. When `user` is given, it must be one of the session's
+   * players or an admin; internal callers that have already decided who may
+   * act omit it.
+   */
+  async findOne(id: string, user?: User): Promise<GameSession> {
     const gameSession = await this.gameSessionRepository.findOne({
       where: { id },
       relations: ['player'],
@@ -344,22 +379,54 @@ export class GameSessionsService
       throw new NotFoundException(`Game session with ID "${id}" not found`);
     }
 
+    if (user) {
+      this.assertParticipant(gameSession, user);
+    }
+
     return gameSession;
   }
 
   async update(
     id: string,
     updateGameSessionDto: UpdateGameSessionDto,
+    user: User,
   ): Promise<GameSession> {
-    const gameSession = await this.findOne(id);
-    Object.assign(gameSession, updateGameSessionDto);
+    const gameSession = await this.findOne(id, user);
+    // Only the fields the narrow DTO allows; anything else was already
+    // rejected by validation, and is not copied even if it slipped through.
+    if (updateGameSessionDto.category !== undefined) {
+      gameSession.category = updateGameSessionDto.category;
+    }
     return this.gameSessionRepository.save(gameSession);
   }
 
-  async remove(id: string): Promise<void> {
+  async remove(id: string, user: User): Promise<void> {
+    await this.findOne(id, user);
+
+    // Deleting the session would orphan a pot that still holds stakes.
+    const wager = await this.wagerService.getWagerBySessionId(id);
+    if (wager && !TERMINAL_WAGER_STATUSES.includes(wager.status)) {
+      throw new ConflictException(
+        `This session has a wager that is still ${wager.status}; it cannot be deleted until it is settled or refunded`,
+      );
+    }
+
     const result = await this.gameSessionRepository.delete(id);
     if (result.affected === 0) {
       throw new NotFoundException(`Game session with ID "${id}" not found`);
+    }
+  }
+
+  async getTopScores(
+    limit: number = 10,
+    offset: number = 0,
+  ): Promise<GameSession[]> {
+  private assertParticipant(gameSession: GameSession, user: User): void {
+    const isParticipant =
+      gameSession.player?.id === user.id || gameSession.playerTwoId === user.id;
+
+    if (!isParticipant && user.role !== Role.Admin) {
+      throw new ForbiddenException('You are not a player in this session');
     }
   }
 
@@ -368,6 +435,7 @@ export class GameSessionsService
       where: { status: GameSessionStatus.COMPLETED },
       order: { score: 'DESC' },
       take: limit,
+      skip: offset,
       relations: ['player'],
     });
   }
@@ -375,11 +443,13 @@ export class GameSessionsService
   async getRecentGames(
     userId: string,
     limit: number = 5,
+    offset: number = 0,
   ): Promise<GameSession[]> {
     return this.gameSessionRepository.find({
       where: { player: { id: userId } },
       order: { createdAt: 'DESC' },
       take: limit,
+      skip: offset,
       relations: ['player'],
     });
   }
@@ -403,16 +473,22 @@ export class GameSessionsService
   }
 
   /**
-   * Completes a wagered game session and resolves the wager
+   * Completes a wagered game session and resolves the wager.
+   *
+   * Scores decide who is paid, so this is an admin action (enforced on the
+   * route) and every call is audit-logged with who triggered it.
    */
   async completeWageredGame(
     sessionId: string,
     playerOneScore: number,
     playerTwoScore: number,
+    triggeredBy: User,
   ): Promise<{
     gameSession: GameSession;
     wagerResult?: any;
     message: string;
+    winnerId?: string | null;
+    winnerUsername?: string | null;
   }> {
     const gameSession = await this.gameSessionRepository.findOne({
       where: { id: sessionId },
@@ -441,6 +517,8 @@ export class GameSessionsService
 
     let wagerResult;
     let message: string;
+    let winnerId: string | null = null;
+    let winnerUsername: string | null = null;
 
     if (playerOneScore > playerTwoScore) {
       // Player One wins
@@ -450,7 +528,9 @@ export class GameSessionsService
         sessionId,
         gameSession.player.id,
       );
-      message = `${gameSession.player.username} wins! ${wagerResult.message}`;
+      winnerId = gameSession.player.id;
+      winnerUsername = sanitizeForDisplay(gameSession.player.username);
+      message = `${winnerUsername} wins! ${wagerResult.message}`;
     } else if (playerTwoScore > playerOneScore) {
       // Player Two wins
       gameSession.winnerId = gameSession.playerTwoId;
@@ -459,7 +539,9 @@ export class GameSessionsService
         sessionId,
         gameSession.playerTwoId,
       );
-      message = `${gameSession.playerTwo?.username} wins! ${wagerResult.message}`;
+      winnerId = gameSession.playerTwoId;
+      winnerUsername = sanitizeForDisplay(gameSession.playerTwo?.username);
+      message = `${winnerUsername} wins! ${wagerResult.message}`;
     } else {
       // It's a draw
       wagerResult = await this.wagerService.resolveWagerAsDraw(sessionId);
@@ -469,10 +551,28 @@ export class GameSessionsService
     const updatedGameSession =
       await this.gameSessionRepository.save(gameSession);
 
+    this.auditLogger.log(
+      JSON.stringify({
+        event: 'wager.settlement',
+        sessionId,
+        triggeredBy: { id: triggeredBy.id, role: triggeredBy.role },
+        playerOneScore,
+        playerTwoScore,
+        winnerId: gameSession.winnerId ?? null,
+        success: Boolean(wagerResult?.success),
+        wagerStatus: wagerResult?.wager?.status ?? null,
+        settlementTxHash: wagerResult?.wager?.settlementTxHash ?? null,
+      }),
+    );
+
     return {
       gameSession: updatedGameSession,
       wagerResult,
       message,
+      // Structured fields alongside the human-readable message, so clients
+      // do not have to parse the winner's name back out of prose.
+      winnerId,
+      winnerUsername,
     };
   }
 
@@ -506,6 +606,18 @@ export class GameSessionsService
   }
 
   /**
+   * Rebuilds the caller's stake transaction after the first one expired —
+   * either its 180-second-plus timeout ran out, or another transaction from
+   * that account moved the sequence number it was built against.
+   */
+  async requestFreshStakeTransaction(
+    sessionId: string,
+    userId: string,
+  ): Promise<WagerResult> {
+    return this.wagerService.requestFreshStakeTransaction(sessionId, userId);
+  }
+
+  /**
    * Re-checks a wager left mid-settlement against the ledger.
    *
    * Operator tooling rather than gameplay: a crash between submitting a payout
@@ -517,16 +629,21 @@ export class GameSessionsService
   }
 
   /**
-   * Gets wager information for a session
+   * Gets wager information for a session the user plays in
    */
-  async getSessionWager(sessionId: string): Promise<Wager | null> {
+  async getSessionWager(sessionId: string, user: User): Promise<Wager | null> {
+    await this.findOne(sessionId, user);
     return this.wagerService.getWagerBySessionId(sessionId);
   }
 
   /**
    * Gets user's wager history
    */
-  async getUserWagers(userId: string, limit: number = 10): Promise<Wager[]> {
-    return this.wagerService.getUserWagers(userId, limit);
+  async getUserWagers(
+    userId: string,
+    limit: number = 10,
+    offset: number = 0,
+  ): Promise<Wager[]> {
+    return this.wagerService.getUserWagers(userId, limit, offset);
   }
 }

@@ -58,9 +58,9 @@ describe('AdminController', () => {
 
   describe('GET /admin/users', () => {
     it('should allow an admin to find all users', async () => {
-      const result = await controller.findAllUsers();
+      const result = await controller.findAllUsers({ limit: 5, offset: 10 });
       expect(result).toBeDefined();
-      expect(mockAdminService.findAllUsers).toHaveBeenCalled();
+      expect(mockAdminService.findAllUsers).toHaveBeenCalledWith(5, 10);
     });
   });
 

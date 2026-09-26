@@ -130,7 +130,7 @@ describe('LyricsService', () => {
         where: { id: 1, isActive: true },
         relations: ['createdBy'],
       });
-      expect(mockCacheManager.set).toHaveBeenCalledWith('lyrics:1', mockLyrics, cacheConfig.lyricsTTL);
+      expect(mockCacheManager.set).toHaveBeenCalledWith('lyrics:1', mockLyrics, cacheConfig.lyricsTtlMs);
     });
   });
 
@@ -154,7 +154,7 @@ describe('LyricsService', () => {
       expect(mockCacheManager.set).toHaveBeenCalledWith(
         'random_lyrics:1:Pop:2020',
         [mockLyrics],
-        Math.floor(cacheConfig.lyricsTTL / 4),
+        cacheConfig.randomLyricsTtlMs,
       );
     });
   });
@@ -180,32 +180,134 @@ describe('LyricsService', () => {
         where: { genre: 'Pop', isActive: true },
         relations: ['createdBy'],
       });
-      expect(mockCacheManager.set).toHaveBeenCalledWith('lyrics_by_genre:Pop', [mockLyrics], cacheConfig.lyricsTTL);
+      expect(mockCacheManager.set).toHaveBeenCalledWith('lyrics_by_genre:Pop', [mockLyrics], cacheConfig.lyricsTtlMs);
     });
   });
 
-  describe('clearCache', () => {
-    it('should clear cache without errors', async () => {
-      const consoleSpy = jest.spyOn(console, 'log').mockImplementation();
-      
-      await service.clearCache();
+  describe('cache invalidation (against a working in-memory cache)', () => {
+    let store: Map<string, unknown>;
+    let row: Lyrics;
+    let svc: LyricsService;
 
-      expect(consoleSpy).toHaveBeenCalledWith(
-        'Cache clear requested - implement pattern-based deletion for production',
-      );
-      consoleSpy.mockRestore();
+    beforeEach(() => {
+      store = new Map();
+      row = { ...mockLyrics, isActive: true, artist: 'Old Artist' } as Lyrics;
+
+      const cache = {
+        get: jest.fn(async (key: string) => store.get(key)),
+        set: jest.fn(async (key: string, value: unknown) => {
+          store.set(key, value);
+        }),
+        del: jest.fn(async (key: string) => {
+          store.delete(key);
+        }),
+      };
+
+      // A tiny fake table holding one lyric, so reads reflect writes.
+      const active = () => (row.isActive ? [{ ...row }] : []);
+      const repo = {
+        findOne: jest.fn(async ({ where }: any) =>
+          where.id === row.id && row.isActive ? { ...row } : null,
+        ),
+        find: jest.fn(async () => active()),
+        save: jest.fn(async (lyric: Lyrics) => {
+          row = { ...lyric };
+          return { ...row };
+        }),
+        createQueryBuilder: jest.fn(() => {
+          const qb: any = {};
+          for (const m of ['leftJoinAndSelect', 'where', 'andWhere', 'orderBy', 'limit']) {
+            qb[m] = () => qb;
+          }
+          qb.getCount = async () => active().length;
+          qb.getMany = async () => active();
+          return qb;
+        }),
+      };
+
+      svc = new LyricsService(repo as any, cache as any);
     });
-  });
 
-  describe('getCacheStats', () => {
-    it('should return cache statistics', async () => {
-      const stats = await service.getCacheStats();
+    const readAll = async () => ({
+      one: await svc.findOne(1),
+      category: await svc.getLyricsByCategory('genre', 'Pop'),
+      random: await svc.getRandomLyrics(1, 'Pop'),
+    });
 
-      expect(stats).toEqual({
-        keys: 0,
-        ttl: cacheConfig.lyricsTTL,
-        memoryUsage: 'Unknown',
+    it('serves the new data from every read after an update', async () => {
+      const before = await readAll();
+      expect(before.one.artist).toBe('Old Artist');
+      expect(store.size).toBe(3);
+
+      await svc.update(1, { artist: 'New Artist' } as UpdateLyricsDto, mockUser);
+
+      const after = await readAll();
+      expect(after.one.artist).toBe('New Artist');
+      expect(after.category[0].artist).toBe('New Artist');
+      expect(after.random[0].artist).toBe('New Artist');
+    });
+
+    it('stops serving a lyric from every read after it is removed', async () => {
+      await readAll();
+
+      await svc.remove(1);
+
+      await expect(svc.findOne(1)).rejects.toThrow('Lyrics not found');
+      expect(await svc.getLyricsByCategory('genre', 'Pop')).toEqual([]);
+      expect(await svc.getRandomLyrics(1, 'Pop')).toEqual([]);
+    });
+
+    it('clearCache empties every lyrics entry and reports how many', async () => {
+      await readAll();
+
+      const result = await svc.clearCache();
+
+      expect(result).toEqual({ cleared: 3 });
+      expect(store.size).toBe(0);
+      expect((await svc.getCacheStats()).keys).toBe(0);
+    });
+
+    it('does not re-cache data loaded before a concurrent write', async () => {
+      // Hold the DB read open, invalidate, then let the stale read finish.
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      const staleRow = { ...row };
+      (svc as any).lyricsRepository.findOne = jest.fn(async () => {
+        await gate;
+        return staleRow;
       });
+
+      const pending = svc.findOne(1);
+      await svc.clearCache();
+      release();
+      await pending;
+
+      expect(store.has('lyrics:1')).toBe(false);
+    });
+
+    it('getCacheStats reports real key counts by type', async () => {
+      await readAll();
+      await svc.searchLyrics('test');
+
+      expect(await svc.getCacheStats()).toEqual({
+        keys: 4,
+        keysByType: { lyrics: 1, random: 1, category: 1, search: 1 },
+        ttlMs: cacheConfig.lyricsTtlMs,
+      });
+    });
+
+    it('getCacheStats stops counting entries once their TTL has passed', async () => {
+      jest.useFakeTimers();
+      try {
+        await svc.getRandomLyrics(1, 'Pop');
+        expect((await svc.getCacheStats()).keys).toBe(1);
+
+        jest.advanceTimersByTime(cacheConfig.randomLyricsTtlMs + 1);
+
+        expect((await svc.getCacheStats()).keys).toBe(0);
+      } finally {
+        jest.useRealTimers();
+      }
     });
   });
 });

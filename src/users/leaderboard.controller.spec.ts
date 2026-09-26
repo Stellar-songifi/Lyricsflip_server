@@ -31,7 +31,7 @@ describe('UsersController - Leaderboard', () => {
   });
 
   it('should return leaderboard from controller', async () => {
-    const result = await controller.getLeaderboard('2', '0', undefined, undefined);
+    const result = await controller.getLeaderboard({ limit: 2, offset: 0 });
     expect(result).toEqual(leaderboardMock);
     expect(service.getLeaderboard).toHaveBeenCalledWith(2, 0, 'xp', 'DESC');
   });

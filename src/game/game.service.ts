@@ -8,6 +8,8 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Lyrics } from 'src/lyrics/entities/lyrics.entity';
+import { Repository } from 'typeorm';
+import { matchGuess, normalizeAnswer } from './guess-matcher';
 import { Genre, isGenre, toGenre } from 'src/lyrics/entities/genre.enum';
 import { Repository, SelectQueryBuilder } from 'typeorm';
 import { IsNull, Repository } from 'typeorm';
@@ -53,12 +55,6 @@ export interface GameLyric {
 @Injectable()
 export class GameLogicService {
   private readonly logger = new Logger(GameLogicService.name);
-
-  // Points system configuration
-  private readonly CORRECT_GUESS_POINTS = 100;
-  private readonly PARTIAL_MATCH_POINTS = 50;
-  // A substring this short matches almost any answer, so it is not a guess.
-  private readonly MIN_PARTIAL_MATCH_LENGTH = 3;
 
   constructor(
     @InjectRepository(Lyrics)
@@ -230,31 +226,10 @@ export class GameLogicService {
       const correctAnswer =
         guessDto.guessType === 'artist' ? lyric.artist : lyric.songTitle;
 
-      // Normalize strings for comparison
-      const normalizedGuess = this.normalizeString(guessDto.guessValue);
-      const normalizedAnswer = this.normalizeString(correctAnswer);
-
-      // Check for exact match
-      const isExactMatch = normalizedGuess === normalizedAnswer;
-
-      // Check for partial match (contains the correct answer or vice versa).
-      // Guesses below the minimum length are rejected outright rather than
-      // counted as correct for zero points.
-      const isPartialMatch =
-        !isExactMatch &&
-        normalizedGuess.length >= this.MIN_PARTIAL_MATCH_LENGTH &&
-        (normalizedGuess.includes(normalizedAnswer) ||
-          normalizedAnswer.includes(normalizedGuess));
-
-      // Calculate points
-      let points = 0;
-      if (isExactMatch) {
-        points = this.CORRECT_GUESS_POINTS;
-      } else if (isPartialMatch) {
-        points = this.PARTIAL_MATCH_POINTS;
-      }
-
-      const isCorrect = isExactMatch || isPartialMatch;
+      const { isCorrect, isExactMatch, points } = matchGuess(
+        guessDto.guessValue,
+        correctAnswer,
+      );
 
       // Generate explanation
       let explanation = '';
@@ -445,17 +420,6 @@ export class GameLogicService {
    * @returns Normalized string
    */
   private normalizeString(str: string): string {
-    if (!str) return '';
-
-    return (
-      str
-        .toLowerCase()
-        .trim()
-        // Remove common punctuation and special characters
-        .replace(/[^\w\s]/g, '')
-        // Replace multiple whitespaces with single space
-        .replace(/\s+/g, ' ')
-        .trim()
-    );
+    return normalizeAnswer(str);
   }
 }

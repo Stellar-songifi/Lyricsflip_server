@@ -1,4 +1,5 @@
 import {
+  Body,
   Controller,
   Get,
   Post,
@@ -9,7 +10,8 @@ import {
   Query,
   ParseIntPipe,
 } from '@nestjs/common';
-import type { LyricsService } from './lyrics.service';
+// A value import: `import type` erases the class, so Nest cannot inject it.
+import { LyricsService } from './lyrics.service';
 import type { CreateLyricsDto } from './dto/create-lyrics.dto';
 import type { UpdateLyricsDto } from './dto/update-lyrics.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -50,7 +52,7 @@ export class LyricsController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.Admin)
   @Post()
-  create(createLyricsDto: CreateLyricsDto, @GetUser() user: User) {
+  create(@Body() createLyricsDto: CreateLyricsDto, @GetUser() user: User) {
     return this.lyricsService.create(createLyricsDto, user);
   }
 
@@ -157,7 +159,11 @@ export class LyricsController {
   }
 
   @ApiOperation({ summary: 'Get lyrics by ID' })
+  @ApiResponse({ status: 400, description: 'The ID is not an integer.' })
+  @ApiResponse({ status: 404, description: 'Lyrics not found.' })
   @Get(':id')
+  findOne(@Param('id', ParseIntPipe) id: number) {
+    return this.lyricsService.findOne(id);
   async findOne(@Param('id') id: number, @GetUser() user: User) {
     return forCaller(await this.lyricsService.findOne(id), user);
   }
@@ -170,7 +176,7 @@ export class LyricsController {
   @Patch(':id')
   update(
     @Param('id', ParseIntPipe) id: number,
-    updateLyricsDto: UpdateLyricsDto,
+    @Body() updateLyricsDto: UpdateLyricsDto,
     @GetUser() user: User,
   ) {
     return this.lyricsService.update(id, updateLyricsDto, user);

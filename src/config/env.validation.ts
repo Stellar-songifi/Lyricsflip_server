@@ -26,7 +26,7 @@ export const envValidationSchema = Joi.object({
       then: Joi.string().min(32).required(),
       otherwise: Joi.string().min(1).required(),
     }),
-  JWT_EXPIRES_IN: Joi.string().default('7d'),
+  JWT_EXPIRES_IN: Joi.string().default('15m'),
 
   // Misc
   INVITATION_TTL_MINUTES: Joi.number().positive().default(30),

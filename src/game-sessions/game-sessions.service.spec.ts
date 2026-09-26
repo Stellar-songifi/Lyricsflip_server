@@ -2,6 +2,9 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import {
   BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Logger,
   ForbiddenException,
   GoneException,
   NotFoundException,
@@ -15,6 +18,8 @@ import {
 } from './entities/game-session.entity';
 import { User } from '../users/entities/user.entity';
 import { WagerService } from '../tokens/services/wager.service';
+import { WagerStatus } from '../tokens/entities/wager.entity';
+import { Role } from '../auth/roles/role.enum';
 import { TOKEN_SERVICE } from '../tokens/interfaces/token.interface';
 import { CreateGameSessionDto } from './dto/create-game-session.dto';
 import { toStroops } from '../stellar/amount.util';
@@ -59,6 +64,18 @@ describe('GameSessionsService', () => {
     isActive: true,
     gameSessions: [],
   };
+
+  const mockAdmin = {
+    id: 'admin-1',
+    username: 'admin',
+    role: Role.Admin,
+  } as User;
+
+  const mockStranger = {
+    id: 'stranger-1',
+    username: 'stranger',
+    role: Role.User,
+  } as User;
 
   const mockGameSession: GameSession = {
     id: 'session-123',
@@ -376,6 +393,7 @@ describe('GameSessionsService', () => {
         sessionId,
         playerOneScore,
         playerTwoScore,
+        mockAdmin,
       );
 
       expect(result.gameSession.winnerId).toBe(mockUser.id);
@@ -412,6 +430,7 @@ describe('GameSessionsService', () => {
         sessionId,
         playerOneScore,
         playerTwoScore,
+        mockAdmin,
       );
 
       expect(result.gameSession.winnerId).toBe(mockPlayerTwo.id);
@@ -446,6 +465,7 @@ describe('GameSessionsService', () => {
         sessionId,
         playerOneScore,
         playerTwoScore,
+        mockAdmin,
       );
 
       expect(result.message).toContain("It's a draw!");
@@ -462,7 +482,12 @@ describe('GameSessionsService', () => {
       mockGameSessionRepository.findOne.mockResolvedValue(null);
 
       await expect(
-        service.completeWageredGame(sessionId, playerOneScore, playerTwoScore),
+        service.completeWageredGame(
+          sessionId,
+          playerOneScore,
+          playerTwoScore,
+          mockAdmin,
+        ),
       ).rejects.toThrow(NotFoundException);
     });
 
@@ -477,7 +502,12 @@ describe('GameSessionsService', () => {
       });
 
       await expect(
-        service.completeWageredGame(sessionId, playerOneScore, playerTwoScore),
+        service.completeWageredGame(
+          sessionId,
+          playerOneScore,
+          playerTwoScore,
+          mockAdmin,
+        ),
       ).rejects.toThrow(BadRequestException);
     });
 
@@ -492,7 +522,12 @@ describe('GameSessionsService', () => {
       });
 
       await expect(
-        service.completeWageredGame(sessionId, playerOneScore, playerTwoScore),
+        service.completeWageredGame(
+          sessionId,
+          playerOneScore,
+          playerTwoScore,
+          mockAdmin,
+        ),
       ).rejects.toThrow(BadRequestException);
     });
   });
@@ -524,9 +559,10 @@ describe('GameSessionsService', () => {
       const sessionId = 'session-123';
       const wager = { id: 'wager-123', amount: 10 };
 
+      mockGameSessionRepository.findOne.mockResolvedValue(mockGameSession);
       mockWagerService.getWagerBySessionId.mockResolvedValue(wager);
 
-      const result = await service.getSessionWager(sessionId);
+      const result = await service.getSessionWager(sessionId, mockUser);
 
       expect(result).toBe(wager);
       expect(mockWagerService.getWagerBySessionId).toHaveBeenCalledWith(
@@ -542,13 +578,56 @@ describe('GameSessionsService', () => {
 
       mockWagerService.getUserWagers.mockResolvedValue(wagers);
 
-      const result = await service.getUserWagers(userId, 10);
+      const result = await service.getUserWagers(userId, 10, 20);
 
       expect(result).toBe(wagers);
-      expect(mockWagerService.getUserWagers).toHaveBeenCalledWith(userId, 10);
+      expect(mockWagerService.getUserWagers).toHaveBeenCalledWith(userId, 10, 20);
     });
   });
 
+  describe('audit log', () => {
+    it('records who settled a wager, with the scores and the transaction hash', async () => {
+      const audit = jest
+        .spyOn(Logger.prototype, 'log')
+        .mockImplementation(() => undefined);
+      // Fresh fields: earlier tests complete the shared fixture in place.
+      mockGameSessionRepository.findOne.mockResolvedValue({
+        ...mockGameSession,
+        status: GameSessionStatus.IN_PROGRESS,
+        hasWager: true,
+        winnerId: null,
+      });
+      mockGameSessionRepository.save.mockImplementation((session) =>
+        Promise.resolve(session),
+      );
+      mockWagerService.resolveWagerWithWinner.mockResolvedValue({
+        success: true,
+        message: 'paid',
+        wager: { status: WagerStatus.WON, settlementTxHash: 'tx-abc' },
+      });
+
+      await service.completeWageredGame('session-123', 3, 1, mockAdmin);
+
+      const entry = JSON.parse(audit.mock.calls.at(-1)?.[0] as string);
+      expect(entry).toMatchObject({
+        event: 'wager.settlement',
+        sessionId: 'session-123',
+        triggeredBy: { id: mockAdmin.id, role: Role.Admin },
+        playerOneScore: 3,
+        playerTwoScore: 1,
+        winnerId: mockUser.id,
+        success: true,
+        settlementTxHash: 'tx-abc',
+      });
+      audit.mockRestore();
+    });
+  });
+
+  describe('participant access', () => {
+    beforeEach(() => {
+      mockGameSessionRepository.findOne.mockResolvedValue({
+        ...mockGameSession,
+      });
   describe('invitations', () => {
     const invitation = (overrides: Partial<GameSession> = {}): GameSession => ({
       ...mockGameSession,
@@ -563,6 +642,104 @@ describe('GameSessionsService', () => {
       );
     });
 
+    it.each([
+      ['player one', mockUser],
+      ['player two', mockPlayerTwo],
+      ['an admin', mockAdmin],
+    ])('lets %s read the session', async (_, user) => {
+      await expect(service.findOne('session-123', user)).resolves.toBeDefined();
+    });
+
+    it('rejects a non-participant reading the session', async () => {
+      await expect(
+        service.findOne('session-123', mockStranger),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it("rejects a non-participant reading the session's wager", async () => {
+      await expect(
+        service.getSessionWager('session-123', mockStranger),
+      ).rejects.toThrow(ForbiddenException);
+      expect(mockWagerService.getWagerBySessionId).not.toHaveBeenCalled();
+    });
+
+    it('rejects a non-participant updating the session', async () => {
+      await expect(
+        service.update(
+          'session-123',
+          { category: GameCategory.POP },
+          mockStranger,
+        ),
+      ).rejects.toThrow(ForbiddenException);
+      expect(mockGameSessionRepository.save).not.toHaveBeenCalled();
+    });
+
+    it('only copies the category when a participant updates', async () => {
+      await service.update(
+        'session-123',
+        { category: GameCategory.POP, score: 9999, status: 'completed' } as any,
+        mockUser,
+      );
+
+      expect(mockGameSessionRepository.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          category: GameCategory.POP,
+          score: mockGameSession.score,
+          status: mockGameSession.status,
+        }),
+      );
+    });
+
+    it('rejects a non-participant deleting the session', async () => {
+      await expect(service.remove('session-123', mockStranger)).rejects.toThrow(
+        ForbiddenException,
+      );
+      expect(mockGameSessionRepository.delete).not.toHaveBeenCalled();
+    });
+
+    it('refuses to delete a session whose wager still holds stakes', async () => {
+      mockWagerService.getWagerBySessionId.mockResolvedValue({
+        status: WagerStatus.STAKED,
+      });
+
+      await expect(service.remove('session-123', mockUser)).rejects.toThrow(
+        ConflictException,
+      );
+      expect(mockGameSessionRepository.delete).not.toHaveBeenCalled();
+    });
+
+    it('deletes a session whose wager is settled', async () => {
+      mockWagerService.getWagerBySessionId.mockResolvedValue({
+        status: WagerStatus.REFUNDED,
+      });
+      mockGameSessionRepository.delete.mockResolvedValue({ affected: 1 });
+
+      await service.remove('session-123', mockUser);
+
+      expect(mockGameSessionRepository.delete).toHaveBeenCalledWith(
+        'session-123',
+      );
+    });
+
+    it("lists only the caller's sessions for a player", async () => {
+      mockGameSessionRepository.find.mockResolvedValue([]);
+
+      await service.findAll(mockUser);
+
+      expect(mockGameSessionRepository.find).toHaveBeenCalledWith({
+        where: [{ player: { id: mockUser.id } }, { playerTwoId: mockUser.id }],
+        relations: ['player'],
+      });
+    });
+
+    it('lists every session for an admin', async () => {
+      mockGameSessionRepository.find.mockResolvedValue([]);
+
+      await service.findAll(mockAdmin);
+
+      expect(mockGameSessionRepository.find).toHaveBeenCalledWith({
+        relations: ['player'],
+      });
     it('stakes player two only when they accept', async () => {
       mockGameSessionRepository.findOne.mockResolvedValue(invitation());
       mockWagerService.acceptWager.mockResolvedValue({

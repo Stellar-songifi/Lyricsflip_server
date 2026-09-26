@@ -23,6 +23,9 @@ import { NotificationsModule } from './notifications/notifications.module';
 import { XpModule } from './xp-level/xp.module';
 import { AuditModule } from './audit/audit.module';
 import { APP_FILTER, APP_GUARD } from '@nestjs/core';
+import { ThrottlerModule } from '@nestjs/throttler';
+import { AppThrottlerGuard } from './common/throttler/app-throttler.guard';
+import { defaultThrottle } from './common/throttler/throttle.config';
 
 @Module({
   imports: [
@@ -35,12 +38,13 @@ import { APP_FILTER, APP_GUARD } from '@nestjs/core';
         abortEarly: false,
       },
     }),
+    ThrottlerModule.forRoot([defaultThrottle()]),
     // Drives periodic jobs such as RoomsService.checkAndCloseExpiredRooms.
     ScheduleModule.forRoot(),
     // 2. Configure caching globally
     CacheModule.register({
       isGlobal: true,
-      ttl: cacheConfig.lyricsTTL,
+      ttl: cacheConfig.defaultTtlMs,
       max: cacheConfig.maxItems,
     }),
     // 3. Configure TypeORM using the loaded environment variables
@@ -124,6 +128,7 @@ import { APP_FILTER, APP_GUARD } from '@nestjs/core';
   providers: [
     AppService,
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
+    { provide: APP_GUARD, useClass: AppThrottlerGuard },
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
   ],

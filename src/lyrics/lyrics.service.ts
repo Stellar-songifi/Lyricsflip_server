@@ -7,30 +7,64 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Cache } from 'cache-manager';
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { Lyrics } from './entities/lyrics.entity';
 import { CreateLyricsDto } from './dto/create-lyrics.dto';
 import { UpdateLyricsDto } from './dto/update-lyrics.dto';
 import { User } from '../users/entities/user.entity';
 import { cacheConfig } from '../config/cache.config';
 import { Genre } from './entities/genre.enum';
+import { MAX_PAGE_SIZE } from '../common/dto/pagination-query.dto';
+
+export interface LyricsCacheStats {
+  keys: number;
+  keysByType: {
+    lyrics: number;
+    random: number;
+    category: number;
+    search: number;
+  };
+  ttlMs: number;
+}
 
 @Injectable()
 export class LyricsService {
-  private readonly cacheTTL: number;
+  private readonly cacheTtlMs: number;
+
+  /**
+   * Every lyrics cache key this service has written, with its expiry time.
+   * cache-manager has no prefix delete, so invalidation deletes these keys.
+   * The global store is in-memory and per-process, which this matches;
+   * moving to Redis (issue #115) would replace this with a prefix scan.
+   */
+  private readonly cachedKeys = new Map<string, number>();
+
+  /**
+   * Bumped on every invalidation. A read that started before a write must not
+   * repopulate the cache with the data it loaded before that write.
+   */
+  private cacheGeneration = 0;
 
   constructor(
     @InjectRepository(Lyrics)
     private readonly lyricsRepository: Repository<Lyrics>,
-    @Inject('CACHE_MANAGER')
+    @Inject(CACHE_MANAGER)
     private readonly cacheManager: Cache,
   ) {
-    this.cacheTTL = cacheConfig.lyricsTTL;
+    this.cacheTtlMs = cacheConfig.lyricsTtlMs;
   }
 
   async create(createLyricsDto: CreateLyricsDto, user: User): Promise<Lyrics> {
+    // Derive lyricSnippet from content when the caller did not supply one.
+    // The entity column is non-nullable so we must guarantee a value here.
+    const lyricSnippet =
+      createLyricsDto.lyricSnippet?.trim() ||
+      createLyricsDto.content.slice(0, 150).trim();
+
     const lyrics = this.lyricsRepository.create({
       ...createLyricsDto,
-      decade: createLyricsDto.decade?.toString(), // Convert number to string
+      lyricSnippet,
+      decade: createLyricsDto.decade?.toString(), // entity stores decade as varchar
       createdBy: user,
     });
     const savedLyrics = await this.lyricsRepository.save(lyrics);
@@ -41,7 +75,12 @@ export class LyricsService {
     return savedLyrics;
   }
 
-  async findAll(genre?: string, decade?: number): Promise<Lyrics[]> {
+  async findAll(
+    genre?: string,
+    decade?: number,
+    limit: number = MAX_PAGE_SIZE,
+    offset: number = 0,
+  ): Promise<Lyrics[]> {
     const query = this.lyricsRepository
       .createQueryBuilder('lyrics')
       .leftJoinAndSelect('lyrics.createdBy', 'user');
@@ -79,7 +118,12 @@ export class LyricsService {
     // Only return active lyrics
     query.andWhere('lyrics.isActive = :isActive', { isActive: true });
 
-    const results = await query.getMany();
+    // Always capped, so no caller can pull the whole table in one request
+    const results = await query
+      .orderBy('lyrics.id', 'ASC')
+      .take(limit)
+      .skip(offset)
+      .getMany();
 
     // Return empty array instead of throwing exception for no results
     return results;
@@ -91,12 +135,9 @@ export class LyricsService {
       throw new BadRequestException('Invalid lyrics ID');
     }
 
-    // Try to get from cache first
     const cacheKey = `${cacheConfig.keys.lyrics}${id}`;
-    let lyrics = await this.cacheManager.get<Lyrics>(cacheKey);
 
-    if (!lyrics) {
-      // If not in cache, fetch from database
+    return this.getOrLoad(cacheKey, this.cacheTtlMs, async () => {
       const dbLyrics = await this.lyricsRepository.findOne({
         where: { id, isActive: true },
         relations: ['createdBy'],
@@ -106,12 +147,8 @@ export class LyricsService {
         throw new NotFoundException('Lyrics not found');
       }
 
-      lyrics = dbLyrics;
-      // Cache the result
-      await this.cacheManager.set(cacheKey, lyrics, this.cacheTTL);
-    }
-
-    return lyrics;
+      return dbLyrics;
+    });
   }
 
   async update(
@@ -144,9 +181,8 @@ export class LyricsService {
 
     const updatedLyrics = await this.lyricsRepository.save(lyrics);
 
-    // Update cache and clear related caches
-    const cacheKey = `${cacheConfig.keys.lyrics}${id}`;
-    await this.cacheManager.set(cacheKey, updatedLyrics, this.cacheTTL);
+    // The edited lyric may appear in any list, category, random or search
+    // result, so drop every lyrics cache entry, not just lyrics:{id}.
     await this.clearCache();
 
     return updatedLyrics;
@@ -171,9 +207,7 @@ export class LyricsService {
     lyrics.isActive = false;
     await this.lyricsRepository.save(lyrics);
 
-    // Remove from cache and clear related caches
-    const cacheKey = `${cacheConfig.keys.lyrics}${id}`;
-    await this.cacheManager.del(cacheKey);
+    // Drop every lyrics cache entry that could still contain this lyric
     await this.clearCache();
   }
 
@@ -217,19 +251,10 @@ export class LyricsService {
     // Create cache key based on parameters
     const cacheKey = `${cacheConfig.keys.randomLyrics}${count}:${genre || 'all'}:${decade || 'all'}`;
 
-    // Try to get from cache first
-    let lyrics = await this.cacheManager.get<Lyrics[]>(cacheKey);
-
-    if (!lyrics) {
-      // If not in cache, fetch from database
-      lyrics = await this.fetchRandomLyricsFromDB(count, genre, decade);
-
-      // Cache the result with shorter TTL for random data
-      const randomCacheTTL = Math.floor(this.cacheTTL / 4); // 25% of normal TTL
-      await this.cacheManager.set(cacheKey, lyrics, randomCacheTTL);
-    }
-
-    return lyrics;
+    // Random data gets a shorter TTL so repeated requests still vary
+    return this.getOrLoad(cacheKey, cacheConfig.randomLyricsTtlMs, () =>
+      this.fetchRandomLyricsFromDB(count, genre, decade),
+    );
   }
 
   /**
@@ -318,26 +343,17 @@ export class LyricsService {
 
     const cacheKey = `${cacheConfig.keys.lyricsByCategory}${category}:${value}`;
 
-    // Try to get from cache first
-    let lyrics = await this.cacheManager.get<Lyrics[]>(cacheKey);
-
-    if (!lyrics) {
-      // If not in cache, fetch from database
+    return this.getOrLoad(cacheKey, this.cacheTtlMs, () => {
       const whereClause: Record<string, any> = {
         [category]: category === 'decade' ? value.toString() : value,
         isActive: true,
       };
 
-      lyrics = await this.lyricsRepository.find({
+      return this.lyricsRepository.find({
         where: whereClause,
         relations: ['createdBy'],
       });
-
-      // Cache the result
-      await this.cacheManager.set(cacheKey, lyrics, this.cacheTTL);
-    }
-
-    return lyrics;
+    });
   }
 
   /**
@@ -359,11 +375,8 @@ export class LyricsService {
 
     const cacheKey = `search_${searchTerm.toLowerCase()}:${limit}`;
 
-    // Try cache first
-    let results = await this.cacheManager.get<Lyrics[]>(cacheKey);
-
-    if (!results) {
-      results = await this.lyricsRepository
+    return this.getOrLoad(cacheKey, cacheConfig.searchTtlMs, () =>
+      this.lyricsRepository
         .createQueryBuilder('lyrics')
         .leftJoinAndSelect('lyrics.createdBy', 'user')
         .where('lyrics.isActive = :isActive', { isActive: true })
@@ -375,56 +388,86 @@ export class LyricsService {
         )
         .orderBy('lyrics.createdAt', 'DESC')
         .limit(limit)
-        .getMany();
-
-      // Cache search results for shorter time
-      const searchCacheTTL = Math.floor(this.cacheTTL / 2);
-      await this.cacheManager.set(cacheKey, results, searchCacheTTL);
-    }
-
-    return results;
+        .getMany(),
+    );
   }
 
   /**
    * Clear all lyrics-related caches
    * Useful for development or admin purposes
    */
-  async clearCache(): Promise<void> {
+  async clearCache(): Promise<{ cleared: number }> {
+    // Bump first so in-flight reads cannot write stale data back afterwards
+    this.cacheGeneration++;
+    const keys = [...this.cachedKeys.keys()];
+    this.cachedKeys.clear();
+
     try {
-      // Since we can't use reset() method, we'll skip cache clearing
-      // In production with Redis, you would implement pattern-based key deletion
-      // For now, we'll just log that cache clearing was requested
-      console.log(
-        'Cache clear requested - implement pattern-based deletion for production',
-      );
+      await Promise.all(keys.map((key) => this.cacheManager.del(key)));
     } catch (error) {
+      // Don't fail the write that triggered invalidation; entries still
+      // expire by TTL.
       console.warn('Cache clearing failed:', error);
-      // Don't throw error for cache clearing failures
     }
+
+    return { cleared: keys.length };
   }
 
   /**
-   * Get cache statistics (useful for monitoring)
+   * Get cache statistics (useful for monitoring). Counts the live lyrics
+   * entries this service has written, grouped by key type.
    */
-  async getCacheStats(): Promise<{
-    keys: number;
-    ttl: number;
-    memoryUsage?: string;
-  }> {
-    try {
-      // For in-memory cache, we'll return basic stats
-      // In production with Redis, you could get actual key counts and memory usage
-      return {
-        keys: 0, // Would need to implement key counting
-        ttl: this.cacheTTL,
-        memoryUsage: 'Unknown', // Would need to implement memory usage tracking
-      };
-    } catch (error) {
-      console.warn('Failed to get cache stats:', error);
-      return {
-        keys: 0,
-        ttl: this.cacheTTL,
-      };
+  getCacheStats(): LyricsCacheStats {
+    this.pruneExpiredKeys();
+
+    const { keys: prefixes } = cacheConfig;
+    const keysByType = { lyrics: 0, random: 0, category: 0, search: 0 };
+    for (const key of this.cachedKeys.keys()) {
+      if (key.startsWith(prefixes.randomLyrics)) keysByType.random++;
+      else if (key.startsWith(prefixes.lyricsByCategory)) keysByType.category++;
+      else if (key.startsWith(prefixes.lyrics)) keysByType.lyrics++;
+      else keysByType.search++;
+    }
+
+    return {
+      keys: this.cachedKeys.size,
+      keysByType,
+      ttlMs: this.cacheTtlMs,
+    };
+  }
+
+  /**
+   * Returns the cached value for key, or loads it, caches it and records the
+   * key so clearCache can find it.
+   */
+  private async getOrLoad<T>(
+    key: string,
+    ttlMs: number,
+    load: () => Promise<T>,
+  ): Promise<T> {
+    // Captured before any await so a write during the lookup is also seen
+    const generation = this.cacheGeneration;
+
+    const cached = await this.cacheManager.get<T>(key);
+    if (cached !== undefined && cached !== null) {
+      return cached;
+    }
+
+    const value = await load();
+
+    // Skip caching if the lyrics changed while this read was in flight
+    if (generation === this.cacheGeneration) {
+      await this.cacheManager.set(key, value, ttlMs);
+      this.cachedKeys.set(key, Date.now() + ttlMs);
+    }
+
+    return value;
+  }
+
+  private pruneExpiredKeys(): void {
+    const now = Date.now();
+    for (const [key, expiresAt] of this.cachedKeys) {
+      if (expiresAt <= now) this.cachedKeys.delete(key);
     }
   }
 

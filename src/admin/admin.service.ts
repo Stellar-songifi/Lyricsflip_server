@@ -9,8 +9,8 @@ export class AdminService {
     private lyricsService: LyricsService,
   ) {}
 
-  findAllUsers() {
-    return this.usersService.findAll();
+  findAllUsers(limit?: number, offset?: number) {
+    return this.usersService.findAll(limit, offset);
   }
 
   async deleteUser(id: string) {
@@ -18,8 +18,8 @@ export class AdminService {
     return result.message || 'User deleted successfully';
   }
 
-  findAllLyrics() {
-    return this.lyricsService.findAll();
+  findAllLyrics(limit?: number, offset?: number) {
+    return this.lyricsService.findAll(undefined, undefined, limit, offset);
   }
 
   deleteLyric(id: number) {

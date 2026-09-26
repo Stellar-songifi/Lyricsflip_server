@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Inject,
   Injectable,
   Logger,
@@ -7,6 +8,7 @@ import {
 import {
   Address,
   Keypair,
+  Operation,
   Transaction,
   nativeToScVal,
   xdr,
@@ -97,11 +99,16 @@ export class EscrowContractService {
     sessionId: string,
     playerAddress: string,
   ): Promise<Transaction> {
+    // The stake is the one transaction a player, not the backend, has to
+    // sign, so it gets its own — configurable — timeout: a player who takes
+    // longer than the network default to open their wallet should still be
+    // able to request a fresh one rather than being stuck (see buildUnsignedStake).
     return this.rpc.buildInvocation(
       sourcePublicKey,
       this.config.escrowContractId,
       'stake',
       [this.sessionIdToScVal(sessionId), addressToScVal(playerAddress)],
+      this.config.stakeTxTimeoutSeconds,
     );
   }
 
@@ -119,9 +126,29 @@ export class EscrowContractService {
     return this.rpc.toUnsigned(transaction);
   }
 
-  /** Submits a stake transaction a wallet signed and handed back. */
-  async submitSignedStake(signedXdr: string): Promise<SubmitResult> {
-    return this.rpc.submit(this.rpc.fromXdr(signedXdr));
+  /**
+   * Submits a stake transaction a wallet signed and handed back.
+   *
+   * The envelope comes from the client, so it is checked before it goes
+   * anywhere: it must be exactly one call to `stake(sessionId, playerAddress)`
+   * on the escrow contract. Anything else — a payment, a no-op, another
+   * player's stake — is rejected here and never reaches the network.
+   */
+  async submitSignedStake(
+    signedXdr: string,
+    sessionId: string,
+    playerAddress: string,
+  ): Promise<SubmitResult> {
+    let transaction: Transaction;
+    try {
+      transaction = this.rpc.fromXdr(signedXdr);
+    } catch {
+      throw new BadRequestException('Not a valid signed transaction envelope');
+    }
+
+    this.assertIsStake(transaction, sessionId, playerAddress);
+
+    return this.rpc.submit(transaction);
   }
 
   /** Releases the pot to the winner. Resolver-signed. */
@@ -203,6 +230,63 @@ export class EscrowContractService {
     );
 
     return decodeBalance(balance);
+  }
+
+  /**
+   * Throws unless the transaction is the single escrow `stake` call issued for
+   * this session and player.
+   */
+  private assertIsStake(
+    transaction: Transaction,
+    sessionId: string,
+    playerAddress: string,
+  ): void {
+    const reject = (reason: string): never => {
+      throw new BadRequestException(
+        `Transaction is not the stake issued for this session: ${reason}`,
+      );
+    };
+
+    const operations = transaction.operations ?? [];
+    if (operations.length !== 1) {
+      reject('it must contain exactly one operation');
+    }
+
+    const [operation] = operations;
+    if (operation.type !== 'invokeHostFunction') {
+      reject('it is not a contract invocation');
+    }
+
+    const func = (operation as Operation.InvokeHostFunction).func;
+    if (func.type !== 'hostFunctionTypeInvokeContract') {
+      return reject('it is not a contract invocation');
+    }
+
+    const invocation = func.invokeContract;
+
+    const contractId = Address.fromScAddress(
+      invocation.contractAddress,
+    ).toString();
+    if (contractId !== this.config.escrowContractId) {
+      reject('it calls the wrong contract');
+    }
+
+    if (invocation.functionName.toString() !== 'stake') {
+      reject('it calls the wrong function');
+    }
+
+    const expected = [
+      this.sessionIdToScVal(sessionId),
+      addressToScVal(playerAddress),
+    ].map((arg) => arg.toXdr('base64'));
+    const actual = invocation.args.map((arg) => arg.toXdr('base64'));
+
+    if (
+      actual.length !== expected.length ||
+      actual.some((arg, i) => arg !== expected[i])
+    ) {
+      reject('it is for a different session or player');
+    }
   }
 
   /**

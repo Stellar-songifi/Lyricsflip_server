@@ -1,36 +1,54 @@
 import {
   Injectable,
   BadRequestException,
+  ConflictException,
   Inject,
   NotFoundException,
 } from '@nestjs/common';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UpdateUserPreferencesDto } from './dto/update-user-preferences.dto';
 import { User } from './entities/user.entity';
 import { Cache } from 'cache-manager';
+import { Wager, WagerStatus } from '../tokens/entities/wager.entity';
+
+// Wager states that have not yet reached a final outcome. A user involved in
+// any wager in one of these states cannot be deleted/deactivated, since doing
+// so could leave a wager unresolvable or an escrowed stake unaccounted for.
+const NON_TERMINAL_WAGER_STATUSES = [
+  WagerStatus.PENDING,
+  WagerStatus.AWAITING_STAKES,
+  WagerStatus.STAKED,
+  WagerStatus.SETTLING,
+];
+import { Not, Repository } from 'typeorm';
+import { AdminUpdateUserDto, UpdateProfileDto } from './dto/update-user.dto';
+import { UpdateUserPreferencesDto } from './dto/update-user-preferences.dto';
+import { User } from './entities/user.entity';
+import { Cache } from 'cache-manager';
+import { MAX_PAGE_SIZE } from '../common/dto/pagination-query.dto';
+import { cacheConfig } from '../config/cache.config';
 
 @Injectable()
 export class UsersService {
   constructor(
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
+    @InjectRepository(Wager)
+    private readonly wagerRepository: Repository<Wager>,
     @Inject(CACHE_MANAGER)
     private cacheManager: Cache,
   ) {}
 
-  async create(createUserDto: CreateUserDto) {
-    // This method should be implemented based on your auth service requirements
-    throw new BadRequestException(
-      'User creation should be handled through auth service',
-    );
-  }
-
-  async findAll() {
-    return this.userRepository.find();
+  async findAll(limit: number = 20, offset: number = 0) {
+    return this.userRepository.find({
+      order: { createdAt: 'ASC' },
+      take: limit,
+      skip: offset,
+    });
   }
 
   async findOne(id: string) {
@@ -43,16 +61,67 @@ export class UsersService {
     return user;
   }
 
-  async update(id: string, updateUserDto: UpdateUserDto) {
+  async update(id: string, updateUserDto: UpdateProfileDto | AdminUpdateUserDto) {
     const user = await this.findOne(id);
+
+    // Report taken usernames/emails as 409 rather than a unique-index 500
+    const { username } = updateUserDto;
+    const email = 'email' in updateUserDto ? updateUserDto.email : undefined;
+    if (username && username !== user.username) {
+      await this.assertUnused({ username }, id, 'Username already exists');
+    }
+    if (email && email !== user.email) {
+      await this.assertUnused({ email }, id, 'Email already exists');
+    }
+
     Object.assign(user, updateUserDto);
     return this.userRepository.save(user);
   }
 
+  /**
+   * Soft-deletes a user: deactivates and anonymizes the account instead of
+   * removing the row. A hard delete would cascade into the user's lyric
+   * catalogue, game history and wagers (or fail outright on FK constraints),
+   * so the account is deactivated and its identifying fields scrubbed while
+   * every row that references the user id is preserved.
+   */
+  private async assertUnused(
+    where: { username: string } | { email: string },
+    ownId: string,
+    message: string,
+  ): Promise<void> {
+    const taken = await this.userRepository.exists({
+      where: { ...where, id: Not(ownId) },
+    });
+    if (taken) {
+      throw new ConflictException(message);
+    }
+  }
+
   async remove(id: string) {
     const user = await this.findOne(id);
-    await this.userRepository.remove(user);
-    return { message: 'User deleted successfully' };
+
+    const activeWager = await this.wagerRepository.findOne({
+      where: [
+        { playerAId: id, status: In(NON_TERMINAL_WAGER_STATUSES) },
+        { playerBId: id, status: In(NON_TERMINAL_WAGER_STATUSES) },
+      ],
+    });
+    if (activeWager) {
+      throw new ConflictException(
+        'User has an in-progress wager and cannot be deleted until it is resolved',
+      );
+    }
+
+    user.isActive = false;
+    user.email = `deleted-${user.id}@deleted.lyricsflip.local`;
+    user.username = `deleted_${user.id}`;
+    user.name = null;
+    user.stellarAddress = null;
+    user.stellarAddressVerifiedAt = null;
+
+    await this.userRepository.save(user);
+    return { message: 'User deactivated successfully' };
   }
 
   /**
@@ -120,7 +189,14 @@ export class UsersService {
     sort = 'xp',
     order: 'ASC' | 'DESC' = 'DESC',
   ) {
-    if (limit < 1 || offset < 0)
+    // Number.isInteger also rejects NaN, which slips past `limit < 1`.
+    if (
+      !Number.isInteger(limit) ||
+      !Number.isInteger(offset) ||
+      limit < 1 ||
+      limit > MAX_PAGE_SIZE ||
+      offset < 0
+    )
       throw new BadRequestException('Invalid limit or offset');
     const validSorts = ['xp', 'level', 'username'];
     if (!validSorts.includes(sort))
@@ -151,7 +227,11 @@ export class UsersService {
         order,
       },
     };
-    await this.cacheManager.set(cacheKey, result, 30); // cache for 30s
+    await this.cacheManager.set(
+      cacheKey,
+      result,
+      cacheConfig.leaderboardTtlMs,
+    );
     return result;
   }
 }
