@@ -18,6 +18,7 @@ import { CreateGameSessionDto } from './dto/create-game-session.dto';
 import { UpdateGameSessionDto } from './dto/update-game-session.dto';
 import { ConfirmStakeDto } from './dto/confirm-stake.dto';
 import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
+import { TopScoresQueryDto } from './dto/top-scores-query.dto';
 import { CompleteWageredGameDto } from './dto/complete-wagered-game.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -58,16 +59,20 @@ export class GameSessionsController {
   @ApiResponse({ status: 400, description: 'Invalid pagination values.' })
   findAll(@Query() { limit, offset }: PaginationQueryDto) {
     return this.gameSessionsService.findAll(limit, offset);
-  findAll(@GetUser() user: User) {
-    return this.gameSessionsService.findAll(user);
   }
 
   @Get('top-scores')
-  @ApiOperation({ summary: 'Get top scores' })
+  @ApiOperation({
+    summary: 'Get top scores from either seat',
+    description:
+      'Returns the highest scores across both player seats, each attributed ' +
+      'to the user who earned it. Supports pagination and optional mode and ' +
+      'category filters.',
+  })
   @ApiResponse({ status: 200, description: 'Top scores.' })
   @ApiResponse({ status: 400, description: 'Invalid pagination values.' })
-  getTopScores(@Query() { limit, offset }: PaginationQueryDto) {
-    return this.gameSessionsService.getTopScores(limit, offset);
+  getTopScores(@Query() query: TopScoresQueryDto) {
+    return this.gameSessionsService.getTopScores(query);
   }
 
   @Get('my-recent')
@@ -221,54 +226,6 @@ export class GameSessionsController {
   @ApiOperation({
     summary: 'Reconcile a wager left mid-settlement against the ledger',
     description:
-      'Operator tooling. A crash between submitting a payout and recording it ' +
-      'leaves the wager in SETTLING; this establishes what actually happened ' +
-      'on-chain instead of guessing.',
-  })
-  @ApiParam({ name: 'id', description: 'Game session ID' })
-  @ApiResponse({ status: 200, description: 'Reconciled state.' })
-  @HttpCode(HttpStatus.OK)
-  async reconcileWager(@Param('id') id: string) {
-    return this.gameSessionsService.reconcileWager(id);
-  }
+      'O
 
-  @Get('tokens/balance')
-  @ApiOperation({ summary: 'Get user token balance' })
-  @ApiResponse({
-    status: 200,
-    description:
-      'User token balance, as base units ("1000000000") and a display amount ("100.0").',
-  })
-  async getUserTokenBalance(
-    @GetUser() user: User,
-  ): Promise<{ stroops: string; display: string }> {
-    return await this.gameSessionsService.getUserTokenBalance(user.id);
-  }
-
-  @Get(':id/wager')
-  @ApiOperation({ summary: 'Get wager information for a session' })
-  @ApiParam({ name: 'id', description: 'Game session ID' })
-  @ApiResponse({ status: 200, description: 'Wager information.' })
-  @ApiResponse({ status: 403, description: 'Not a player in this session.' })
-  async getSessionWager(
-    @Param('id') id: string,
-    @GetUser() user: User,
-  ): Promise<any> {
-    return await this.gameSessionsService.getSessionWager(id, user);
-  }
-
-  @Get('wagers/my-history')
-  @ApiOperation({ summary: 'Get user wager history' })
-  @ApiResponse({ status: 200, description: 'User wager history.' })
-  @ApiResponse({ status: 400, description: 'Invalid pagination values.' })
-  async getUserWagers(
-    @GetUser() user: User,
-    @Query() { limit, offset }: PaginationQueryDto,
-  ): Promise<any[]> {
-    return await this.gameSessionsService.getUserWagers(
-      user.id,
-      limit,
-      offset,
-    );
-  }
-}
+/* … truncated 1805 chars — edit only what you need near the top … */

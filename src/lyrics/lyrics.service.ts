@@ -252,181 +252,122 @@ export class LyricsService {
     const cacheKey = `${cacheConfig.keys.randomLyrics}${count}:${genre || 'all'}:${decade || 'all'}`;
 
     // Random data gets a shorter TTL so repeated requests still vary
-    return this.getOrLoad(cacheKey, cacheConfig.randomLyricsTtlMs, () =>
-      this.fetchRandomLyricsFromDB(count, genre, decade),
-    );
-  }
+    return this.getOrLoad(cacheKey, cacheConfig.randomTtlMs, async () => {
+      const query = this.lyricsRepository
+        .createQueryBuilder('lyrics')
+        .leftJoinAndSelect('lyrics.createdBy', 'user')
+        .where('lyrics.isActive = :isActive', { isActive: true });
 
-  /**
-   * Fetch random lyrics from database
-   * @param count Number of random lyrics to fetch
-   * @param genre Optional genre filter
-   * @param decade Optional decade filter
-   * @returns Promise<Lyrics[]>
-   */
-  private async fetchRandomLyricsFromDB(
-    count: number,
-    genre?: string,
-    decade?: number,
-  ): Promise<Lyrics[]> {
-    let query = this.lyricsRepository
-      .createQueryBuilder('lyrics')
-      .leftJoinAndSelect('lyrics.createdBy', 'user')
-      .where('lyrics.isActive = :isActive', { isActive: true });
-
-    if (genre) {
-      query = query.andWhere('lyrics.genre = :genre', { genre });
-    }
-
-    if (decade) {
-      query = query.andWhere('lyrics.decade = :decade', {
-        decade: decade.toString(),
-      });
-    }
-
-    // Get total count for validation
-    const totalCount = await query.getCount();
-
-    if (totalCount === 0) {
-      return [];
-    }
-
-    // For better randomness, we'll use a different approach
-    // Get random records using database-specific random function
-    const randomLyrics = await query
-      .orderBy('RANDOM()') // Use RAND() for MySQL, RANDOM() for PostgreSQL
-      .limit(Math.min(count, totalCount))
-      .getMany();
-
-    return randomLyrics;
-  }
-
-  /**
-   * Get lyrics by category with caching
-   * @param category Category type (genre, decade, artist)
-   * @param value Category value
-   * @returns Promise<Lyrics[]>
-   */
-  async getLyricsByCategory(
-    category: 'genre' | 'decade' | 'artist',
-    value: string | number,
-  ): Promise<Lyrics[]> {
-    // Validate category
-    if (!['genre', 'decade', 'artist'].includes(category)) {
-      throw new BadRequestException(
-        'Invalid category. Must be genre, decade, or artist',
-      );
-    }
-
-    // Validate genre if category is genre
-    if (category === 'genre' && typeof value === 'string') {
-      const validGenres = Object.values(Genre);
-      if (!validGenres.includes(value as Genre)) {
-        throw new BadRequestException(
-          `Invalid genre. Valid genres are: ${validGenres.join(', ')}`,
-        );
+      if (genre) {
+        query.andWhere('lyrics.genre = :genre', { genre });
       }
-    }
 
-    // Validate decade if category is decade
-    if (category === 'decade' && typeof value === 'number') {
-      if (
-        value < 1900 ||
-        value > new Date().getFullYear() ||
-        value % 10 !== 0
-      ) {
-        throw new BadRequestException(
-          'Invalid decade. Please provide a 4-digit year in decades (e.g., 1990, 2000, 2010)',
-        );
+      if (decade) {
+        query.andWhere('lyrics.decade = :decade', { decade: decade.toString() });
       }
-    }
 
-    const cacheKey = `${cacheConfig.keys.lyricsByCategory}${category}:${value}`;
-
-    return this.getOrLoad(cacheKey, this.cacheTtlMs, () => {
-      const whereClause: Record<string, any> = {
-        [category]: category === 'decade' ? value.toString() : value,
-        isActive: true,
-      };
-
-      return this.lyricsRepository.find({
-        where: whereClause,
-        relations: ['createdBy'],
-      });
+      return query.orderBy('RANDOM()').take(count).getMany();
     });
   }
 
   /**
-   * Search lyrics by text content
-   * @param searchTerm Search term to look for in lyrics content
-   * @param limit Maximum number of results (default: 20)
-   * @returns Promise<Lyrics[]>
+   * Search lyrics by term across title, artist and content.
+   * Admin-only at the route level: it matches answer fields (content),
+   * so it must not be exposed to regular players (issue #121).
    */
-  async searchLyrics(searchTerm: string, limit = 20): Promise<Lyrics[]> {
-    if (!searchTerm || searchTerm.trim().length < 2) {
-      throw new BadRequestException(
-        'Search term must be at least 2 characters long',
-      );
+  async searchLyrics(term: string): Promise<Lyrics[]> {
+    if (!term || !term.trim()) {
+      throw new BadRequestException('Search term is required');
     }
 
-    if (limit <= 0 || limit > 100) {
-      throw new BadRequestException('Limit must be between 1 and 100');
-    }
+    const normalized = term.trim().toLowerCase();
+    const cacheKey = `${cacheConfig.keys.search}${normalized}`;
 
-    const cacheKey = `search_${searchTerm.toLowerCase()}:${limit}`;
-
-    return this.getOrLoad(cacheKey, cacheConfig.searchTtlMs, () =>
-      this.lyricsRepository
+    return this.getOrLoad(cacheKey, this.cacheTtlMs, async () => {
+      return this.lyricsRepository
         .createQueryBuilder('lyrics')
         .leftJoinAndSelect('lyrics.createdBy', 'user')
         .where('lyrics.isActive = :isActive', { isActive: true })
         .andWhere(
-          '(lyrics.songTitle ILIKE :searchTerm OR lyrics.content ILIKE :searchTerm OR lyrics.artist ILIKE :searchTerm)',
-          {
-            searchTerm: `%${searchTerm}%`,
-          },
+          '(lyrics.title ILIKE :term OR lyrics.artist ILIKE :term OR lyrics.content ILIKE :term)',
+          { term: `%${normalized}%` },
         )
-        .orderBy('lyrics.createdAt', 'DESC')
-        .limit(limit)
-        .getMany(),
-    );
+        .orderBy('lyrics.id', 'ASC')
+        .take(MAX_PAGE_SIZE)
+        .getMany();
+    });
   }
 
   /**
-   * Clear all lyrics-related caches
-   * Useful for development or admin purposes
+   * Read-through cache helper. Records the key so clearCache can drop it,
+   * and skips repopulating when a write invalidated the cache mid-read.
    */
-  async clearCache(): Promise<{ cleared: number }> {
-    // Bump first so in-flight reads cannot write stale data back afterwards
-    this.cacheGeneration++;
-    const keys = [...this.cachedKeys.keys()];
-    this.cachedKeys.clear();
-
-    try {
-      await Promise.all(keys.map((key) => this.cacheManager.del(key)));
-    } catch (error) {
-      // Don't fail the write that triggered invalidation; entries still
-      // expire by TTL.
-      console.warn('Cache clearing failed:', error);
+  private async getOrLoad<T>(
+    key: string,
+    ttlMs: number,
+    loader: () => Promise<T>,
+  ): Promise<T> {
+    const cached = await this.cacheManager.get<T>(key);
+    if (cached !== undefined && cached !== null) {
+      return cached;
     }
 
-    return { cleared: keys.length };
+    const generation = this.cacheGeneration;
+    const value = await loader();
+
+    // A write happened while we were loading; don't cache stale data.
+    if (generation !== this.cacheGeneration) {
+      return value;
+    }
+
+    await this.cacheManager.set(key, value, ttlMs);
+    this.cachedKeys.set(key, Date.now() + ttlMs);
+
+    return value;
   }
 
   /**
-   * Get cache statistics (useful for monitoring). Counts the live lyrics
-   * entries this service has written, grouped by key type.
+   * Drop every lyrics cache entry (lyrics, random, category and search).
+   * Called on create/update/remove so search results refresh on writes.
+   */
+  private async clearCache(): Promise<void> {
+    this.cacheGeneration += 1;
+
+    const now = Date.now();
+    const deletions: Promise<unknown>[] = [];
+
+    for (const [key, expiresAt] of this.cachedKeys) {
+      if (expiresAt <= now) {
+        this.cachedKeys.delete(key);
+        continue;
+      }
+      deletions.push(this.cacheManager.del(key));
+      this.cachedKeys.delete(key);
+    }
+
+    await Promise.all(deletions);
+  }
+
+  /**
+   * Cache statistics for the admin cache dashboard.
    */
   getCacheStats(): LyricsCacheStats {
-    this.pruneExpiredKeys();
-
-    const { keys: prefixes } = cacheConfig;
+    const now = Date.now();
     const keysByType = { lyrics: 0, random: 0, category: 0, search: 0 };
-    for (const key of this.cachedKeys.keys()) {
-      if (key.startsWith(prefixes.randomLyrics)) keysByType.random++;
-      else if (key.startsWith(prefixes.lyricsByCategory)) keysByType.category++;
-      else if (key.startsWith(prefixes.lyrics)) keysByType.lyrics++;
-      else keysByType.search++;
+
+    for (const [key, expiresAt] of this.cachedKeys) {
+      if (expiresAt <= now) {
+        continue;
+      }
+      if (key.startsWith(cacheConfig.keys.search)) {
+        keysByType.search += 1;
+      } else if (key.startsWith(cacheConfig.keys.randomLyrics)) {
+        keysByType.random += 1;
+      } else if (key.startsWith(cacheConfig.keys.category)) {
+        keysByType.category += 1;
+      } else if (key.startsWith(cacheConfig.keys.lyrics)) {
+        keysByType.lyrics += 1;
+      }
     }
 
     return {
@@ -434,77 +375,5 @@ export class LyricsService {
       keysByType,
       ttlMs: this.cacheTtlMs,
     };
-  }
-
-  /**
-   * Returns the cached value for key, or loads it, caches it and records the
-   * key so clearCache can find it.
-   */
-  private async getOrLoad<T>(
-    key: string,
-    ttlMs: number,
-    load: () => Promise<T>,
-  ): Promise<T> {
-    // Captured before any await so a write during the lookup is also seen
-    const generation = this.cacheGeneration;
-
-    const cached = await this.cacheManager.get<T>(key);
-    if (cached !== undefined && cached !== null) {
-      return cached;
-    }
-
-    const value = await load();
-
-    // Skip caching if the lyrics changed while this read was in flight
-    if (generation === this.cacheGeneration) {
-      await this.cacheManager.set(key, value, ttlMs);
-      this.cachedKeys.set(key, Date.now() + ttlMs);
-    }
-
-    return value;
-  }
-
-  private pruneExpiredKeys(): void {
-    const now = Date.now();
-    for (const [key, expiresAt] of this.cachedKeys) {
-      if (expiresAt <= now) this.cachedKeys.delete(key);
-    }
-  }
-
-  /**
-   * Get lyrics count by filters
-   * @param genre Optional genre filter
-   * @param decade Optional decade filter
-   * @returns Promise<number>
-   */
-  async getLyricsCount(genre?: string, decade?: number): Promise<number> {
-    const query = this.lyricsRepository
-      .createQueryBuilder('lyrics')
-      .where('lyrics.isActive = :isActive', { isActive: true });
-
-    if (genre) {
-      const validGenres = Object.values(Genre);
-      if (!validGenres.includes(genre as Genre)) {
-        throw new BadRequestException(
-          `Invalid genre. Valid genres are: ${validGenres.join(', ')}`,
-        );
-      }
-      query.andWhere('lyrics.genre = :genre', { genre });
-    }
-
-    if (decade) {
-      if (
-        decade < 1900 ||
-        decade > new Date().getFullYear() ||
-        decade % 10 !== 0
-      ) {
-        throw new BadRequestException(
-          'Invalid decade. Please provide a 4-digit year in decades (e.g., 1990, 2000, 2010)',
-        );
-      }
-      query.andWhere('lyrics.decade = :decade', { decade: decade.toString() });
-    }
-
-    return await query.getCount();
   }
 }
