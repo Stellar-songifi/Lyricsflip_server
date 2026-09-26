@@ -21,6 +21,12 @@ import {
 } from '../stellar.constants';
 import type { StellarConfig } from '../stellar.config';
 
+/** Reads a non-negative integer from the environment, with a default. */
+function envInt(name: string, fallback: number): number {
+  const parsed = Number.parseInt(process.env[name] ?? '', 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
 /** Outcome of submitting a transaction to the network. */
 export interface SubmitResult {
   /** Transaction hash — the canonical on-chain identifier, always present. */
@@ -194,15 +200,34 @@ export class StellarRpcService {
   async submit(transaction: Transaction): Promise<SubmitResult> {
     const hash = this.hashHex(transaction);
 
+    const maxRetries = envInt('STELLAR_TRY_AGAIN_MAX_ATTEMPTS', 5);
+    const baseDelayMs = envInt('STELLAR_TRY_AGAIN_BASE_DELAY_MS', 500);
+
     let sent: rpc.Api.SendTransactionResponse;
-    try {
-      sent = await this.server.sendTransaction(transaction);
-    } catch (error) {
-      return {
-        hash,
-        confirmed: false,
-        error: `Submission failed: ${(error as Error).message}`,
-      };
+    for (let attempt = 0; ; attempt++) {
+      try {
+        sent = await this.server.sendTransaction(transaction);
+      } catch (error) {
+        return {
+          hash,
+          confirmed: false,
+          error: `Submission failed: ${(error as Error).message}`,
+        };
+      }
+
+      // TRY_AGAIN_LATER means the queue is full and the transaction was NOT
+      // accepted, so polling for it is pointless: back off and resubmit.
+      if (sent.status !== 'TRY_AGAIN_LATER') break;
+
+      if (attempt >= maxRetries) {
+        return {
+          hash,
+          confirmed: false,
+          error: `Network queue still full after ${attempt + 1} submissions (TRY_AGAIN_LATER)`,
+        };
+      }
+
+      await this.sleep(baseDelayMs * 2 ** attempt);
     }
 
     if (sent.status === 'ERROR' || sent.status === 'DUPLICATE') {
@@ -230,8 +255,11 @@ export class StellarRpcService {
   async waitForConfirmation(hash: string): Promise<SubmitResult> {
     try {
       const result = await this.server.pollTransaction(hash, {
-        attempts: 15,
-        sleepStrategy: rpc.LinearSleepStrategy,
+        attempts: envInt('STELLAR_POLL_ATTEMPTS', 15),
+        sleepStrategy:
+          process.env.STELLAR_POLL_SLEEP_STRATEGY === 'basic'
+            ? rpc.BasicSleepStrategy
+            : rpc.LinearSleepStrategy,
       });
 
       if (result.status === rpc.Api.GetTransactionStatus.SUCCESS) {
@@ -302,6 +330,11 @@ export class StellarRpcService {
         error: `Lookup failed: ${(error as Error).message}`,
       };
     }
+  }
+
+  /** Overridable delay, so tests need not wait in real time. */
+  protected sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   /**
