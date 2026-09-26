@@ -11,6 +11,7 @@ import {
   Put,
   HttpCode,
   HttpStatus,
+  UseInterceptors,
 } from '@nestjs/common';
 import { GameSessionsService } from './game-sessions.service';
 import { CreateGameSessionDto } from './dto/create-game-session.dto';
@@ -23,6 +24,8 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { Role } from '../auth/roles/role.enum';
 import { GetUser } from '../auth/decorators/user.decorator';
 import { User } from '../users/entities/user.entity';
+import { AuditInterceptor } from '../audit/audit.interceptor';
+import { Audited } from '../audit/decorators/audited.decorator';
 import {
   ApiTags,
   ApiOperation,
@@ -33,6 +36,7 @@ import {
 @ApiTags('game-sessions')
 @Controller('game-sessions')
 @UseGuards(JwtAuthGuard)
+@UseInterceptors(AuditInterceptor)
 export class GameSessionsController {
   constructor(private readonly gameSessionsService: GameSessionsService) {}
 
@@ -113,6 +117,7 @@ export class GameSessionsController {
   // them. Admin only until scores are computed server-side from gameplay.
   @Roles(Role.Admin)
   @Put(':id/complete-wagered')
+  @Audited({ action: 'settlement.wager.complete', targetType: 'game-session' })
   @ApiOperation({
     summary: 'Complete a wagered game session and resolve wager (Admin only)',
   })
@@ -212,6 +217,7 @@ export class GameSessionsController {
 
   @Roles(Role.Admin)
   @Post(':id/wager/reconcile')
+  @Audited({ action: 'settlement.wager.reconcile', targetType: 'game-session' })
   @ApiOperation({
     summary: 'Reconcile a wager left mid-settlement against the ledger',
     description:

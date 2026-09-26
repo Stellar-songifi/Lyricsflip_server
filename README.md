@@ -442,6 +442,18 @@ Both backends follow the same escrow model: open a pot, both players fund it, th
 
 Using `custodial` together with `STELLAR_NETWORK=public` is **refused at boot**, because it would let the backend spend real player funds. In every mode the server holds the **resolver** key, which can settle pots but only in the ways the contract allows (see [The escrow contract](#the-escrow-contract)).
 
+### Key stores
+
+`STELLAR_KEY_STORE` decides which `IKeyStore` implementation the `KEY_STORE` provider resolves to - i.e. where the resolver's signing key actually lives:
+
+| Value            | Implementation                    | Behaviour                                                                                          |
+| ---------------- | ---------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `env` (default)  | `EnvKeyStore`/`NonCustodialKeyStore` | Resolver key (and, in custodial mode, the player-key seed) read from `STELLAR_RESOLVER_SECRET`/`STELLAR_CUSTODIAL_MASTER_SEED`. Fine for local development and testnet demos. |
+| `kms`            | `KmsKeyStore` + `AwsKmsSigner`     | Resolver signatures come from an AWS KMS asymmetric ed25519 signing key. No Stellar secret is ever read into this process's environment. Requires `STELLAR_KMS_KEY_ID` and `STELLAR_KMS_REGION`, and the `@aws-sdk/client-kms` package installed. |
+| `vault`          | `KmsKeyStore` + `VaultTransitSigner` | Resolver signatures come from a HashiCorp Vault Transit ed25519 key. Requires `STELLAR_VAULT_ADDR`, `STELLAR_VAULT_TOKEN` and `STELLAR_VAULT_TRANSIT_KEY`. |
+
+With `kms` or `vault`, `KmsKeyStore.getResolverKeypair()` throws rather than returning a keyless `Keypair` - callers that need to sign should move to `signHash(hash)` on the key store, which delegates to the remote signer. That migration is not yet complete for every `signAndSubmit` call site in `EscrowContractService`; today `kms`/`vault` are wired up end-to-end for key resolution and remote signing, but `EscrowContractService` still expects a `Keypair` for the resolver at its existing call sites, so pot settlement itself still needs the migration to `signHash` to run with `STELLAR_KEY_STORE=kms|vault`. See `KmsKeyStore` for provider setup and key-rotation steps, coordinated with the escrow contract's `set_resolver`.
+
 ### The wager lifecycle
 
 ```mermaid
@@ -596,11 +608,10 @@ cp .env.example .env    # then edit it: at minimum the DB_* values and JWT_SECRE
 
 ```bash
 createdb lyricflip
-psql lyricflip -c 'CREATE EXTENSION IF NOT EXISTS "uuid-ossp";'
 npm run migration:run
 ```
 
-> ⚠️ **Known issue:** the current migration chain **cannot build a complete schema on an empty database**. The rooms migration runs before the tables it references exist, the `users` migration is missing columns, and the `lyrics`/`game_history` tables are created only by a stray file at the repository root. Issues #4–#7 track the fix. Until then, contributors have been bootstrapping schemas by hand or from an existing dump.
+The migrations build the complete schema on an empty PostgreSQL 14+ database, including the `uuid-ossp` extension. To upgrade a database that was bootstrapped by hand or from a dump, see [`docs/MIGRATIONS.md`](docs/MIGRATIONS.md).
 
 ### Seed (optional)
 
@@ -627,6 +638,7 @@ The API listens on `PORT` (default `3000`). Swagger UI is served at **`/api/docs
 | `npm run migration:run`                             | Apply pending migrations                        |
 | `npm run migration:generate -- src/migrations/Name` | Generate a migration from entity changes        |
 | `npm run migration:revert`                          | Roll back the most recent migration             |
+| `npm run migration:check`                           | Fail if the entities differ from the database   |
 | `npm run lint` / `npm run format`                   | ESLint (with `--fix`) / Prettier                |
 | `npm test` / `npm run test:cov` / `npm run test:e2e` | Unit tests / coverage / end-to-end tests        |
 
@@ -642,9 +654,8 @@ All configuration comes from environment variables, loaded from `.env` by `@nest
 | `NODE_ENV`       | –                        | `production` hides validation messages and database error details, and drops the mock notification endpoints |
 | `FRONTEND_URL`   | `http://localhost:3000`  | CORS origin                                                           |
 | `LOG_LEVEL`      | `info`                   | Used by the Winston `LoggerService`                                   |
-| `JWT_SECRET`     | **required**             | The app refuses to start without it. Use a long random value          |
+| `JWT_SECRET`     | **required**             | The app refuses to start without it, and it must be at least 32 characters. Use a long random value |
 | `JWT_EXPIRES_IN` | `15m`                    | Any format accepted by `jsonwebtoken`. Refresh tokens are separate, opaque and valid for 30 days |
-| `JWT_EXPIRES_IN` | `7d`                     | Any format accepted by `jsonwebtoken`                                 |
 | `INVITATION_TTL_MINUTES` | `30`             | How long player two has to accept a session invitation before it is abandoned and player one refunded |
 
 **Database**
@@ -661,6 +672,7 @@ All configuration comes from environment variables, loaded from `.env` by `@nest
 | `STELLAR_SETTLEMENT_MODE`       | `mock`                          | `mock` or `stellar`                                                                             |
 | `STELLAR_NETWORK`               | `testnet`                       | `public`, `testnet`, `futurenet` or `standalone`                                                |
 | `STELLAR_CUSTODY_MODE`          | `non-custodial`                 | `custodial` is refused on `public`                                                              |
+| `STELLAR_KEY_STORE`             | `env`                           | `env`, `kms` or `vault`. See [Key stores](#key-stores)                                          |
 | `STELLAR_RPC_URL`               | per network                     | Soroban JSON-RPC endpoint                                                                       |
 | `STELLAR_HORIZON_URL`           | per network                     | Reported by `/stellar/info`                                                                     |
 | `STELLAR_NETWORK_PASSPHRASE`    | per network                     | Override for custom standalone networks                                                         |
@@ -844,9 +856,21 @@ Writes update the per-ID entry. Broader invalidation (`clearCache`) is currently
 ## Logging and errors
 
 - `LoggingInterceptor` logs every request and response, with method, URL, status and duration. Top-level `password`, `token`, `secret`, `key` and `authorization` fields are redacted.
-- `ErrorInterceptor` gives errors the shape shown in [Request lifecycle](#request-lifecycle) and logs them with context.
+- `AllExceptionsFilter` gives errors the shape shown in [Request lifecycle](#request-lifecycle) and logs them with context.
 - TypeORM logs queries and errors, and warns about queries slower than 250 ms.
 - `src/common/services/logger.service.ts` provides a Winston logger with daily-rotating files, but it is not yet registered as the app logger (issue #114).
+
+## Audit logging
+
+Admin and settlement actions leave a durable row in `audit_logs` (actor, action, target type/ID, a sanitized request payload, IP and timestamp), so disputes over a deletion or a settlement can be resolved against a record instead of guesswork.
+
+A handler opts in with `@Audited({ action, targetType })`, on a controller that also has `@UseInterceptors(AuditInterceptor)`; `AuditInterceptor` writes the row after the handler succeeds (never on a failed request) and never blocks or fails the response if the write itself fails. Currently applied to:
+
+- `DELETE /admin/users/:id`, `DELETE /admin/lyrics/:id`
+- `PUT /game-sessions/:id/complete-wagered`, `POST /game-sessions/:id/wager/reconcile`
+- `POST /auth/stellar/link`, `DELETE /auth/stellar/wallet`
+
+`GET /admin/audit-logs` (admin-only) lists rows with `actorId`, `action`, `targetType`, `targetId`, `limit` and `offset` filters. There is no write or delete endpoint - the table is append-only from the API's perspective; only direct database access can alter a row.
 
 ## Testing
 
@@ -896,7 +920,7 @@ ISSUES.md                the project backlog: 125 issues with tasks and acceptan
 
 The codebase is honest about what it does, and so is this README. The most important gaps, all tracked in [`ISSUES.md`](ISSUES.md), are:
 
-- **Boot and schema:** `LyricsController` imports its service with `import type`, which breaks dependency injection (#1). Lyric create and update handlers are missing `@Body()` (#2). Migrations cannot build a fresh schema (#4–#7).
+- **Boot and schema:** `LyricsController` imports its service with `import type`, which breaks dependency injection (#1). Lyric create and update handlers are missing `@Body()` (#2).
 - **Authorization:** password hashes can appear in responses (#27). User, session, history and notification routes lack ownership checks (#28, #29, #33, #34). **Any user can decide a wagered match's winner** (#30). Player two is staked without consent (#31).
 - **Wager correctness:** in non-custodial mode, a wager is marked `staked` after only one signature (#8). Reconciliation records interrupted payouts as refunds (#9). Mock pots are lost on restart (#11).
 - **Gameplay wiring:** XP, level-ups, game history, streak bonuses and notifications are implemented in isolation but not connected to play (#78–#82). The WebSocket gateway is not registered (#13).
@@ -907,12 +931,13 @@ Do not run stellar mode with real value until the P0 issues are closed.
 
 1. Pick an issue from [`ISSUES.md`](ISSUES.md). Issues tagged `good first issue` are self-contained.
 2. Create a branch, make the change, and add or update tests (`npm test`, and `cargo test` for contract changes).
-3. Any entity change needs a migration (`npm run migration:generate -- src/migrations/<Name>`).
+3. Any entity change needs a migration (`npm run migration:generate -- src/migrations/<Name>`). CI runs every migration against an empty Postgres and fails if `npm run migration:check` finds a difference.
 4. Run `npm run lint` and `npm run format` before opening a PR, and meet every acceptance criterion listed on the issue.
 
 ## Further documentation
 
 - [`ISSUES.md`](ISSUES.md): the prioritized backlog
+- [`docs/MIGRATIONS.md`](docs/MIGRATIONS.md): migration strategy and upgrading existing databases
 - [`docs/CACHING_IMPLEMENTATION.md`](docs/CACHING_IMPLEMENTATION.md): cache keys, TTLs and invalidation
 - [`docs/DATABASE_MONITORING.md`](docs/DATABASE_MONITORING.md): Postgres monitoring with Prometheus and Grafana
 - [`docs/BACKUP_STRATEGY.md`](docs/BACKUP_STRATEGY.md): backup and restore

@@ -74,6 +74,7 @@ export class Wager {
   @Column({
     type: 'enum',
     enum: WagerStatus,
+    enumName: 'wager_status_enum',
     default: WagerStatus.PENDING,
   })
   status: WagerStatus;

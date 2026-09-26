@@ -14,6 +14,7 @@
     "start:prod": "node dist/main",
     "seed": "ts-node -r tsconfig-paths/register src/seeds/seed.ts",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
+    "lint:migrations": "bash scripts/check-migration-location.sh",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
@@ -22,7 +23,8 @@
     "typeorm": "ts-node -r tsconfig-paths/register ./node_modules/typeorm/cli.js --dataSource typeorm.config.ts",
     "migration:generate": "npm run typeorm -- migration:generate",
     "migration:run": "npm run typeorm -- migration:run",
-    "migration:revert": "npm run typeorm -- migration:revert"
+    "migration:revert": "npm run typeorm -- migration:revert",
+    "migration:check": "npm run typeorm -- migration:generate src/migrations/PendingChanges --dryrun --check"
   },
   "dependencies": {
     "@nestjs/cache-manager": "^3.0.1",
@@ -47,6 +49,7 @@
     "helmet": "^8.1.0",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.2",
+    "joi": "^17.13.3",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
     "pg": "^8.16.3",
@@ -58,6 +61,9 @@
     "typeorm": "^0.3.25",
     "winston": "^3.17.0",
     "winston-daily-rotate-file": "^5.0.0"
+  },
+  "optionalDependencies": {
+    "@aws-sdk/client-kms": "^3.700.0"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.2.0",
