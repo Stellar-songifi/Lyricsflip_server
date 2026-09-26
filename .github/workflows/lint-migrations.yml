@@ -1,0 +1,14 @@
+name: Migration location
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  migration-location:
+    name: No migrations outside src/migrations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/check-migration-location.sh
