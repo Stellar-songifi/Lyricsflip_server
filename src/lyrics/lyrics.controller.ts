@@ -9,6 +9,7 @@ import {
   UseGuards,
   Query,
   ParseIntPipe,
+  Body,
 } from '@nestjs/common';
 // Value imports: `import type` erases these classes from the decorator
 // metadata, so Nest could neither inject the service nor validate the DTOs.
@@ -23,6 +24,10 @@ import {
   ApiOperation,
   ApiResponse,
   ApiQuery,
+  ApiBody,
+  ApiCreatedResponse,
+  ApiOkResponse,
+  ApiBadRequestResponse,
 } from '@nestjs/swagger';
 import { User } from '../users/entities/user.entity';
 import { Roles } from 'src/auth/decorators/roles.decorator';
@@ -49,10 +54,19 @@ export class LyricsController {
 
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Create new lyrics' })
-  @ApiResponse({ status: 201, description: 'Lyrics created.' })
+  @ApiBody({ type: CreateLyricsDto })
+  @ApiCreatedResponse({ description: 'Lyrics created.', type: AdminLyricDto })
+  @ApiBadRequestResponse({ description: 'The payload failed validation.' })
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.Admin)
   @Post()
+  async create(
+    @Body() createLyricsDto: CreateLyricsDto,
+    @GetUser() user: User,
+  ): Promise<AdminLyricDto> {
+    return AdminLyricDto.from(
+      await this.lyricsService.create(createLyricsDto, user),
+    );
   create(@Body() createLyricsDto: CreateLyricsDto, @GetUser() user: User) {
     return this.lyricsService.create(createLyricsDto, user);
   }
@@ -169,16 +183,21 @@ export class LyricsController {
 
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Update lyrics' })
-  @ApiResponse({ status: 200, description: 'Lyrics updated.' })
+  @ApiBody({ type: UpdateLyricsDto })
+  @ApiOkResponse({ description: 'Lyrics updated.', type: AdminLyricDto })
+  @ApiBadRequestResponse({ description: 'The payload failed validation.' })
+  @ApiResponse({ status: 404, description: 'Lyrics not found.' })
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.Admin)
   @Patch(':id')
-  update(
+  async update(
     @Param('id', ParseIntPipe) id: number,
     @Body() updateLyricsDto: UpdateLyricsDto,
     @GetUser() user: User,
-  ) {
-    return this.lyricsService.update(id, updateLyricsDto, user);
+  ): Promise<AdminLyricDto> {
+    return AdminLyricDto.from(
+      await this.lyricsService.update(id, updateLyricsDto, user),
+    );
   }
 
   @ApiBearerAuth()

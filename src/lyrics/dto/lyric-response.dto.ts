@@ -1,3 +1,4 @@
+import { ApiProperty } from '@nestjs/swagger';
 import { Genre, Lyrics } from '../entities/lyrics.entity';
 
 /**
@@ -6,10 +7,15 @@ import { Genre, Lyrics } from '../entities/lyrics.entity';
  * them gives away the guess.
  */
 export class PlayerLyricDto {
+  @ApiProperty()
   id: number;
+  @ApiProperty()
   lyricSnippet: string;
+  @ApiProperty({ enum: Genre })
   genre: Genre;
+  @ApiProperty()
   decade: string;
+  @ApiProperty()
   category: string;
 
   static from(lyric: Lyrics): PlayerLyricDto {
@@ -25,13 +31,21 @@ export class PlayerLyricDto {
 
 /** A lyric as an admin manages it, answers included. */
 export class AdminLyricDto extends PlayerLyricDto {
+  @ApiProperty()
   content: string;
+  @ApiProperty()
   artist: string;
+  @ApiProperty()
   songTitle: string;
+  @ApiProperty()
   difficulty: number;
+  @ApiProperty()
   isActive: boolean;
+  @ApiProperty()
   timesUsed: number;
+  @ApiProperty()
   createdAt: Date;
+  @ApiProperty()
   updatedAt: Date;
 
   static from(lyric: Lyrics): AdminLyricDto {
