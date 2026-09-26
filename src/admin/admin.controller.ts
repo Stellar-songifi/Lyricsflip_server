@@ -2,14 +2,18 @@ import {
   Controller,
   Get,
   Delete,
+  Post,
   Param,
   UseGuards,
   UseInterceptors,
   ParseUUIDPipe,
   ParseIntPipe,
   Query,
+  UploadedFile,
+  Body,
   SerializeOptions,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/roles/roles.decorator';
@@ -44,6 +48,17 @@ export class AdminController {
   @Get('lyrics')
   findAllLyrics(@Query() { limit, offset }: PaginationQueryDto) {
     return this.adminService.findAllLyrics(limit, offset);
+  }
+
+  @Post('lyrics/import')
+  @Audited({ action: 'admin.lyric.import', targetType: 'lyric' })
+  @UseInterceptors(FileInterceptor('file'))
+  importLyrics(
+    @UploadedFile() file: Express.Multer.File,
+    @Body() body: { dryRun?: boolean | string },
+  ) {
+    const dryRun = body?.dryRun === true || body?.dryRun === 'true';
+    return this.adminService.importLyrics(file, dryRun);
   }
 
   @Delete('lyrics/:id')
