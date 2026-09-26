@@ -608,11 +608,10 @@ cp .env.example .env    # then edit it: at minimum the DB_* values and JWT_SECRE
 
 ```bash
 createdb lyricflip
-psql lyricflip -c 'CREATE EXTENSION IF NOT EXISTS "uuid-ossp";'
 npm run migration:run
 ```
 
-> ⚠️ **Known issue:** the current migration chain **cannot build a complete schema on an empty database**. The rooms migration runs before the tables it references exist, the `users` migration is missing columns, and the `lyrics`/`game_history` tables are created only by a stray file at the repository root. Issues #4–#7 track the fix. Until then, contributors have been bootstrapping schemas by hand or from an existing dump.
+The migrations build the complete schema on an empty PostgreSQL 14+ database, including the `uuid-ossp` extension. To upgrade a database that was bootstrapped by hand or from a dump, see [`docs/MIGRATIONS.md`](docs/MIGRATIONS.md).
 
 ### Seed (optional)
 
@@ -639,6 +638,7 @@ The API listens on `PORT` (default `3000`). Swagger UI is served at **`/api/docs
 | `npm run migration:run`                             | Apply pending migrations                        |
 | `npm run migration:generate -- src/migrations/Name` | Generate a migration from entity changes        |
 | `npm run migration:revert`                          | Roll back the most recent migration             |
+| `npm run migration:check`                           | Fail if the entities differ from the database   |
 | `npm run lint` / `npm run format`                   | ESLint (with `--fix`) / Prettier                |
 | `npm test` / `npm run test:cov` / `npm run test:e2e` | Unit tests / coverage / end-to-end tests        |
 
@@ -920,7 +920,7 @@ ISSUES.md                the project backlog: 125 issues with tasks and acceptan
 
 The codebase is honest about what it does, and so is this README. The most important gaps, all tracked in [`ISSUES.md`](ISSUES.md), are:
 
-- **Boot and schema:** `LyricsController` imports its service with `import type`, which breaks dependency injection (#1). Lyric create and update handlers are missing `@Body()` (#2). Migrations cannot build a fresh schema (#4–#7).
+- **Boot and schema:** `LyricsController` imports its service with `import type`, which breaks dependency injection (#1). Lyric create and update handlers are missing `@Body()` (#2).
 - **Authorization:** password hashes can appear in responses (#27). User, session, history and notification routes lack ownership checks (#28, #29, #33, #34). **Any user can decide a wagered match's winner** (#30). Player two is staked without consent (#31).
 - **Wager correctness:** in non-custodial mode, a wager is marked `staked` after only one signature (#8). Reconciliation records interrupted payouts as refunds (#9). Mock pots are lost on restart (#11).
 - **Gameplay wiring:** XP, level-ups, game history, streak bonuses and notifications are implemented in isolation but not connected to play (#78–#82). The WebSocket gateway is not registered (#13).
@@ -931,12 +931,13 @@ Do not run stellar mode with real value until the P0 issues are closed.
 
 1. Pick an issue from [`ISSUES.md`](ISSUES.md). Issues tagged `good first issue` are self-contained.
 2. Create a branch, make the change, and add or update tests (`npm test`, and `cargo test` for contract changes).
-3. Any entity change needs a migration (`npm run migration:generate -- src/migrations/<Name>`).
+3. Any entity change needs a migration (`npm run migration:generate -- src/migrations/<Name>`). CI runs every migration against an empty Postgres and fails if `npm run migration:check` finds a difference.
 4. Run `npm run lint` and `npm run format` before opening a PR, and meet every acceptance criterion listed on the issue.
 
 ## Further documentation
 
 - [`ISSUES.md`](ISSUES.md): the prioritized backlog
+- [`docs/MIGRATIONS.md`](docs/MIGRATIONS.md): migration strategy and upgrading existing databases
 - [`docs/CACHING_IMPLEMENTATION.md`](docs/CACHING_IMPLEMENTATION.md): cache keys, TTLs and invalidation
 - [`docs/DATABASE_MONITORING.md`](docs/DATABASE_MONITORING.md): Postgres monitoring with Prometheus and Grafana
 - [`docs/BACKUP_STRATEGY.md`](docs/BACKUP_STRATEGY.md): backup and restore
