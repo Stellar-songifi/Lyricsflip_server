@@ -45,14 +45,15 @@ export interface RandomLyricOptions {
   seenWindowDays?: number;
 }
 
-export interface GuessDto {
-  lyricId: number;
+export interface RoundGuessDto {
+  roundId: string;
   guessType: 'artist' | 'songTitle';
   guessValue: string;
 }
 
-export interface RoundGuessDto {
-  roundId: string;
+/** Internal shape used by the legacy {@link GameLogicService.checkGuess} method. */
+export interface LyricGuessDto {
+  lyricId: number;
   guessType: 'artist' | 'songTitle';
   guessValue: string;
 }
@@ -514,7 +515,7 @@ export class GameLogicService {
    * @param guessDto - The guess data containing lyricId, guessType, and guessValue
    * @returns Promise<GuessResult> - Result of the guess evaluation
    */
-  async checkGuess(guessDto: GuessDto): Promise<GuessResult> {
+  async checkGuess(guessDto: LyricGuessDto): Promise<GuessResult> {
     this.logger.debug(`Checking guess: ${JSON.stringify(guessDto)}`);
 
     try {

@@ -13,7 +13,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { GetUser } from '../auth/decorators/user.decorator';
 import { User } from '../users/entities/user.entity';
 import { GuessType } from '../game/dto/guess.dto';
-import { Roles } from '../auth/decorators/roles.decorator';
+import { Roles } from '../auth/roles/roles.decorator';
 import { Role } from '../auth/roles/role.enum';
 
 @ApiTags('game-history')

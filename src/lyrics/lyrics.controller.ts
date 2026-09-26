@@ -30,7 +30,7 @@ import {
   ApiBadRequestResponse,
 } from '@nestjs/swagger';
 import { User } from '../users/entities/user.entity';
-import { Roles } from 'src/auth/decorators/roles.decorator';
+import { Roles } from 'src/auth/roles/roles.decorator';
 import { Role } from 'src/auth/roles/role.enum';
 import { GetUser } from 'src/auth/decorators/user.decorator';
 import { Lyrics } from './entities/lyrics.entity';
