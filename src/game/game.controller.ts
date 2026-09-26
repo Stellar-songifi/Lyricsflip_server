@@ -48,7 +48,13 @@ export class GameController {
     );
 
     try {
-      const lyric = await this.gameLogicService.getRandomLyric(options);
+      const lyric = await this.gameLogicService.getRandomLyric({
+        ...options,
+        // Pass the player's preferences so the service can use them as
+        // fallback filters when no explicit genre/decade was supplied (#176).
+        preferredGenre: user.preferredGenre ?? undefined,
+        preferredDecade: user.preferredDecade ?? undefined,
+      });
       const round = await this.gameLogicService.issueRound(
         user.id,
         lyric.id,

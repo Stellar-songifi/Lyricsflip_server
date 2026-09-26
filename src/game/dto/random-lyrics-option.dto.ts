@@ -5,6 +5,10 @@ import {
   IsNumber,
   IsEnum,
   IsUUID,
+  IsBoolean,
+  IsInt,
+  Min,
+  Max,
 } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
 import { Genre, toGenre } from 'src/lyrics/entities/genre.enum';
@@ -37,4 +41,28 @@ export class RandomLyricOptionsDto {
   @IsOptional()
   @IsUUID()
   sessionId?: string;
+
+  /**
+   * When true, the user's preferredGenre and preferredDecade are not applied
+   * as fallback filters even if no explicit genre/decade was given.
+   */
+  @IsOptional()
+  @IsBoolean()
+  @Transform(({ value }) => {
+    if (value === 'true' || value === true) return true;
+    if (value === 'false' || value === false) return false;
+    return value;
+  })
+  ignorePreferences?: boolean;
+
+  /**
+   * Filter by difficulty level (1–5). When omitted all difficulty levels are
+   * included.
+   */
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(5)
+  @Type(() => Number)
+  difficulty?: number;
 }
