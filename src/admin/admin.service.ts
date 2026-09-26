@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { UsersService } from '../users/users.service';
 import { LyricsService } from 'src/lyrics/lyrics.service';
 import { CreateLyricsDto } from 'src/lyrics/dto/create-lyrics.dto';
@@ -57,8 +57,10 @@ export class AdminService {
     limit = 20,
     sortBy?: string,
     sortOrder: 'ASC' | 'DESC' = 'DESC',
+    status?: 'active' | 'inactive',
   ): Promise<PaginatedResult<unknown>> {
     const offset = (page - 1) * limit;
+    const isActive = status === 'inactive' ? false : status === 'active' ? true : undefined;
     const [data, total] = await Promise.all([
       this.lyricsService.findAll(
         undefined,
@@ -67,14 +69,25 @@ export class AdminService {
         offset,
         sortBy,
         sortOrder,
+        isActive,
       ),
-      this.lyricsService.count(),
+      this.lyricsService.count(isActive),
     ]);
     return { data, meta: { total, page, limit } };
   }
 
   deleteLyric(id: number) {
     return this.lyricsService.remove(id);
+  }
+
+  async restoreLyric(id: number) {
+    const lyric = await this.lyricsService.findOne(id);
+    if (!lyric) {
+      throw new NotFoundException(`Lyric with id ${id} not found`);
+    }
+    const restored = await this.lyricsService.restore(id);
+    await this.lyricsService.invalidateCache();
+    return restored;
   }
 
   async importLyrics(

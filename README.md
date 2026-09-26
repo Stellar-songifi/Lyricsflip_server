@@ -949,3 +949,5 @@ Do not run stellar mode with real value until the P0 issues are closed.
 
 <!-- handsoff-issue-180 -->
 - #180: [94] Friends and direct challenges
+<!-- handsoff-issue-187 -->
+- #187: [101] Let players report wrong lyrics or answers
