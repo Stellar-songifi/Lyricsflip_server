@@ -395,6 +395,33 @@ describe('StellarRpcService', () => {
     });
   });
 
+  describe('resolveInclusionFee', () => {
+    afterEach(() => delete process.env.STELLAR_MAX_FEE);
+
+    it('uses observed p90 fee below the ceiling', async () => {
+      jest.spyOn(rpc.Server.prototype, 'getFeeStats').mockResolvedValue({
+        sorobanInclusionFee: { p90: '500' },
+      } as unknown as rpc.Api.GetFeeStatsResponse);
+      expect(await service.resolveInclusionFee()).toBe('500');
+    });
+
+    it('caps the fee at STELLAR_MAX_FEE', async () => {
+      process.env.STELLAR_MAX_FEE = '300';
+      jest.spyOn(rpc.Server.prototype, 'getFeeStats').mockResolvedValue({
+        sorobanInclusionFee: { p90: '500' },
+      } as unknown as rpc.Api.GetFeeStatsResponse);
+      expect(await service.resolveInclusionFee()).toBe('300');
+    });
+
+    it('falls back to the ceiling when fee stats fail', async () => {
+      process.env.STELLAR_MAX_FEE = '700';
+      jest
+        .spyOn(rpc.Server.prototype, 'getFeeStats')
+        .mockRejectedValue(new Error('down'));
+      expect(await service.resolveInclusionFee()).toBe('700');
+    });
+  });
+
   describe('isHealthy', () => {
     it('is true only when the endpoint reports healthy', async () => {
       const health = jest.spyOn(rpc.Server.prototype, 'getHealth');
