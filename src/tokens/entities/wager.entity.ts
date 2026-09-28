@@ -34,6 +34,18 @@ export enum WagerStatus {
   FAILED = 'failed',
 }
 
+/**
+ * The kind of settlement a wager is being settled with.
+ *
+ * Recorded when entering {@link WagerStatus.SETTLING}, before the network call,
+ * so that reconciliation can tell an interrupted payout apart from an
+ * interrupted refund even though `winnerId` is not yet set.
+ */
+export enum SettlementKind {
+  PAYOUT = 'payout',
+  REFUND = 'refund',
+}
+
 @Entity('wagers')
 export class Wager {
   @PrimaryGeneratedColumn('uuid')
@@ -85,6 +97,29 @@ export class Wager {
 
   @Column({ type: 'uuid', nullable: true })
   winnerId: string;
+
+  /**
+   * The settlement intent recorded when the wager entered
+   * {@link WagerStatus.SETTLING}.
+   *
+   * `winnerId` is only set once a payout is confirmed, so reconciliation needs
+   * this to know whether an interrupted settlement was a payout or a refund.
+   */
+  @Column({
+    type: 'enum',
+    enum: SettlementKind,
+    enumName: 'settlement_kind_enum',
+    nullable: true,
+  })
+  settlementKind?: SettlementKind | null;
+
+  /**
+   * The winner the settlement intended to pay, recorded before the network
+   * call. Used by reconciliation to restore `winnerId` when a payout is
+   * confirmed on-chain.
+   */
+  @Column({ type: 'uuid', nullable: true })
+  intendedWinnerId?: string | null;
 
   /**
    * Which backend settled this wager — `stellar` or `mock`.
