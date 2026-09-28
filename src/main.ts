@@ -55,16 +55,25 @@ async function bootstrap() {
   const document = SwaggerModule.createDocument(app, config);
   SwaggerModule.setup('api/docs', app, document);
 
+  // CORS must be registered before the server starts listening, otherwise the
+  // configuration is not applied to the running HTTP adapter. FRONTEND_URL may
+  // hold a comma-separated list of allowed origins.
+  const allowedOrigins = (process.env.FRONTEND_URL || 'http://localhost:3000')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter((origin) => origin.length > 0);
+
   app.enableCors({
-    origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+    origin: allowedOrigins,
     credentials: true,
   });
 
   const port = process.env.PORT ?? 3000;
-  await app.listen(port);
+  const host = process.env.HOST ?? 'localhost';
+  await app.listen(port, host);
 
   winstonLogger.log(
-    `Application is running on http://localhost:${port}`,
+    `Application is running on http://${host}:${port}`,
     'Bootstrap',
   );
 }
