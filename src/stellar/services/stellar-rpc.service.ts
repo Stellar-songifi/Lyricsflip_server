@@ -2,6 +2,7 @@ import {
   Inject,
   Injectable,
   Logger,
+  Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import {
@@ -20,6 +21,7 @@ import {
   TRANSACTION_TIMEOUT_SECONDS,
 } from '../stellar.constants';
 import type { StellarConfig } from '../stellar.config';
+import { MetricsService } from '../../metrics/metrics.service';
 
 /** Reads a non-negative integer from the environment, with a default. */
 function envInt(name: string, fallback: number): number {
@@ -63,7 +65,10 @@ export class StellarRpcService {
   private readonly logger = new Logger(StellarRpcService.name);
   private readonly server: rpc.Server;
 
-  constructor(@Inject(STELLAR_CONFIG) private readonly config: StellarConfig) {
+  constructor(
+    @Inject(STELLAR_CONFIG) private readonly config: StellarConfig,
+    @Optional() private readonly metricsService?: MetricsService,
+  ) {
     this.server = new rpc.Server(this.config.rpcUrl, {
       allowHttp: this.config.rpcUrl.startsWith('http://'),
     });
@@ -98,24 +103,41 @@ export class StellarRpcService {
     args: xdr.ScVal[],
     timeoutSeconds: number = TRANSACTION_TIMEOUT_SECONDS,
   ): Promise<Transaction> {
-    const source = await this.loadAccount(sourcePublicKey);
-    const contract = new Contract(contractId);
-    const fee = await this.resolveInclusionFee();
-
-    const transaction = new TransactionBuilder(source, {
-      fee,
-      networkPassphrase: this.config.networkPassphrase,
-    })
-      .addOperation(contract.call(method, ...args))
-      .setTimeout(timeoutSeconds)
-      .build();
-
+    const rpcMethod = `buildInvocation:${method}`;
+    const start = Date.now();
     try {
-      return await this.server.prepareTransaction(transaction);
-    } catch (error) {
-      throw new ServiceUnavailableException(
-        `Simulation of ${method} on ${contractId} failed: ${(error as Error).message}`,
+      const source = await this.loadAccount(sourcePublicKey);
+      const contract = new Contract(contractId);
+      const fee = await this.resolveInclusionFee();
+
+      const transaction = new TransactionBuilder(source, {
+        fee,
+        networkPassphrase: this.config.networkPassphrase,
+      })
+        .addOperation(contract.call(method, ...args))
+        .setTimeout(timeoutSeconds)
+        .build();
+
+      let prepared: Transaction;
+      try {
+        prepared = await this.server.prepareTransaction(transaction);
+      } catch (error) {
+        throw new ServiceUnavailableException(
+          `Simulation of ${method} on ${contractId} failed: ${(error as Error).message}`,
+        );
+      }
+      this.metricsService?.rpcCallDuration.observe(
+        { method: rpcMethod, success: 'true' },
+        (Date.now() - start) / 1000,
       );
+      return prepared;
+    } catch (error) {
+      this.metricsService?.rpcCallDuration.observe(
+        { method: rpcMethod, success: 'false' },
+        (Date.now() - start) / 1000,
+      );
+      this.metricsService?.rpcCallErrors.inc({ method: rpcMethod });
+      throw error;
     }
   }
 
@@ -185,32 +207,48 @@ export class StellarRpcService {
     method: string,
     args: xdr.ScVal[],
   ): Promise<unknown> {
-    const source = new Account(sourcePublicKey, '0');
-    const contract = new Contract(contractId);
+    const rpcMethod = `readContract:${method}`;
+    const start = Date.now();
+    try {
+      const source = new Account(sourcePublicKey, '0');
+      const contract = new Contract(contractId);
 
-    const transaction = new TransactionBuilder(source, {
-      fee: DEFAULT_MAX_FEE,
-      networkPassphrase: this.config.networkPassphrase,
-    })
-      .addOperation(contract.call(method, ...args))
-      .setTimeout(TRANSACTION_TIMEOUT_SECONDS)
-      .build();
+      const transaction = new TransactionBuilder(source, {
+        fee: DEFAULT_MAX_FEE,
+        networkPassphrase: this.config.networkPassphrase,
+      })
+        .addOperation(contract.call(method, ...args))
+        .setTimeout(TRANSACTION_TIMEOUT_SECONDS)
+        .build();
 
-    const simulation = await this.server.simulateTransaction(transaction);
+      const simulation = await this.server.simulateTransaction(transaction);
 
-    if (rpc.Api.isSimulationError(simulation)) {
-      throw new ServiceUnavailableException(
-        `Read of ${method} on ${contractId} failed: ${simulation.error}`,
+      if (rpc.Api.isSimulationError(simulation)) {
+        throw new ServiceUnavailableException(
+          `Read of ${method} on ${contractId} failed: ${simulation.error}`,
+        );
+      }
+
+      if (!rpc.Api.isSimulationSuccess(simulation) || !simulation.result) {
+        throw new ServiceUnavailableException(
+          `Read of ${method} on ${contractId} returned no value`,
+        );
+      }
+
+      const result = scValToNative(simulation.result.retval);
+      this.metricsService?.rpcCallDuration.observe(
+        { method: rpcMethod, success: 'true' },
+        (Date.now() - start) / 1000,
       );
-    }
-
-    if (!rpc.Api.isSimulationSuccess(simulation) || !simulation.result) {
-      throw new ServiceUnavailableException(
-        `Read of ${method} on ${contractId} returned no value`,
+      return result;
+    } catch (error) {
+      this.metricsService?.rpcCallDuration.observe(
+        { method: rpcMethod, success: 'false' },
+        (Date.now() - start) / 1000,
       );
+      this.metricsService?.rpcCallErrors.inc({ method: rpcMethod });
+      throw error;
     }
-
-    return scValToNative(simulation.result.retval);
   }
 
   /**
@@ -246,16 +284,25 @@ export class StellarRpcService {
     transaction: Transaction,
     signers: Keypair[],
   ): Promise<SubmitResult> {
+    const start = Date.now();
     for (const signer of signers) {
       transaction.sign(signer);
     }
-
-    return this.submit(transaction);
+    const result = await this.submit(transaction);
+    this.metricsService?.rpcCallDuration.observe(
+      { method: 'signAndSubmit', success: result.confirmed ? 'true' : 'false' },
+      (Date.now() - start) / 1000,
+    );
+    if (!result.confirmed) {
+      this.metricsService?.rpcCallErrors.inc({ method: 'signAndSubmit' });
+    }
+    return result;
   }
 
   /** Submits an already-signed transaction and waits for confirmation. */
   async submit(transaction: Transaction): Promise<SubmitResult> {
     const hash = this.hashHex(transaction);
+    const start = Date.now();
 
     const maxRetries = envInt('STELLAR_TRY_AGAIN_MAX_ATTEMPTS', 5);
     const baseDelayMs = envInt('STELLAR_TRY_AGAIN_BASE_DELAY_MS', 500);
@@ -265,6 +312,7 @@ export class StellarRpcService {
       try {
         sent = await this.server.sendTransaction(transaction);
       } catch (error) {
+        this.metricsService?.rpcCallErrors.inc({ method: 'submit' });
         return {
           hash,
           confirmed: false,
@@ -277,6 +325,7 @@ export class StellarRpcService {
       if (sent.status !== 'TRY_AGAIN_LATER') break;
 
       if (attempt >= maxRetries) {
+        this.metricsService?.rpcCallErrors.inc({ method: 'submit' });
         return {
           hash,
           confirmed: false,
@@ -291,15 +340,29 @@ export class StellarRpcService {
       // DUPLICATE means this exact transaction is already in flight, which for
       // our idempotent flows is not an error — fall through to polling.
       if (sent.status === 'ERROR') {
-        return {
+        const errResult = {
           hash: sent.hash,
           confirmed: false,
           error: `Network rejected the transaction: ${JSON.stringify(sent.errorResult ?? {})}`,
         };
+        this.metricsService?.rpcCallDuration.observe(
+          { method: 'submit', success: 'false' },
+          (Date.now() - start) / 1000,
+        );
+        this.metricsService?.rpcCallErrors.inc({ method: 'submit' });
+        return errResult;
       }
     }
 
-    return this.waitForConfirmation(sent.hash);
+    const result = await this.waitForConfirmation(sent.hash);
+    this.metricsService?.rpcCallDuration.observe(
+      { method: 'submit', success: result.confirmed ? 'true' : 'false' },
+      (Date.now() - start) / 1000,
+    );
+    if (!result.confirmed) {
+      this.metricsService?.rpcCallErrors.inc({ method: 'submit' });
+    }
+    return result;
   }
 
   /**
