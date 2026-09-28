@@ -1,15 +1,15 @@
 {
   "moduleFileExtensions": ["js", "json", "ts"],
-  "rootDir": ".",
+  "rootDir": "..",
   "testEnvironment": "node",
   "testRegex": ".e2e-spec.ts$",
   "transform": {
-    "^.+\\.(t|j)s$": "ts-jest"
+    "^.+\\.(t|j)s$": ["ts-jest", { "tsconfig": "tsconfig.test.json" }]
   },
   "transformIgnorePatterns": [
     "/node_modules/(?!.*(@exodus/bytes|@noble/curves|@noble/ed25519|@noble/hashes|eventsource|smol-toml|uint8array-extras)/)"
   ],
   "moduleNameMapper": {
-    "^src/(.*)$": "<rootDir>/../src/$1"
+    "^src/(.*)$": "<rootDir>/src/$1"
   }
 }
