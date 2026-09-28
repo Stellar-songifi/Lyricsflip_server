@@ -129,7 +129,15 @@ export class GameSessionsController {
   @ApiParam({ name: 'id', description: 'Game session ID' })
   @ApiResponse({
     status: 200,
-    description: 'Wagered game completed and wager resolved.',
+    description:
+      'Wagered game completed and wager resolved. The response `status` is ' +
+      '`settled` when the pot was paid out, `settling` when the payout is ' +
+      'pending reconciliation, or `failed` when settlement did not go through ' +
+      '(the session stays retryable).',
+  })
+  @ApiResponse({
+    status: 409,
+    description: 'The wager is not STAKED, so completion cannot be accepted.',
   })
   async completeWageredGame(
     @Param('id') id: string,
@@ -138,6 +146,7 @@ export class GameSessionsController {
   ): Promise<{
     gameSession: any;
     wagerResult?: any;
+    status: 'settled' | 'settling' | 'failed';
     message: string;
   }> {
     return await this.gameSessionsService.completeWageredGame(
@@ -224,8 +233,19 @@ export class GameSessionsController {
   @Post(':id/wager/reconcile')
   @Audited({ action: 'settlement.wager.reconcile', targetType: 'game-session' })
   @ApiOperation({
-    summary: 'Reconcile a wager left mid-settlement against the ledger',
+    summary: 'Reconcile a pending wager settlement (Admin only)',
     description:
-      'O
-
-/* … truncated 1805 chars — edit only what you need near the top … */
+      'Retries settlement for a wager left in SETTLING by a previous ' +
+      'complete-wagered call, and marks the session COMPLETED once the pot ' +
+      'has been paid out.',
+  })
+  @ApiParam({ name: 'id', description: 'Game session ID' })
+  @ApiResponse({ status: 200, description: 'Wager reconciled.' })
+  @HttpCode(HttpStatus.OK)
+  async reconcileWager(
+    @Param('id') id: string,
+    @GetUser() user: User,
+  ) {
+    return this.gameSessionsService.reconcileWager(id, user);
+  }
+}
