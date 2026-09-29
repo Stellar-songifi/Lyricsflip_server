@@ -271,7 +271,7 @@ erDiagram
     }
 ```
 
-The schema is managed with migrations. `synchronize` is `false`. The database connection is set up for **read/write splitting**: there is a `master` and one replica. If the `DB_REPLICA_*` variables are unset, each one falls back to the primary's value, so a single database works without changes.
+The schema is managed with migrations. `synchronize` is `false`. Read/write splitting is enabled only when `DB_REPLICA_HOST` is set; otherwise the app connects to the primary alone with no replication layer. When a replica is configured, the other `DB_REPLICA_*` variables fall back to the primary's values, and **every query still goes to the primary by default** (`defaultMode: 'master'`). Reads reach the replica only when code explicitly opens `dataSource.createQueryRunner('slave')`, which must never be done in money-moving flows (wagers, token balances, settlement) or auth, since the replica can lag behind writes.
 
 ## How the game works
 
@@ -699,7 +699,7 @@ All configuration comes from environment variables, loaded from `.env` by `@nest
 | Variable                                                      | Default          | Notes                                  |
 | ------------------------------------------------------------- | ---------------- | -------------------------------------- |
 | `DB_HOST`, `DB_PORT`, `DB_USERNAME`, `DB_PASSWORD`, `DB_NAME` | **required**     | Primary. Boot fails if any is missing  |
-| `DB_REPLICA_HOST`, `DB_REPLICA_PORT`, `DB_REPLICA_USERNAME`, `DB_REPLICA_PASSWORD`, `DB_REPLICA_NAME` | primary's values | Optional read replica |
+| `DB_REPLICA_HOST`, `DB_REPLICA_PORT`, `DB_REPLICA_USERNAME`, `DB_REPLICA_PASSWORD`, `DB_REPLICA_NAME` | unset (no replica) | Optional read replica, enabled by `DB_REPLICA_HOST`; the others default to the primary's values |
 
 **Stellar** (in `mock` mode, only the first variable is read)
 
