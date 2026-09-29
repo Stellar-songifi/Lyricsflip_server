@@ -4,7 +4,6 @@ import helmet from 'helmet';
 import { helmetOptions } from './common/security/helmet.config';
 import { AppModule } from './app.module';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
-import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 import { LoggerService } from './common/services/logger.service';
 import { configureApp } from './app.setup';
 import { RedisIoAdapter } from './realtime/redis-io.adapter';
@@ -43,8 +42,6 @@ async function bootstrap() {
 
   app.disable('x-powered-by');
   app.use(helmet(helmetOptions));
-
-  app.useGlobalInterceptors(new LoggingInterceptor());
 
   // Swagger configuration
   const config = new DocumentBuilder()
