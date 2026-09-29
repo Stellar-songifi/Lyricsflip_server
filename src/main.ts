@@ -1,5 +1,6 @@
 import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
+import { VersioningType } from '@nestjs/common';
 import helmet from 'helmet';
 import { helmetOptions } from './common/security/helmet.config';
 import { AppModule } from './app.module';
@@ -33,6 +34,29 @@ async function bootstrap() {
   // Global validation pipe and response serializer (shared with e2e tests)
   configureApp(app);
 
+  // All API routes are served under /api/v1/...
+  // Health probe endpoints (/health/live, /health/ready) and the Swagger UI
+  // (/api/docs) are intentionally excluded from the versioned prefix so they
+  // remain stable across API version changes.
+  app.setGlobalPrefix('api/v1', {
+    exclude: [
+      // Liveness / readiness probes must stay at a fixed path so k8s and load
+      // balancers never need reconfiguring when the API version changes.
+      'health/live',
+      'health/ready',
+      // The root redirect and the stellar/health public probe stay accessible
+      // without a versioned prefix as well.
+      '',
+      'stellar/health',
+    ],
+  });
+
+  // URI-based versioning (/api/v1/...) with version 1 as the default.
+  app.enableVersioning({
+    type: VersioningType.URI,
+    defaultVersion: '1',
+  });
+
   // Behind a load balancer, set TRUST_PROXY (e.g. 1 for one hop) so rate
   // limiting sees the real client IP instead of the proxy's.
   if (process.env.TRUST_PROXY) {
@@ -43,7 +67,7 @@ async function bootstrap() {
   app.disable('x-powered-by');
   app.use(helmet(helmetOptions));
 
-  // Swagger configuration
+  // Swagger configuration — served at /api/docs (outside the versioned prefix)
   const config = new DocumentBuilder()
     .setTitle('LyricFlip API')
     .setDescription('API documentation for LyricFlip backend')
