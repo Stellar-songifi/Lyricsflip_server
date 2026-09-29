@@ -35,6 +35,7 @@ import type { StellarConfig } from '../stellar/stellar.config';
       inject: [
         STELLAR_CONFIG,
         getRepositoryToken(User),
+        getRepositoryToken(Wager),
         KEY_STORE,
         EscrowContractService,
         StellarRpcService,
@@ -42,6 +43,7 @@ import type { StellarConfig } from '../stellar/stellar.config';
       useFactory: (
         config: StellarConfig,
         userRepository: Repository<User>,
+        wagerRepository: Repository<Wager>,
         keyStore: IKeyStore,
         escrow: EscrowContractService,
         rpc: StellarRpcService,
@@ -62,7 +64,7 @@ import type { StellarConfig } from '../stellar/stellar.config';
         }
 
         logger.log('Settling wagers in Postgres (mock mode)');
-        return new MockTokenService(userRepository);
+        return new MockTokenService(userRepository, wagerRepository);
       },
     },
     WagerService,

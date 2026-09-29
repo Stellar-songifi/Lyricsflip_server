@@ -6,7 +6,7 @@ import {
   CreateChallengeNotificationDto, 
   CreateAchievementNotificationDto 
 } from './dto/create-notification.dto';
-import { Roles } from '../auth/decorators/roles.decorator';
+import { Roles } from '../auth/roles/roles.decorator';
 import { Role } from '../auth/roles/role.enum';
 import { GetUser } from '../auth/decorators/user.decorator';
 import { User } from '../users/entities/user.entity';

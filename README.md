@@ -24,6 +24,10 @@ This repository is the backend. It is a [NestJS](https://nestjs.com) 11 applicat
   - [Scoring](#scoring)
   - [XP and levels](#xp-and-levels)
   - [History, stats, and leaderboards](#history-stats-and-leaderboards)
+  - [Timed rounds and the speed bonus](#timed-rounds-and-the-speed-bonus)
+  - [Hints](#hints)
+  - [Daily challenge](#daily-challenge)
+  - [Realtime events](#realtime-events)
   - [Notifications](#notifications)
 - [Authentication](#authentication)
   - [Email and password](#email-and-password)
@@ -336,6 +340,38 @@ The logic is in `GameLogicService.checkGuess` (`src/game/game.service.ts`). Both
 A partial match counts as correct (`isCorrect: true`). The minimum length stops one- and two-letter guesses from matching almost anything. The response always includes `correctAnswer` and a short explanation.
 
 `src/game/constants/game.constants.ts` also defines a **streak bonus** (+25) and **difficulty multipliers** (×1, ×1.5, ×2). These are not yet applied (see issue #80).
+
+### Timed rounds and the speed bonus
+
+Every round has an **answer window** (`ROUND_ANSWER_WINDOW_SECONDS`, default **20**), measured on the server from the round's `issuedAt`. It is returned as `answerWindowSeconds` when the round is served and stored on the round, so changing the setting never affects rounds already in play.
+
+- A guess inside the window scores normally, plus a **speed bonus** that falls linearly from **+50** (instant) to **0** (window closes). A partial match earns a proportionally smaller bonus. The most a round can score is therefore **150** (100 + 50).
+- A guess after the window is still evaluated (until the round's hard expiry, 120 s, after which it is `410`), but earns **0 points** and comes back with `timedOut: true`. Looking the answer up elsewhere gains nothing.
+- Sessions idle for `SESSION_TIMEOUT_MINUTES` (default **30**) are marked `abandoned`. Idle means the session row has not been updated, and playing a round in a session (`GET /game/lyric?sessionId=`) counts as activity. Sessions with a wager are skipped: their stakes are released by the wager refund job.
+
+### Hints
+
+`POST /game/rounds/:id/hint` reveals the next hint for an open round you own. Each call goes one level deeper and returns everything revealed so far:
+
+| Level | Reveals                                         | Points left on the round |
+| ----- | ----------------------------------------------- | ------------------------ |
+| 1     | The decade                                      | 75%                      |
+| 2     | Word counts of the title and the artist         | 50%                      |
+| 3     | First letters of the title and the artist       | 25%                      |
+
+The response carries `maxPoints` (the cap after the hints taken so far), and `hintsUsed` is recorded on the round and applied when it is scored. A fourth request is `409`. Hints are refused (`400`) for anyone with an active **wagered** session, so neither player can buy an edge the other cannot.
+
+### Daily challenge
+
+The same **10 lyrics** for every player on a given UTC day, picked with a date-seeded shuffle of the active lyrics and stored in `daily_challenges` so the set stays fixed for the day.
+
+- `GET /challenges/daily` returns the day's lyrics (no answers) and the caller's attempts so far.
+- `POST /challenges/daily/guess { lyricId, guessType, guessValue }` scores the caller's **one attempt** per lyric (a unique `(user, day, lyric)` constraint decides races; a second attempt is `409`). A correct answer awards XP. Finishing all 10 emits `user.completed_challenge`.
+- `GET /challenges/daily/leaderboard` ranks today's players by points, then correct answers.
+
+### Realtime events
+
+Connect to the `/realtime` Socket.IO namespace with the same JWT as the API, subscribe to a session or room, and receive `session.player_joined`, `round.started`, `round.ended`, `session.completed`, `wager.staked` and `wager.settled` as they happen. Set `REDIS_URL` to run multiple instances behind the `@socket.io/redis-adapter`. The full contract is in [docs/realtime.md](docs/realtime.md).
 
 ### XP and levels
 

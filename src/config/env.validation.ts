@@ -28,6 +28,11 @@ export const envValidationSchema = Joi.object({
     }),
   JWT_EXPIRES_IN: Joi.string().default('15m'),
 
+  // Gameplay. ROUND_ANSWER_WINDOW_SECONDS is how long a player has to score on
+  // a round; SESSION_TIMEOUT_MINUTES is how long a session may sit idle.
+  ROUND_ANSWER_WINDOW_SECONDS: Joi.number().integer().min(1).default(20),
+  SESSION_TIMEOUT_MINUTES: Joi.number().integer().min(1).default(30),
+
   // Misc
   INVITATION_TTL_MINUTES: Joi.number().positive().default(30),
   SEED_ADMIN_EMAIL: Joi.string().email().optional(),

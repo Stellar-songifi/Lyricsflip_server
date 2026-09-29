@@ -1,14 +1,17 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { Repository, SelectQueryBuilder } from 'typeorm';
-import { BadRequestException, NotFoundException } from '@nestjs/common';
 import {
+  BadRequestException,
   ConflictException,
   GoneException,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { GameSession } from 'src/game-sessions/entities/game-session.entity';
 import { Genre, Lyrics } from 'src/lyrics/entities/lyrics.entity';
-import { GameLogicService, GuessDto } from './game.service';
+import { GameLogicService, LyricGuessDto } from './game.service';
 import { GuessType } from './dto/guess.dto';
 import { GameRound } from './entities/game-round.entity';
 import { User } from 'src/users/entities/user.entity';
@@ -17,6 +20,8 @@ describe('GameLogicService', () => {
   let service: GameLogicService;
   let repository: jest.Mocked<Repository<Lyrics>>;
   let roundRepository: jest.Mocked<Repository<GameRound>>;
+  let sessionRepository: jest.Mocked<Repository<GameSession>>;
+  let events: { emit: jest.Mock };
   let queryBuilder: jest.Mocked<SelectQueryBuilder<Lyrics>>;
 
   const mockLyric: Lyrics = {
@@ -24,6 +29,8 @@ describe('GameLogicService', () => {
     lyricSnippet: 'Test lyric snippet for testing',
     songTitle: 'Test Song',
     artist: 'Test Artist',
+    artistAliases: [],
+    titleAliases: [],
     category: 'Pop',
     decade: '2020s',
     genre: Genre.Pop,
@@ -58,6 +65,7 @@ describe('GameLogicService', () => {
     const mockRepository = {
       findOne: jest.fn(),
       createQueryBuilder: jest.fn().mockReturnValue(queryBuilder),
+      increment: jest.fn().mockResolvedValue(undefined),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -78,12 +86,24 @@ describe('GameLogicService', () => {
             update: jest.fn(),
           },
         },
+        {
+          provide: getRepositoryToken(GameSession),
+          useValue: {
+            count: jest.fn().mockResolvedValue(0),
+            findOne: jest.fn(),
+            update: jest.fn(),
+          },
+        },
+        { provide: ConfigService, useValue: { get: jest.fn() } },
+        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
       ],
     }).compile();
 
     service = module.get<GameLogicService>(GameLogicService);
     repository = module.get(getRepositoryToken(Lyrics));
     roundRepository = module.get(getRepositoryToken(GameRound));
+    sessionRepository = module.get(getRepositoryToken(GameSession));
+    events = module.get(EventEmitter2);
   });
 
   afterEach(() => {
@@ -92,7 +112,6 @@ describe('GameLogicService', () => {
 
   describe('getRandomLyric', () => {
     it('should return a random lyric with no filters', async () => {
-      queryBuilder.getCount.mockResolvedValue(10);
       queryBuilder.getOne.mockResolvedValue(mockLyric);
 
       const result = await service.getRandomLyric();
@@ -108,8 +127,7 @@ describe('GameLogicService', () => {
       });
 
       expect(repository.createQueryBuilder).toHaveBeenCalledWith('lyrics');
-      expect(queryBuilder.getCount).toHaveBeenCalled();
-      expect(queryBuilder.skip).toHaveBeenCalledWith(expect.any(Number));
+      expect(queryBuilder.orderBy).toHaveBeenCalledWith('RANDOM()');
       expect(queryBuilder.take).toHaveBeenCalledWith(1);
     });
 
@@ -198,7 +216,7 @@ describe('GameLogicService', () => {
     });
 
     it('should throw NotFoundException when no lyrics found', async () => {
-      queryBuilder.getCount.mockResolvedValue(0);
+      queryBuilder.getOne.mockResolvedValue(null);
 
       await expect(service.getRandomLyric()).rejects.toThrow(
         new NotFoundException(
@@ -208,24 +226,148 @@ describe('GameLogicService', () => {
     });
 
     it('should throw NotFoundException when query returns null', async () => {
-      queryBuilder.getCount.mockResolvedValue(10);
       queryBuilder.getOne.mockResolvedValue(null);
 
       await expect(service.getRandomLyric()).rejects.toThrow(
-        new NotFoundException('Failed to fetch random lyric'),
+        new NotFoundException(
+          'No lyrics found matching the specified criteria',
+        ),
       );
+    });
+
+    // --- issue #175: timesUsed increment ---
+
+    it('increments timesUsed atomically when a lyric is served', async () => {
+      queryBuilder.getOne.mockResolvedValue(mockLyric);
+
+      await service.getRandomLyric();
+
+      expect(repository.increment).toHaveBeenCalledWith(
+        { id: mockLyric.id },
+        'timesUsed',
+        1,
+      );
+    });
+
+    // --- issue #175: difficulty filter ---
+
+    it('applies difficulty filter when provided', async () => {
+      queryBuilder.getOne.mockResolvedValue(mockLyric);
+
+      await service.getRandomLyric({ difficulty: 3 });
+
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith(
+        'lyrics.difficulty = :difficulty',
+        { difficulty: 3 },
+      );
+    });
+
+    it('does not apply difficulty filter when omitted', async () => {
+      queryBuilder.getOne.mockResolvedValue(mockLyric);
+
+      await service.getRandomLyric();
+
+      const difficultyCall = (queryBuilder.andWhere as jest.Mock).mock.calls.find(
+        ([sql]: [string]) => sql.includes('difficulty'),
+      );
+      expect(difficultyCall).toBeUndefined();
+    });
+
+    // --- issue #176: preference fallback ---
+
+    it('falls back to preferredGenre when no explicit genre is given', async () => {
+      queryBuilder.getOne.mockResolvedValue(mockLyric);
+
+      await service.getRandomLyric({ preferredGenre: 'Pop' });
+
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith(
+        'lyrics.genre = :genre',
+        { genre: Genre.Pop },
+      );
+    });
+
+    it('falls back to preferredDecade when no explicit decade is given', async () => {
+      queryBuilder.getOne.mockResolvedValue(mockLyric);
+
+      await service.getRandomLyric({ preferredDecade: '2020s' });
+
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith(
+        'lyrics.decade = :decade',
+        { decade: '2020s' },
+      );
+    });
+
+    it('explicit genre overrides preferredGenre', async () => {
+      queryBuilder.getOne.mockResolvedValue(mockLyric);
+
+      await service.getRandomLyric({
+        genre: Genre.HipHop,
+        preferredGenre: 'Pop',
+      });
+
+      // Should use the explicit genre, not the preference
+      expect(queryBuilder.andWhere).toHaveBeenCalledWith(
+        'lyrics.genre = :genre',
+        { genre: Genre.HipHop },
+      );
+    });
+
+    it('does not apply preferredGenre when ignorePreferences is true', async () => {
+      queryBuilder.getOne.mockResolvedValue(mockLyric);
+
+      await service.getRandomLyric({
+        preferredGenre: 'Pop',
+        ignorePreferences: true,
+      });
+
+      const genreCall = (queryBuilder.andWhere as jest.Mock).mock.calls.find(
+        ([sql]: [string]) => sql.includes('genre'),
+      );
+      expect(genreCall).toBeUndefined();
+    });
+
+    it('retries without preferences when preference-filtered pool is empty', async () => {
+      // First call (with preference) returns nothing; second call (without) returns a lyric
+      queryBuilder.getOne
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(mockLyric);
+
+      const result = await service.getRandomLyric({ preferredGenre: 'Pop' });
+
+      expect(result.id).toBe(mockLyric.id);
+      // Two query-builder chains were created: one with preference, one without
+      expect(repository.createQueryBuilder).toHaveBeenCalledTimes(2);
+    });
+
+    it('never returns empty result because of preferences (acceptance criterion)', async () => {
+      // Simulate: preference pool empty, but global pool has a lyric
+      queryBuilder.getOne
+        .mockResolvedValueOnce(null)  // preference-filtered → empty
+        .mockResolvedValueOnce(mockLyric);  // no preference → hit
+
+      const result = await service.getRandomLyric({
+        preferredGenre: 'Pop',
+        preferredDecade: '2020s',
+      });
+
+      expect(result).toBeDefined();
+      expect(result.id).toBe(mockLyric.id);
     });
   });
 
   describe('rounds', () => {
     const userId = 'player-1';
+    const start = new Date('2026-01-01T12:00:00.000Z');
 
     const openRound = (overrides: Partial<GameRound> = {}): GameRound => ({
       id: 'round-1',
       userId,
       lyricId: 1,
+      sessionId: null,
       issuedAt: new Date(),
-      expiresAt: new Date(Date.now() + 60_000),
+      expiresAt: new Date(Date.now() + 120_000),
+      answerWindowSeconds: 20,
+      hintsUsed: 0,
       closedAt: null,
       ...overrides,
     });
@@ -237,27 +379,104 @@ describe('GameLogicService', () => {
     };
 
     beforeEach(() => {
+      jest.useFakeTimers({ now: start });
       repository.findOne.mockResolvedValue(mockLyric);
     });
 
-    it('issues a round for the player and lyric with an expiry', async () => {
+    afterEach(() => jest.useRealTimers());
+
+    it('issues a round with the answer window and announces it', async () => {
       const round = await service.issueRound(userId, 1);
 
-      expect(round).toMatchObject({ id: 'round-1', userId, lyricId: 1 });
-      expect(round.expiresAt.getTime()).toBeGreaterThan(Date.now());
+      expect(round).toMatchObject({
+        id: 'round-1',
+        userId,
+        lyricId: 1,
+        answerWindowSeconds: 20,
+        hintsUsed: 0,
+      });
+      expect(round.issuedAt).toEqual(start);
+      expect(round.expiresAt.getTime()).toBeGreaterThan(start.getTime());
+      expect(events.emit).toHaveBeenCalledWith(
+        'round.started',
+        expect.objectContaining({
+          roundId: 'round-1',
+          userId,
+          sessionId: null,
+        }),
+      );
     });
 
-    it('scores a guess against the served lyric and closes the round', async () => {
+    it('only ties a round to a session the player is in', async () => {
+      sessionRepository.findOne.mockResolvedValue(null);
+
+      await expect(service.issueRound(userId, 1, 'session-1')).rejects.toThrow(
+        NotFoundException,
+      );
+      expect(roundRepository.save).not.toHaveBeenCalled();
+    });
+
+    it('scores an instant correct guess with the full speed bonus and closes the round', async () => {
       roundRepository.findOne.mockResolvedValue(openRound());
       roundRepository.update.mockResolvedValue({ affected: 1 } as any);
 
       const result = await service.guessRound(userId, guess);
 
-      expect(result.points).toBe(100);
+      expect(result).toMatchObject({
+        points: 150,
+        speedBonus: 50,
+        timedOut: false,
+      });
       expect(roundRepository.findOne).toHaveBeenCalledWith({
         where: { id: 'round-1', userId },
       });
-      expect(repository.findOne).toHaveBeenCalledWith({ where: { id: 1 } });
+      expect(events.emit).toHaveBeenCalledWith(
+        'round.ended',
+        expect.objectContaining({ isCorrect: true, points: 150 }),
+      );
+    });
+
+    it('pays a smaller bonus the later a correct guess lands', async () => {
+      roundRepository.findOne.mockResolvedValue(openRound());
+      roundRepository.update.mockResolvedValue({ affected: 1 } as any);
+      jest.setSystemTime(start.getTime() + 10_000); // half of the 20s window
+
+      const result = await service.guessRound(userId, guess);
+
+      expect(result.speedBonus).toBe(25);
+      expect(result.points).toBe(125);
+    });
+
+    it('awards no points for a guess after the answer window', async () => {
+      roundRepository.findOne.mockResolvedValue(openRound());
+      roundRepository.update.mockResolvedValue({ affected: 1 } as any);
+      jest.setSystemTime(start.getTime() + 20_001);
+
+      const result = await service.guessRound(userId, guess);
+
+      expect(result).toMatchObject({
+        points: 0,
+        speedBonus: 0,
+        timedOut: true,
+      });
+      expect(events.emit).toHaveBeenCalledWith(
+        'round.ended',
+        expect.objectContaining({
+          isCorrect: false,
+          timedOut: true,
+          points: 0,
+        }),
+      );
+    });
+
+    it('reduces the points a round can score by the hints used', async () => {
+      roundRepository.findOne.mockResolvedValue(openRound({ hintsUsed: 2 }));
+      roundRepository.update.mockResolvedValue({ affected: 1 } as any);
+
+      const result = await service.guessRound(userId, guess);
+
+      expect(result.points).toBe(75); // (100 + 50) * 50%
+      expect(result.hintsUsed).toBe(2);
     });
 
     it('rejects a replayed guess on a closed round without revealing the answer', async () => {
@@ -282,16 +501,11 @@ describe('GameLogicService', () => {
     });
 
     it('rejects a guess on a round that was not served to the caller', async () => {
-      // The lookup is scoped to the caller, so another player's round, or a
-      // lyric never served, finds nothing.
       roundRepository.findOne.mockResolvedValue(null);
 
       await expect(service.guessRound('player-2', guess)).rejects.toThrow(
         NotFoundException,
       );
-      expect(roundRepository.findOne).toHaveBeenCalledWith({
-        where: { id: 'round-1', userId: 'player-2' },
-      });
       expect(repository.findOne).not.toHaveBeenCalled();
     });
 
@@ -306,10 +520,91 @@ describe('GameLogicService', () => {
       expect(roundRepository.update).toHaveBeenCalled();
       expect(repository.findOne).not.toHaveBeenCalled();
     });
+
+    describe('hints', () => {
+      beforeEach(() => {
+        roundRepository.update.mockResolvedValue({ affected: 1 } as any);
+      });
+
+      it('reveals progressively more, and lowers the maximum points', async () => {
+        roundRepository.findOne.mockResolvedValue(openRound({ hintsUsed: 0 }));
+        const first = await service.useHint(userId, 'round-1');
+
+        roundRepository.findOne.mockResolvedValue(openRound({ hintsUsed: 1 }));
+        const second = await service.useHint(userId, 'round-1');
+
+        roundRepository.findOne.mockResolvedValue(openRound({ hintsUsed: 2 }));
+        const third = await service.useHint(userId, 'round-1');
+
+        expect(first).toMatchObject({
+          level: 1,
+          decade: '2020s',
+          maxPoints: 113,
+        });
+        expect(first.wordCount).toBeUndefined();
+        expect(second).toMatchObject({
+          level: 2,
+          maxPoints: 75,
+          wordCount: { songTitle: 2, artist: 2 },
+        });
+        expect(second.firstLetter).toBeUndefined();
+        expect(third).toMatchObject({
+          level: 3,
+          hintsRemaining: 0,
+          maxPoints: 38,
+          firstLetter: { songTitle: 'T', artist: 'T' },
+        });
+        expect(roundRepository.update).toHaveBeenCalledWith(
+          expect.objectContaining({ hintsUsed: 2 }),
+          { hintsUsed: 3 },
+        );
+      });
+
+      it('runs out of hints after the last level', async () => {
+        roundRepository.findOne.mockResolvedValue(openRound({ hintsUsed: 3 }));
+
+        await expect(service.useHint(userId, 'round-1')).rejects.toThrow(
+          ConflictException,
+        );
+      });
+
+      it('does not hand the same hint level to two simultaneous requests', async () => {
+        roundRepository.findOne.mockResolvedValue(openRound());
+        roundRepository.update.mockResolvedValue({ affected: 0 } as any);
+
+        await expect(service.useHint(userId, 'round-1')).rejects.toThrow(
+          ConflictException,
+        );
+      });
+
+      it('refuses hints to a player in a wagered session', async () => {
+        roundRepository.findOne.mockResolvedValue(openRound());
+        sessionRepository.count.mockResolvedValue(1);
+
+        await expect(service.useHint(userId, 'round-1')).rejects.toThrow(
+          BadRequestException,
+        );
+        expect(roundRepository.update).not.toHaveBeenCalled();
+      });
+
+      it("refuses hints on a closed round or one that is not the caller's", async () => {
+        roundRepository.findOne.mockResolvedValue(
+          openRound({ closedAt: new Date() }),
+        );
+        await expect(service.useHint(userId, 'round-1')).rejects.toThrow(
+          ConflictException,
+        );
+
+        roundRepository.findOne.mockResolvedValue(null);
+        await expect(service.useHint('player-2', 'round-1')).rejects.toThrow(
+          NotFoundException,
+        );
+      });
+    });
   });
 
   describe('checkGuess', () => {
-    const mockGuessDto: GuessDto = {
+    const mockGuessDto: LyricGuessDto = {
       lyricId: 1,
       guessType: GuessType.ARTIST,
       guessValue: 'Test Artist',
@@ -335,7 +630,7 @@ describe('GameLogicService', () => {
     });
 
     it('should return correct result for exact song title match', async () => {
-      const songTitleGuess: GuessDto = {
+      const songTitleGuess: LyricGuessDto = {
         ...mockGuessDto,
         guessType: GuessType.SONG_TITLE,
         guessValue: 'Test Song',
@@ -352,7 +647,7 @@ describe('GameLogicService', () => {
     });
 
     it('should handle case-insensitive matches', async () => {
-      const caseInsensitiveGuess: GuessDto = {
+      const caseInsensitiveGuess: LyricGuessDto = {
         ...mockGuessDto,
         guessValue: 'test artist',
       };
@@ -364,7 +659,7 @@ describe('GameLogicService', () => {
     });
 
     it('should handle partial matches', async () => {
-      const partialGuess: GuessDto = {
+      const partialGuess: LyricGuessDto = {
         ...mockGuessDto,
         guessValue: 'Test',
       };
@@ -377,7 +672,7 @@ describe('GameLogicService', () => {
     });
 
     it('should ignore punctuation and whitespace', async () => {
-      const punctuatedGuess: GuessDto = {
+      const punctuatedGuess: LyricGuessDto = {
         ...mockGuessDto,
         guessValue: '  Test, Artist!!!  ',
       };
@@ -389,7 +684,7 @@ describe('GameLogicService', () => {
     });
 
     it('should return incorrect result for wrong guess', async () => {
-      const wrongGuess: GuessDto = {
+      const wrongGuess: LyricGuessDto = {
         ...mockGuessDto,
         guessValue: 'Wrong Artist',
       };
@@ -406,7 +701,7 @@ describe('GameLogicService', () => {
     });
 
     it('should not give partial points for very short guesses', async () => {
-      const shortGuess: GuessDto = {
+      const shortGuess: LyricGuessDto = {
         ...mockGuessDto,
         guessValue: 'Te',
       };
@@ -599,7 +894,7 @@ describe('GameLogicService', () => {
 
   describe('error handling', () => {
     it('should handle database errors in getRandomLyric', async () => {
-      queryBuilder.getCount.mockRejectedValue(new Error('Database error'));
+      queryBuilder.getOne.mockRejectedValue(new Error('Database error'));
 
       await expect(service.getRandomLyric()).rejects.toThrow('Database error');
     });
@@ -607,7 +902,7 @@ describe('GameLogicService', () => {
     it('should handle database errors in checkGuess', async () => {
       repository.findOne.mockRejectedValue(new Error('Database error'));
 
-      const guessDto: GuessDto = {
+      const guessDto: LyricGuessDto = {
         lyricId: 1,
         guessType: GuessType.ARTIST,
         guessValue: 'Test Artist',

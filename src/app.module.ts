@@ -18,12 +18,16 @@ import { envValidationSchema } from './config/env.validation';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { AdminModule } from './admin/admin.module';
 import { GameModule } from './game/game.module';
+import { RealtimeModule } from './realtime/realtime.module';
+import { ChallengesModule } from './challenges/challenges.module';
 import { TokensModule } from './tokens/tokens.module';
 import { GameHistoryModule } from './game-history/game-history.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { XpModule } from './xp-level/xp.module';
 import { AuditModule } from './audit/audit.module';
-import { APP_FILTER, APP_GUARD } from '@nestjs/core';
+import { MetricsModule } from './metrics/metrics.module';
+import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
+import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { AppThrottlerGuard } from './common/throttler/app-throttler.guard';
 import { defaultThrottle } from './common/throttler/throttle.config';
@@ -179,12 +183,15 @@ import type { LoggingOptions } from 'typeorm';
     RoomsModule,
     AdminModule,
     GameModule,
+    RealtimeModule,
+    ChallengesModule,
     TokensModule,
     GameHistoryModule,
     NotificationsModule,
     XpModule,
     AuditModule,
     HealthModule,
+    MetricsModule,
   ],
   controllers: [AppController],
   providers: [
@@ -192,6 +199,7 @@ import type { LoggingOptions } from 'typeorm';
     { provide: APP_GUARD, useClass: AppThrottlerGuard },
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
+    { provide: APP_INTERCEPTOR, useClass: LoggingInterceptor },
   ],
 })
 export class AppModule implements NestModule {

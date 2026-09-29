@@ -18,6 +18,7 @@ describe('GameController', () => {
             checkGuess: jest.fn(),
             issueRound: jest.fn(),
             guessRound: jest.fn(),
+            useHint: jest.fn(),
             getLyricStats: jest.fn(),
           },
         },
@@ -48,7 +49,7 @@ describe('GameController', () => {
       id: 'player-1',
     } as any);
 
-    expect(service.issueRound).toHaveBeenCalledWith('player-1', 7);
+    expect(service.issueRound).toHaveBeenCalledWith('player-1', 7, undefined);
     expect(result).toMatchObject({ roundId: 'round-9', expiresAt, id: 7 });
     expect(result).not.toHaveProperty('artist');
     expect(result).not.toHaveProperty('songTitle');
@@ -75,5 +76,24 @@ describe('GameController', () => {
 
     expect(service.guessRound).toHaveBeenCalledWith('player-1', dto);
     expect(service.checkGuess).not.toHaveBeenCalled();
+  });
+
+  it("reveals the next hint for the caller's round", async () => {
+    const service = controller[
+      'gameLogicService'
+    ] as jest.Mocked<GameLogicService>;
+    service.useHint.mockResolvedValue({
+      level: 1,
+      hintsRemaining: 2,
+      maxPoints: 113,
+      decade: '2020s',
+    });
+
+    const result = await controller.useHint('round-1', {
+      id: 'player-1',
+    } as any);
+
+    expect(service.useHint).toHaveBeenCalledWith('player-1', 'round-1');
+    expect(result.decade).toBe('2020s');
   });
 });
