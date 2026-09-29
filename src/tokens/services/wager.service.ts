@@ -25,6 +25,7 @@ import {
 } from '../../stellar/amount.util';
 import type { UnsignedTransaction } from '../../stellar/services/stellar-rpc.service';
 import { sanitizeForDisplay } from '../../common/utils/sanitize.util';
+import { InFlightSettlementTracker } from './in-flight-settlement.tracker';
 
 export interface CreateWagerDto {
   sessionId: string;
@@ -74,6 +75,7 @@ export class WagerService {
     @Inject(TOKEN_SERVICE)
     private readonly tokenService: ITokenService,
     private readonly configService: ConfigService,
+    private readonly settlementTracker: InFlightSettlementTracker,
   ) {}
 
   /**
@@ -690,6 +692,9 @@ export class WagerService {
    *
    * A result that is neither confirmed nor failed — submitted but unseen —
    * leaves the wager in `SETTLING` with its hash recorded, for reconciliation.
+   *
+   * The operation is registered with {@link InFlightSettlementTracker} so that
+   * the process can drain it on SIGTERM before exiting.
    */
   private async settle(
     wager: Wager,
@@ -699,7 +704,17 @@ export class WagerService {
     wager.status = WagerStatus.SETTLING;
     await this.wagerRepository.save(wager);
 
-    const result = await perform();
+    // Register with the tracker so a concurrent SIGTERM will wait for this
+    // operation to finish (up to SETTLEMENT_DRAIN_TIMEOUT_MS) before the
+    // process exits.
+    const done = this.settlementTracker.register(wager.sessionId);
+
+    let result: TokenTransactionResult;
+    try {
+      result = await perform();
+    } finally {
+      done();
+    }
 
     wager.settlementTxHash = result.txHash ?? null;
 

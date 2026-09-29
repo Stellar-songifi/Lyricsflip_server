@@ -11,6 +11,7 @@ import {
   TokenTransactionResult,
 } from '../interfaces/token.interface';
 import { toStroops } from '../../stellar/amount.util';
+import { InFlightSettlementTracker } from './in-flight-settlement.tracker';
 
 const SESSION_ID = 'session-123';
 const STAKE = toStroops('10');
@@ -104,6 +105,7 @@ describe('WagerService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         WagerService,
+        InFlightSettlementTracker,
         { provide: getRepositoryToken(Wager), useValue: mockWagerRepository },
         { provide: getRepositoryToken(User), useValue: mockUserRepository },
         { provide: TOKEN_SERVICE, useValue: mockTokenService },

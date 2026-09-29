@@ -22,6 +22,11 @@ async function bootstrap() {
   app.useLogger(winstonLogger);
   app.flushLogs();
 
+  // Enable NestJS lifecycle shutdown hooks so SIGTERM/SIGINT trigger
+  // onApplicationShutdown() on services that implement it (e.g.
+  // InFlightSettlementTracker drains in-flight settlements before exit).
+  app.enableShutdownHooks();
+
   // Realtime events fan out through Redis when REDIS_URL is set, so every
   // instance can reach every connected player.
   if (process.env.REDIS_URL) {
