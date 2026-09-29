@@ -14,6 +14,14 @@ import {
 } from '@nestjs/common';
 
 import { Throttle } from '@nestjs/throttler';
+import {
+  ApiBearerAuth,
+  ApiBody,
+  ApiOperation,
+  ApiQuery,
+  ApiResponse,
+  ApiTags,
+} from '@nestjs/swagger';
 import { guessThrottle } from '../common/throttler/throttle.config';
 import {
   GameLyricResponse,
@@ -28,6 +36,7 @@ import { GuessDto } from './dto/guess.dto';
 import { GetUser } from 'src/auth/decorators/user.decorator';
 import { User } from 'src/users/entities/user.entity';
 
+@ApiTags('game')
 @Controller('game')
 export class GameController {
   private readonly logger = new Logger(GameController.name);
@@ -37,6 +46,17 @@ export class GameController {
   /**
    * GET /game/lyric - Get a random lyric for the game
    */
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({ summary: 'Get a random lyric for the current game round' })
+  @ApiQuery({ name: 'category', required: false, type: String })
+  @ApiQuery({ name: 'decade', required: false, type: String })
+  @ApiQuery({ name: 'genre', required: false, type: String })
+  @ApiQuery({ name: 'excludeIds', required: false, type: [Number] })
+  @ApiResponse({
+    status: 200,
+    description: 'A playable lyric and a round id.',
+    type: Object,
+  })
   @Get('lyric')
   async getRandomLyric(
     @Query(new ValidationPipe({ transform: true }))
@@ -82,6 +102,18 @@ export class GameController {
   /**
    * GET /game/lyrics/multiple - Get multiple random lyrics
    */
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({ summary: 'Get multiple random lyrics for the current user' })
+  @ApiQuery({ name: 'count', required: true, type: Number })
+  @ApiQuery({ name: 'category', required: false, type: String })
+  @ApiQuery({ name: 'decade', required: false, type: String })
+  @ApiQuery({ name: 'genre', required: false, type: String })
+  @ApiQuery({ name: 'excludeIds', required: false, type: [Number] })
+  @ApiResponse({
+    status: 200,
+    description: 'A list of playable lyrics.',
+    type: [Object],
+  })
   @Get('lyrics/multiple')
   async getMultipleRandomLyrics(
     @Query(new ValidationPipe({ transform: true })) options: MultipleLyricsDto,
@@ -131,6 +163,15 @@ export class GameController {
    * POST /game/guess - Submit a guess for evaluation
    */
   @Throttle(guessThrottle)
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({ summary: 'Submit a guess for the active round' })
+  @ApiBody({ type: GuessDto })
+  @ApiResponse({
+    status: 200,
+    description: 'The guess result including correctness and points.',
+    type: Object,
+  })
+  @ApiResponse({ status: 400, description: 'Invalid guess payload or guess not allowed.' })
   @Post('guess')
   @HttpCode(HttpStatus.OK)
   async checkGuess(
@@ -181,6 +222,13 @@ export class GameController {
   /**
    * GET /game/stats - Get statistics about available lyrics
    */
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({ summary: 'Get lyrical stats for the available pool' })
+  @ApiResponse({
+    status: 200,
+    description: 'Aggregate lyric statistics.',
+    type: Object,
+  })
   @Get('stats')
   async getLyricStats(
     @Query(new ValidationPipe({ transform: true }))

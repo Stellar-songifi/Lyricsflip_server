@@ -16,6 +16,7 @@
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
     "lint:check": "eslint \"{src,apps,libs,test}/**/*.ts\"",
     "lint:migrations": "bash scripts/check-migration-location.sh",
+    "openapi:export": "node -r ts-node/register/transpile-only -r tsconfig-paths/register -e \"const fs=require('fs'); const { NestFactory } = require('@nestjs/core'); const { SwaggerModule, DocumentBuilder } = require('@nestjs/swagger'); const { AppModule } = require('./src/app.module'); (async () => { const app = await NestFactory.create(AppModule); const document = SwaggerModule.createDocument(app, new DocumentBuilder().setTitle('LyricFlip API').setDescription('API documentation for LyricFlip backend').setVersion('1.0').addBearerAuth({ type: 'http', scheme: 'bearer', bearerFormat: 'JWT', in: 'header', name: 'Authorization' }, 'JWT-auth').build()); fs.writeFileSync('openapi.json', JSON.stringify(document, null, 2)); await app.close(); })().catch((error) => { console.error(error); process.exit(1); });\"",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",

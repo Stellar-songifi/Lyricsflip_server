@@ -105,6 +105,7 @@ export class UsersService {
     };
   }
 
+  /**
    * Returns the richer self-service profile for the authenticated user:
    * the user record, its level title, the linked wallet, a balance summary
    * and gameplay stats.
@@ -431,16 +432,6 @@ export class UsersService {
     }));
 
     const result = {
-      data: users.map((user, idx) => ({
-        ...user,
-        rank: offset + idx + 1,
-      })),
-      total,
-      limit,
-      offset,
-    };
-
-    await this.cacheManager.set(cacheKey, result, cacheConfig.ttl * 1000);
       data,
       meta: {
         total,
@@ -452,6 +443,7 @@ export class UsersService {
         genre: genre ?? null,
       },
     };
+
     await this.cacheManager.set(
       cacheKey,
       result,
@@ -459,7 +451,10 @@ export class UsersService {
     );
 
     if (currentUserId) {
-      return { ...result, myRank: await this.getMyRank(currentUserId, period, genre) };
+      return {
+        ...result,
+        myRank: await this.getMyRank(currentUserId, period, genre),
+      };
     }
     return result;
   }

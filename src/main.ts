@@ -48,9 +48,23 @@ async function bootstrap() {
     .setTitle('LyricFlip API')
     .setDescription('API documentation for LyricFlip backend')
     .setVersion('1.0')
+    .addBearerAuth(
+      {
+        type: 'http',
+        scheme: 'bearer',
+        bearerFormat: 'JWT',
+        in: 'header',
+        name: 'Authorization',
+      },
+      'JWT-auth',
+    )
     .build();
   const document = SwaggerModule.createDocument(app, config);
-  SwaggerModule.setup('api/docs', app, document);
+  SwaggerModule.setup('api/docs', app, document, {
+    swaggerOptions: {
+      persistAuthorization: true,
+    },
+  });
 
   // CORS must be registered before the server starts listening, otherwise the
   // configuration is not applied to the running HTTP adapter. FRONTEND_URL may
