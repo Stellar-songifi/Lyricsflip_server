@@ -133,34 +133,52 @@ import type { LoggingOptions } from 'typeorm';
           250,
         );
 
+        const primary = {
+          host: dbHost,
+          port: dbPort,
+          username: dbUsername,
+          password: dbPassword,
+          database: dbName,
+        };
+
+        // Replication is only configured when DB_REPLICA_HOST is set, so a
+        // single-database setup has no replication layer at all.
+        const replicaHost = configService.get<string>('DB_REPLICA_HOST');
+        const replicaPort = configService.get<string>('DB_REPLICA_PORT');
+        const connection = replicaHost
+          ? {
+              replication: {
+                master: primary,
+                slaves: [
+                  {
+                    host: replicaHost,
+                    port: replicaPort ? parseInt(replicaPort, 10) : dbPort,
+                    username: configService.get<string>(
+                      'DB_REPLICA_USERNAME',
+                      dbUsername,
+                    ),
+                    password: configService.get<string>(
+                      'DB_REPLICA_PASSWORD',
+                      dbPassword,
+                    ),
+                    database: configService.get<string>(
+                      'DB_REPLICA_NAME',
+                      dbName,
+                    ),
+                  },
+                ],
+                // Every query goes to the primary by default, so write-then-read
+                // flows (wagers, balances, auth) never see replica lag. The
+                // replica is used only by code that explicitly opens a
+                // `dataSource.createQueryRunner('slave')`.
+                defaultMode: 'master' as const,
+              },
+            }
+          : primary;
+
         return {
           type: 'postgres',
-
-          // --- Read/Write Splitting Configuration ---
-          replication: {
-            master: {
-              host: dbHost,
-              port: dbPort,
-              username: dbUsername,
-              password: dbPassword,
-              database: dbName,
-            },
-            slaves: [
-              {
-                host: configService.get<string>('DB_REPLICA_HOST', dbHost),
-                port: configService.get<number>('DB_REPLICA_PORT', dbPort),
-                username: configService.get<string>(
-                  'DB_REPLICA_USERNAME',
-                  dbUsername,
-                ),
-                password: configService.get<string>(
-                  'DB_REPLICA_PASSWORD',
-                  dbPassword,
-                ),
-                database: configService.get<string>('DB_REPLICA_NAME', dbName),
-              },
-            ],
-          },
+          ...connection,
 
           entities: [__dirname + '/**/*.entity{.ts,.js}'],
           synchronize: false,
