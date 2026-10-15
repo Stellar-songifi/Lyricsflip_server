@@ -17,7 +17,25 @@ import * as Joi from 'joi';
   LOG_LEVEL: Joi.string()
   .valid('error', 'warn', 'log', 'debug', 'verbose')
   .default('debug'),
-  FRONTEND_URL: Joi.string().uri().default('http://localhost:3000'),
+ FRONTEND_URL: Joi.string()
+  .custom((value, helpers) => {
+    const origins = value.split(',').map((origin: string) => origin.trim());
+
+    const valid = origins.every((origin: string) => {
+      try {
+        const url = new URL(origin);
+        return (
+          (url.protocol === 'http:' || url.protocol === 'https:') &&
+          url.origin === origin
+        );
+      } catch {
+        return false;
+      }
+    });
+
+    return valid ? value : helpers.error('string.uri');
+  })
+  .default('http://localhost:3000'),
 
 // Auth
 JWT_SECRET: Joi.string()
