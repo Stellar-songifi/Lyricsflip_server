@@ -1,3 +1,8 @@
-export function getHorizonUrl(): string {
-  return process.env.STELLAR_HORIZON_URL || "https://horizon-testnet.stellar.org";
+import { ConfigService } from '@nestjs/config';
+
+export function getHorizonUrl(configService?: ConfigService): string {
+  return (
+    configService?.get<string>('STELLAR_HORIZON_URL') ??
+    'https://horizon-testnet.stellar.org'
+  );
 }

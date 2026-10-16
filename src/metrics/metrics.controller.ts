@@ -11,6 +11,7 @@ import { Request, Response } from 'express';
 import { ApiExcludeController } from '@nestjs/swagger';
 import { MetricsService } from './metrics.service';
 import { Public } from '../auth/decorators/public.decorator';
+import { ConfigService } from '@nestjs/config';
 
 /**
  * Exposes the Prometheus /metrics endpoint.
@@ -32,12 +33,15 @@ import { Public } from '../auth/decorators/public.decorator';
 export class MetricsController {
   private readonly logger = new Logger(MetricsController.name);
 
-  constructor(private readonly metricsService: MetricsService) {}
+  constructor(
+    private readonly metricsService: MetricsService,
+    private readonly configService: ConfigService,
+  ) {}
 
   @Get()
   async getMetrics(@Req() req: Request, @Res() res: Response): Promise<void> {
     // --- IP allowlist ---
-    const allowlist = process.env.METRICS_IP_ALLOWLIST;
+    const allowlist = this.configService.get<string>('METRICS_IP_ALLOWLIST');
     if (allowlist) {
       const allowed = allowlist.split(',').map((ip) => ip.trim());
       const forwarded = req.headers['x-forwarded-for'] as string | undefined;
@@ -51,7 +55,9 @@ export class MetricsController {
     }
 
     // --- Basic auth ---
-    const expectedCredentials = process.env.METRICS_BASIC_AUTH;
+    const expectedCredentials = this.configService.get<string>(
+      'METRICS_BASIC_AUTH',
+    );
     if (expectedCredentials) {
       const authHeader = req.headers['authorization'];
       if (!authHeader?.startsWith('Basic ')) {

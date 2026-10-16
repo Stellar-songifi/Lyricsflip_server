@@ -1,4 +1,5 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { DataSource, LessThan, Repository } from 'typeorm';
@@ -31,12 +32,8 @@ export class WagerReconcileJob {
     private readonly wagerRepository: Repository<Wager>,
     private readonly wagerService: WagerService,
     private readonly dataSource: DataSource,
+    @Optional() private readonly configService?: ConfigService,
   ) {}
-
-  private envInt(name: string, fallback: number): number {
-    const parsed = Number.parseInt(process.env[name] ?? '', 10);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-  }
 
   @Cron(CronExpression.EVERY_MINUTE)
   async sweep(): Promise<void> {
@@ -68,9 +65,14 @@ export class WagerReconcileJob {
   }
 
   async reconcileStuckWagers(): Promise<void> {
-    const minAgeMs = this.envInt('WAGER_RECONCILE_MIN_AGE_SECONDS', 120) * 1000;
-    const maxAttempts = this.envInt('WAGER_RECONCILE_MAX_ATTEMPTS', 8);
-    const baseDelayMs = this.envInt('WAGER_RECONCILE_BASE_DELAY_SECONDS', 60) * 1000;
+    const minAgeMs =
+      (this.configService?.get<number>('WAGER_RECONCILE_MIN_AGE_SECONDS') ??
+        60) * 1000;
+    const maxAttempts =
+      this.configService?.get<number>('WAGER_RECONCILE_MAX_ATTEMPTS') ?? 5;
+    const baseDelayMs =
+      (this.configService?.get<number>('WAGER_RECONCILE_BASE_DELAY_SECONDS') ??
+        5) * 1000;
 
     const stuck = await this.wagerRepository.find({
       where: {

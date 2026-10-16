@@ -2,6 +2,7 @@ import { Injectable, LoggerService as NestLoggerService } from '@nestjs/common';
 import * as winston from 'winston';
 import * as DailyRotateFile from 'winston-daily-rotate-file';
 import { getRequestId } from '../request-context';
+import { ConfigService } from '@nestjs/config';
 
 /**
  * Winston-backed NestJS logger.
@@ -22,10 +23,13 @@ import { getRequestId } from '../request-context';
 export class LoggerService implements NestLoggerService {
   private readonly logger: winston.Logger;
 
-  constructor() {
-    const isProduction = process.env.NODE_ENV === 'production';
-    const logToFile = process.env.LOG_TO_FILE === 'true';
-    const level = process.env.LOG_LEVEL || (isProduction ? 'info' : 'debug');
+  constructor(configService: ConfigService) {
+    const isProduction =
+      configService.get<string>('NODE_ENV') === 'production';
+    const logToFile = configService.get<string>('LOG_TO_FILE') === 'true';
+    const level =
+      configService.get<string>('LOG_LEVEL') ||
+      (isProduction ? 'info' : 'debug');
 
     // ------------------------------------------------------------------
     // Formats

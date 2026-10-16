@@ -24,6 +24,8 @@ interface GameSession {
   seenLyricIds: Set<number>;
 }
 
+let frontendOrigin = 'http://localhost:3000';
+
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
 @WebSocketGateway({
   cors: {
@@ -32,8 +34,7 @@ interface GameSession {
       origin: string | undefined,
       callback: (err: Error | null, allow?: boolean) => void,
     ) => {
-      const allowed = process.env.FRONTEND_URL || 'http://localhost:3000';
-      callback(null, !origin || origin === allowed);
+      callback(null, !origin || origin === frontendOrigin);
     },
     credentials: true,
   },
@@ -50,7 +51,11 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     private readonly gameLogicService: GameLogicService,
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
-  ) {}
+  ) {
+    frontendOrigin =
+      this.configService.get<string>('FRONTEND_URL') ??
+      'http://localhost:3000';
+  }
 
   private extractToken(client: Socket): string | undefined {
     const authToken = client.handshake.auth?.token;

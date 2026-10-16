@@ -14,6 +14,8 @@ import {
   OnApplicationShutdown,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { ConfigService } from '@nestjs/config';
+import { Optional } from '@nestjs/common';
 import { LessThan, Repository } from 'typeorm';
 import {
   GameSession,
@@ -68,9 +70,6 @@ export class GameSessionsService {
   /** Every settlement decision is written here: who, with what, and the result. */
   private readonly auditLogger = new Logger('SettlementAudit');
 /** How long player two has to accept an invitation. */
-const INVITATION_TTL_MS =
-  Number(process.env.INVITATION_TTL_MINUTES ?? 30) * 60 * 1000;
-
 /** How often unanswered invitations are swept up and refunded. */
 const INVITATION_SWEEP_INTERVAL_MS = 60 * 1000;
 
@@ -89,7 +88,16 @@ export class GameSessionsService
     private readonly wagerService: WagerService,
     @Inject(TOKEN_SERVICE)
     private readonly tokenService: ITokenService,
+    @Optional() private readonly configService?: ConfigService,
   ) {}
+
+  private get invitationTtlMs(): number {
+    return (
+      (this.configService?.get<number>('INVITATION_TTL_MINUTES') ?? 30) *
+      60 *
+      1000
+    );
+  }
 
   async create(
     createGameSessionDto: CreateGameSessionDto,
@@ -284,7 +292,7 @@ export class GameSessionsService
     const expired = await this.gameSessionRepository.find({
       where: {
         status: GameSessionStatus.WAITING_FOR_PLAYER,
-        createdAt: LessThan(new Date(Date.now() - INVITATION_TTL_MS)),
+        createdAt: LessThan(new Date(Date.now() - this.invitationTtlMs)),
       },
     });
 
@@ -351,7 +359,7 @@ export class GameSessionsService
   }
 
   private isExpired(gameSession: GameSession): boolean {
-    return gameSession.createdAt.getTime() <= Date.now() - INVITATION_TTL_MS;
+    return gameSession.createdAt.getTime() <= Date.now() - this.invitationTtlMs;
   }
 
   async findAll(): Promise<GameSession[]> {

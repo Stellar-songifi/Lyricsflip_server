@@ -13,8 +13,6 @@ import { RedisIoAdapter } from './realtime/redis-io.adapter';
 async function bootstrap() {
   // Instantiate the Winston logger before the app so bootstrap messages
   // also go through it.
-  const winstonLogger = new LoggerService();
-
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     // Suppress Nest's default console logger; our Winston instance takes over.
     bufferLogs: true,
@@ -22,6 +20,7 @@ async function bootstrap() {
 
   // Get validated application configuration.
   const configService = app.get(ConfigService);
+  const winstonLogger = new LoggerService(configService);
 
   // Register Winston as the app-wide logger (replaces Nest's default).
   app.useLogger(winstonLogger);

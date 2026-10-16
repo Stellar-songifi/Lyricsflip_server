@@ -105,6 +105,8 @@ STELLAR_CUSTODY_MODE: Joi.string()
 STELLAR_KEY_STORE: Joi.string().valid('env', 'kms', 'vault').default('env'),
 STELLAR_RPC_URL: Joi.string().uri().optional(),
 STELLAR_HORIZON_URL: Joi.string().uri().optional(),
+STELLAR_MAX_FEE: Joi.string().pattern(/^\d+$/).default('1000000'),
+STELLAR_STAKE_TX_TIMEOUT_SECONDS: Joi.number().integer().min(1).default(180),
 STELLAR_NETWORK_PASSPHRASE: Joi.string().optional(),
 STELLAR_ESCROW_CONTRACT_ID: Joi.string().optional().allow(''),
 STELLAR_TOKEN_CONTRACT_ID: Joi.string().optional().allow(''),

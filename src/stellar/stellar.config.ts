@@ -61,6 +61,11 @@ export interface StellarConfig {
    * window needs to be configurable per deployment (`STELLAR_STAKE_TX_TIMEOUT_SECONDS`).
    */
   readonly stakeTxTimeoutSeconds: number;
+  readonly maxFee: string;
+  readonly tryAgainMaxAttempts: number;
+  readonly tryAgainBaseDelayMs: number;
+  readonly pollAttempts: number;
+  readonly pollSleepStrategy: 'basic' | 'linear';
 }
 
 const NETWORK_PASSPHRASES: Record<string, string> = {
@@ -155,6 +160,15 @@ export function loadStellarConfig(configService: ConfigService): StellarConfig {
     isTestNetwork: network !== 'public',
     stakeTxTimeoutSeconds:
       configService.get<number>('STELLAR_STAKE_TX_TIMEOUT_SECONDS') ?? 180,
+    maxFee: configService.get<string>('STELLAR_MAX_FEE') ?? '1000000',
+    tryAgainMaxAttempts:
+      configService.get<number>('STELLAR_TRY_AGAIN_MAX_ATTEMPTS') ?? 5,
+    tryAgainBaseDelayMs:
+      configService.get<number>('STELLAR_TRY_AGAIN_BASE_DELAY_MS') ?? 500,
+    pollAttempts: configService.get<number>('STELLAR_POLL_ATTEMPTS') ?? 15,
+    pollSleepStrategy:
+      configService.get<'basic' | 'linear'>('STELLAR_POLL_SLEEP_STRATEGY') ??
+      'linear',
   };
 
   if (config.settlementMode === 'stellar') {
