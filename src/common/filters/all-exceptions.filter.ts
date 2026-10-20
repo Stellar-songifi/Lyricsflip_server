@@ -9,6 +9,8 @@ import {
 import { randomUUID } from 'crypto';
 import { QueryFailedError } from 'typeorm';
 import { Request, Response } from 'express';
+import { ConfigService } from '@nestjs/config';
+import { Optional } from '@nestjs/common';
 
 export interface ErrorResponse {
   statusCode: number;
@@ -37,7 +39,8 @@ export interface ErrorResponse {
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
   private readonly logger = new Logger(AllExceptionsFilter.name);
-  private readonly isProduction = process.env.NODE_ENV === 'production';
+
+  constructor(@Optional() private readonly configService?: ConfigService) {}
 
   catch(exception: unknown, host: ArgumentsHost): void {
     const ctx = host.switchToHttp();
@@ -45,9 +48,16 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const response = ctx.getResponse<Response>();
 
     const requestId = this.resolveRequestId(request, response);
-    const errorResponse = this.formatError(exception, request, requestId);
+    const isProduction =
+      this.configService?.get<string>('NODE_ENV') === 'production';
+    const errorResponse = this.formatError(
+      exception,
+      request,
+      requestId,
+      isProduction,
+    );
 
-    this.logError(exception, request, requestId);
+    this.logError(exception, request, requestId, isProduction);
 
     response.status(errorResponse.statusCode).json(errorResponse);
   }
@@ -71,6 +81,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
     exception: unknown,
     request: Request,
     requestId: string,
+    isProduction: boolean,
   ): ErrorResponse {
     const timestamp = new Date().toISOString();
     const path = request.url;
@@ -106,7 +117,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
     return {
       statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
-      message: this.isProduction ? 'Internal server error' : message,
+      message: isProduction ? 'Internal server error' : message,
       error: 'Internal Server Error',
       timestamp,
       path,
@@ -129,6 +140,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
     path: string,
     method: string,
     requestId: string,
+    isProduction: boolean,
   ): ErrorResponse {
     let statusCode = HttpStatus.INTERNAL_SERVER_ERROR;
     let message = 'Database error occurred';
@@ -156,7 +168,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
     return {
       statusCode,
-      message: this.isProduction ? message : error.message,
+      message: isProduction ? message : error.message,
       error: this.getErrorName(statusCode),
       timestamp,
       path,
@@ -165,7 +177,12 @@ export class AllExceptionsFilter implements ExceptionFilter {
     };
   }
 
-  private logError(exception: unknown, request: Request, requestId: string): void {
+  private logError(
+    exception: unknown,
+    request: Request,
+    requestId: string,
+    isProduction: boolean,
+  ): void {
     const { method, url, ip, headers } = request;
     const userAgent = headers['user-agent'] || 'Unknown';
     const name = exception instanceof Error ? exception.name : 'UnknownError';
@@ -183,7 +200,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
       errorMessage: message,
     };
 
-    if (!this.isProduction && stack) {
+    if (!isProduction && stack) {
       this.logger.error(`Error occurred: ${name} - ${message}`, stack, context);
     } else {
       this.logger.error(`Error occurred: ${name} - ${message}`, context);

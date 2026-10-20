@@ -11,13 +11,17 @@ import { Reflector } from '@nestjs/core';
  * Shared by main.ts and the e2e tests so tests exercise the same pipeline
  * production does.
  */
-export function configureApp(app: INestApplication): void {
+export function configureApp(
+  app: INestApplication,
+  nodeEnv: string = 'development',
+  frontendUrl: string = 'http://localhost:3000',
+): void {
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
       forbidNonWhitelisted: true,
       transform: true,
-      disableErrorMessages: process.env.NODE_ENV === 'production',
+      disableErrorMessages: nodeEnv === 'production',
     }),
   );
 
@@ -28,7 +32,7 @@ export function configureApp(app: INestApplication): void {
   // CORS must be registered before the HTTP adapter starts listening,
   // otherwise the configuration is never applied to the running server.
   app.enableCors({
-    origin: parseAllowedOrigins(process.env.FRONTEND_URL),
+    origin: parseAllowedOrigins(frontendUrl),
     credentials: true,
   });
 }

@@ -1,4 +1,10 @@
-import { Injectable, Logger, OnApplicationShutdown } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnApplicationShutdown,
+  Optional,
+} from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 
 /**
  * Tracks in-flight settlement operations so the process can drain them
@@ -27,14 +33,16 @@ export class InFlightSettlementTracker implements OnApplicationShutdown {
    */
   private readonly pending = new Map<string, Promise<void>>();
 
+  constructor(@Optional() private readonly configService?: ConfigService) {}
+
   /**
    * How long (ms) to wait for in-flight settlements to finish on shutdown.
    * Configurable via SETTLEMENT_DRAIN_TIMEOUT_MS; defaults to 30 seconds.
    */
   private get drainTimeoutMs(): number {
-    const raw = process.env['SETTLEMENT_DRAIN_TIMEOUT_MS'];
-    const parsed = raw ? Number(raw) : NaN;
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : 30_000;
+    return (
+      this.configService?.get<number>('SETTLEMENT_DRAIN_TIMEOUT_MS') ?? 30_000
+    );
   }
 
   /**

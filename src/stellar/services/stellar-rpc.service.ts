@@ -23,12 +23,6 @@ import {
 import type { StellarConfig } from '../stellar.config';
 import { MetricsService } from '../../metrics/metrics.service';
 
-/** Reads a non-negative integer from the environment, with a default. */
-function envInt(name: string, fallback: number): number {
-  const parsed = Number.parseInt(process.env[name] ?? '', 10);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
-}
-
 /** Outcome of submitting a transaction to the network. */
 export interface SubmitResult {
   /** Transaction hash — the canonical on-chain identifier, always present. */
@@ -143,7 +137,7 @@ export class StellarRpcService {
 
   /** Fee ceiling in stroops, from `STELLAR_MAX_FEE` (default 0.1 XLM). */
   get maxFee(): bigint {
-    const raw = process.env.STELLAR_MAX_FEE;
+    const raw = this.config.maxFee;
     return raw && /^\d+$/.test(raw) && BigInt(raw) > 0n
       ? BigInt(raw)
       : BigInt(DEFAULT_MAX_FEE);
@@ -304,8 +298,8 @@ export class StellarRpcService {
     const hash = this.hashHex(transaction);
     const start = Date.now();
 
-    const maxRetries = envInt('STELLAR_TRY_AGAIN_MAX_ATTEMPTS', 5);
-    const baseDelayMs = envInt('STELLAR_TRY_AGAIN_BASE_DELAY_MS', 500);
+    const maxRetries = this.config.tryAgainMaxAttempts;
+    const baseDelayMs = this.config.tryAgainBaseDelayMs;
 
     let sent: rpc.Api.SendTransactionResponse;
     for (let attempt = 0; ; attempt++) {
@@ -375,9 +369,9 @@ export class StellarRpcService {
   async waitForConfirmation(hash: string): Promise<SubmitResult> {
     try {
       const result = await this.server.pollTransaction(hash, {
-        attempts: envInt('STELLAR_POLL_ATTEMPTS', 15),
+        attempts: this.config.pollAttempts,
         sleepStrategy:
-          process.env.STELLAR_POLL_SLEEP_STRATEGY === 'basic'
+          this.config.pollSleepStrategy === 'basic'
             ? rpc.BasicSleepStrategy
             : rpc.LinearSleepStrategy,
       });

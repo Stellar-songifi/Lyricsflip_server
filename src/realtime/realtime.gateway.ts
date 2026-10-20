@@ -37,6 +37,8 @@ export type SubscribeAck =
   | { ok: true; room: string }
   | { ok: false; error: string };
 
+let frontendOrigin = 'http://localhost:3000';
+
 /**
  * Pushes game events to connected players in real time.
  *
@@ -55,8 +57,7 @@ export type SubscribeAck =
       origin: string | undefined,
       callback: (err: Error | null, allow?: boolean) => void,
     ) => {
-      const allowed = process.env.FRONTEND_URL || 'http://localhost:3000';
-      callback(null, !origin || origin === allowed);
+      callback(null, !origin || origin === frontendOrigin);
     },
     credentials: true,
   },
@@ -68,6 +69,12 @@ export class RealtimeGateway
   server: Server;
 
   private readonly logger = new Logger(RealtimeGateway.name);
+
+  constructor(private readonly configService: ConfigService) {
+    frontendOrigin =
+      this.configService.get<string>('FRONTEND_URL') ??
+      'http://localhost:3000';
+  }
 
   constructor(
     private readonly jwtService: JwtService,
