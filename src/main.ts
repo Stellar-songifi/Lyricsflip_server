@@ -9,6 +9,7 @@ import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { LoggerService } from './common/services/logger.service';
 import { configureApp } from './app.setup';
 import { RedisIoAdapter } from './realtime/redis-io.adapter';
+import { runProductionSafetyCheck } from './config/production-safety.check';
 
 async function bootstrap() {
   // Instantiate the Winston logger before the app so bootstrap messages
@@ -73,28 +74,37 @@ async function bootstrap() {
   app.disable('x-powered-by');
   app.use(helmet(helmetOptions));
 
-  // Swagger configuration — served at /api/docs (outside the versioned prefix)
-  const config = new DocumentBuilder()
-    .setTitle('LyricFlip API')
-    .setDescription('API documentation for LyricFlip backend')
-    .setVersion('1.0')
-    .addBearerAuth(
-      {
-        type: 'http',
-        scheme: 'bearer',
-        bearerFormat: 'JWT',
-        in: 'header',
-        name: 'Authorization',
+  // Swagger is opt-in via SWAGGER_ENABLED and defaults to off in production so
+  // the API surface is not publicly documented unless explicitly intended.
+  const swaggerEnabled =
+    process.env.SWAGGER_ENABLED !== undefined
+      ? process.env.SWAGGER_ENABLED === 'true'
+      : process.env.NODE_ENV !== 'production';
+
+  if (swaggerEnabled) {
+    // Swagger configuration — served at /api/docs (outside the versioned prefix)
+    const config = new DocumentBuilder()
+      .setTitle('LyricFlip API')
+      .setDescription('API documentation for LyricFlip backend')
+      .setVersion('1.0')
+      .addBearerAuth(
+        {
+          type: 'http',
+          scheme: 'bearer',
+          bearerFormat: 'JWT',
+          in: 'header',
+          name: 'Authorization',
+        },
+        'JWT-auth',
+      )
+      .build();
+    const document = SwaggerModule.createDocument(app, config);
+    SwaggerModule.setup('api/docs', app, document, {
+      swaggerOptions: {
+        persistAuthorization: true,
       },
-      'JWT-auth',
-    )
-    .build();
-  const document = SwaggerModule.createDocument(app, config);
-  SwaggerModule.setup('api/docs', app, document, {
-    swaggerOptions: {
-      persistAuthorization: true,
-    },
-  });
+    });
+  }
 
   // CORS must be registered before the server starts listening, otherwise the
   // configuration is not applied to the running HTTP adapter. FRONTEND_URL may
@@ -108,6 +118,11 @@ async function bootstrap() {
     origin: allowedOrigins,
     credentials: true,
   });
+
+  // Refuse to start in production when unsafe settings are detected. This runs
+  // before the server starts listening so a misconfigured deployment fails
+  // fast with a message naming every offending setting.
+  runProductionSafetyCheck();
 
   const port = process.env.PORT ?? 3000;
   const host = process.env.HOST ?? 'localhost';

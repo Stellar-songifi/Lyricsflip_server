@@ -7,6 +7,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { randomUUID } from 'crypto';
+import { STATUS_CODES } from 'http';
 import { QueryFailedError } from 'typeorm';
 import { Request, Response } from 'express';
 
@@ -150,6 +151,26 @@ export class AllExceptionsFilter implements ExceptionFilter {
         statusCode = HttpStatus.BAD_REQUEST;
         message = 'Required field is missing';
         break;
+      case '22P02': // invalid_text_representation (bad UUID/enum text)
+        statusCode = HttpStatus.BAD_REQUEST;
+        message = 'Invalid input syntax';
+        break;
+      case '22001': // string_data_right_truncation
+        statusCode = HttpStatus.BAD_REQUEST;
+        message = 'Value is too long';
+        break;
+      case '23514': // check_violation
+        statusCode = HttpStatus.BAD_REQUEST;
+        message = 'Value violates a constraint';
+        break;
+      case '40001': // serialization_failure
+        statusCode = HttpStatus.CONFLICT;
+        message = 'Request conflicted with a concurrent change; please retry';
+        break;
+      case '40P01': // deadlock_detected
+        statusCode = HttpStatus.SERVICE_UNAVAILABLE;
+        message = 'Temporary database contention; please retry';
+        break;
       default:
         break;
     }
@@ -191,18 +212,6 @@ export class AllExceptionsFilter implements ExceptionFilter {
   }
 
   private getErrorName(statusCode: number): string {
-    const errorNames: Record<number, string> = {
-      400: 'Bad Request',
-      401: 'Unauthorized',
-      403: 'Forbidden',
-      404: 'Not Found',
-      409: 'Conflict',
-      422: 'Unprocessable Entity',
-      500: 'Internal Server Error',
-      502: 'Bad Gateway',
-      503: 'Service Unavailable',
-    };
-
-    return errorNames[statusCode] || 'Error';
+    return STATUS_CODES[statusCode] || 'Error';
   }
 }
