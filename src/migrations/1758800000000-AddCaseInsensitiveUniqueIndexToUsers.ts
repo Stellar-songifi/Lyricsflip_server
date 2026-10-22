@@ -17,13 +17,19 @@ export class AddCaseInsensitiveUniqueIndexToUsers1758800000000
     await queryRunner.query(`
       CREATE UNIQUE INDEX "IDX_users_email_lower" ON "users" (LOWER("email"))
     `);
-    await queryRunner.query(`
-      CREATE UNIQUE INDEX "IDX_users_username_lower" ON "users" (LOWER("username"))
-    `);
+    // On an empty database `users.username` is only added later, by
+    // RepairSchemaToMatchEntities, so the username index is created there by
+    // AddResponsiblePlayColumnsToUsers1794000000004 instead.
+    const users = await queryRunner.getTable('users');
+    if (users?.findColumnByName('username')) {
+      await queryRunner.query(`
+        CREATE UNIQUE INDEX "IDX_users_username_lower" ON "users" (LOWER("username"))
+      `);
+    }
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(`DROP INDEX "IDX_users_username_lower"`);
+    await queryRunner.query(`DROP INDEX IF EXISTS "IDX_users_username_lower"`);
     await queryRunner.query(`DROP INDEX "IDX_users_email_lower"`);
   }
 }

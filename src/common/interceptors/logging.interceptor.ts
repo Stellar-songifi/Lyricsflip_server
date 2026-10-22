@@ -4,30 +4,87 @@ import {
   ExecutionContext,
   CallHandler,
   Logger,
-  Optional,
 } from '@nestjs/common';
 import { Observable } from 'rxjs';
 import { tap } from 'rxjs/operators';
 import { Request, Response } from 'express';
 import { redact } from '../utils/redact.util';
-import { MetricsService } from '../../metrics/metrics.service';
 
+/** Where @SubscribeMessage stores the event name on a gateway handler. */
+const WS_MESSAGE_METADATA = 'message';
+
+/**
+ * Logs every HTTP request and WebSocket message.
+ *
+ * Registered globally, so it checks the context type instead of assuming
+ * HTTP (#362): a WebSocket handler's "request" is the socket, which has no
+ * `headers` or `url`. Other contexts are passed through untouched.
+ *
+ * HTTP metrics are not recorded here: an interceptor never sees requests
+ * rejected by a guard or pipe, so they are recorded by HttpMetricsMiddleware
+ * instead (#361).
+ */
 @Injectable()
 export class LoggingInterceptor implements NestInterceptor {
   private readonly logger = new Logger(LoggingInterceptor.name);
 
-  constructor(@Optional() private readonly metricsService?: MetricsService) {}
-
   intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
+    switch (context.getType()) {
+      case 'http':
+        return this.interceptHttp(context, next);
+      case 'ws':
+        return this.interceptWs(context, next);
+      default:
+        return next.handle();
+    }
+  }
+
+  private interceptWs(
+    context: ExecutionContext,
+    next: CallHandler,
+  ): Observable<any> {
+    const client = context.switchToWs().getClient<{ id?: string }>();
+    const handler = context.getHandler();
+    const event =
+      (Reflect.getMetadata(WS_MESSAGE_METADATA, handler) as
+        | string
+        | undefined) ?? handler.name;
+    const socketId = client?.id ?? 'unknown';
+    const startTime = Date.now();
+
+    this.logger.log(`Incoming WS message: ${event} (socket ${socketId})`);
+
+    return next.handle().pipe(
+      tap({
+        next: () => {
+          this.logger.log(
+            `WS message handled: ${event} (socket ${socketId}) - ${Date.now() - startTime}ms`,
+          );
+        },
+        error: (error) => {
+          this.logger.error(
+            `WS message failed: ${event} (socket ${socketId}) - ${(error as Error)?.message}`,
+            {
+              event,
+              socketId,
+              error: (error as Error)?.message,
+              responseTime: `${Date.now() - startTime}ms`,
+            },
+          );
+        },
+      }),
+    );
+  }
+
+  private interceptHttp(
+    context: ExecutionContext,
+    next: CallHandler,
+  ): Observable<any> {
     const request = context.switchToHttp().getRequest<Request>();
     const response = context.switchToHttp().getResponse<Response>();
     const { method, url, body, query, params, ip, headers } = request;
     const userAgent = headers['user-agent'] || 'Unknown';
     const startTime = Date.now();
-
-    // Normalised route for metric labels — avoids high cardinality from
-    // per-resource paths like /game-sessions/:uuid.
-    const route = this.normalizeRoute(url);
 
     // Log incoming request. The full body (redacted) is only useful for
     // local debugging, so it is logged at `debug` level; every request still
@@ -66,19 +123,6 @@ export class LoggingInterceptor implements NestInterceptor {
               timestamp: new Date().toISOString(),
             },
           );
-
-          if (this.metricsService) {
-            const labels = {
-              method,
-              route,
-              status_code: String(statusCode),
-            };
-            this.metricsService.httpRequestDuration.observe(
-              labels,
-              durationSeconds,
-            );
-            this.metricsService.httpRequestTotal.inc(labels);
-          }
         },
         error: (error) => {
           const durationSeconds = (Date.now() - startTime) / 1000;
@@ -96,38 +140,9 @@ export class LoggingInterceptor implements NestInterceptor {
               timestamp: new Date().toISOString(),
             },
           );
-
-          if (this.metricsService) {
-            const labels = {
-              method,
-              route,
-              status_code: String(statusCode),
-            };
-            this.metricsService.httpRequestDuration.observe(
-              labels,
-              durationSeconds,
-            );
-            this.metricsService.httpRequestTotal.inc(labels);
-          }
         },
       }),
     );
-  }
-
-  /**
-   * Normalises a URL path for use as a Prometheus label.
-   *
-   * Replacing UUIDs and numeric IDs with placeholders keeps label cardinality
-   * bounded regardless of how many resources exist.
-   */
-  private normalizeRoute(url: string): string {
-    const path = url.split('?')[0];
-    return path
-      .replace(
-        /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi,
-        ':uuid',
-      )
-      .replace(/\/\d+/g, '/:id');
   }
 
   private sanitizeBody(body: any): any {

@@ -7,6 +7,7 @@ import {
 import { Reflector } from '@nestjs/core';
 import { Role } from '../roles/role.enum';
 import { ROLES_KEY } from '../roles/roles.decorator';
+import { getAuthUser } from '../auth-context.util';
 
 @Injectable()
 export class RolesGuard implements CanActivate {
@@ -20,10 +21,9 @@ export class RolesGuard implements CanActivate {
     if (!requiredRoles?.length) {
       return true;
     }
-    const request = context
-      .switchToHttp()
-      .getRequest<{ user?: { role?: Role } }>();
-    const { user } = request;
+    // HTTP: request.user; WebSocket: client.data.user (#362). Any other
+    // context has no user and is denied like an anonymous request.
+    const user = getAuthUser<{ role?: Role }>(context);
     if (!user) {
       throw new ForbiddenException('You do not have permission');
     }

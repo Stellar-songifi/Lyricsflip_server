@@ -155,3 +155,25 @@ exception factory that throws `WsException`. An invalid payload (for example an
 invalid `submitGuess` body) therefore returns a `400`-style error with
 field-level messages over the socket rather than a generic
 `Internal server error`.
+
+## Guards, interceptors, filters and `@GetUser` in gateways
+
+The app's HTTP enhancers check the execution context type, so they can be
+applied to a gateway with `@UseGuards`, `@UseInterceptors` and `@UseFilters`
+(#362). Before, each called `switchToHttp()` and read `headers` from the
+socket, so a handler failed with a `TypeError` that hid the real error.
+
+| Enhancer | In a WebSocket handler |
+| --- | --- |
+| `JwtAuthGuard` | Passes when the socket has `client.data.user`, set when the gateway verified the handshake token; otherwise `401`. The token is not re-checked per message. |
+| `RolesGuard` / `@Roles(...)` | Checks `client.data.user.role`. |
+| `@GetUser()` | Returns `client.data.user`: `{ id, username, role }` from the token, not a full `User`. |
+| `AppThrottlerGuard` | Limits messages per user (or handshake address). |
+| `LoggingInterceptor` | Logs the event name and socket ID, and the real error message on failure. |
+| `AllExceptionsFilter` | Logs the real error with the event and socket ID, then emits the error contract above. |
+| `AuditInterceptor` | Records the socket user as the actor and the message body as the payload. |
+
+Each passes other context types (scheduled jobs, RPC) straight through.
+`GameGateway` and `RealtimeGateway` store `client.data.user` (and
+`client.data.userId`) in `handleConnection`. A new gateway must do the same
+before relying on these enhancers.

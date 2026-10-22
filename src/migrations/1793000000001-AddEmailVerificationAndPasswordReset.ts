@@ -7,10 +7,18 @@ import {
   TableIndex,
 } from 'typeorm';
 
-export class AddEmailVerificationAndPasswordReset1793000000000
+/**
+ * Was `AddEmailVerificationAndPasswordReset1793000000000`, which shared its
+ * timestamp with AddDifficultyConstraintAndDefault. Renamed so the order is
+ * unambiguous. Every step already checks whether its column or table exists,
+ * so a database that ran it under the old name just records the new name.
+ * AlignAuthTokenTables1794000000003 later brings these tables in line with
+ * their entities. See docs/MIGRATIONS.md.
+ */
+export class AddEmailVerificationAndPasswordReset1793000000001
   implements MigrationInterface
 {
-  name = 'AddEmailVerificationAndPasswordReset1793000000000';
+  name = 'AddEmailVerificationAndPasswordReset1793000000001';
 
   public async up(queryRunner: QueryRunner): Promise<void> {
     // Add emailVerifiedAt column to users

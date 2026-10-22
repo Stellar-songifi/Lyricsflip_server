@@ -18,6 +18,8 @@ import { Repository } from 'typeorm';
 import { GameSession } from '../game-sessions/entities/game-session.entity';
 import { RoomUser } from '../rooms/entities/room-user.entity';
 import { WsExceptionFilter } from '../common/filters/ws-exception.filter';
+import type { SocketUser } from '../auth/auth-context.util';
+import type { JwtPayload } from '../auth/interfaces/jwt-payload.interface';
 import {
   PlayerJoinedPayload,
   RealtimeEvent,
@@ -97,11 +99,17 @@ export class RealtimeGateway
 
     try {
       if (!token) throw new Error('missing token');
-      const payload = await this.jwtService.verifyAsync<{ sub: string }>(
-        token,
-        { secret: this.configService.get<string>('JWT_SECRET') },
-      );
+      const payload = await this.jwtService.verifyAsync<
+        Pick<JwtPayload, 'sub' | 'username' | 'role'>
+      >(token, { secret: this.configService.get<string>('JWT_SECRET') });
       client.data.userId = payload.sub;
+      // Read by @GetUser, RolesGuard and JwtAuthGuard in handlers (#362).
+      const user: SocketUser = {
+        id: payload.sub,
+        username: payload.username,
+        role: payload.role,
+      };
+      client.data.user = user;
     } catch {
       this.logger.warn(`Rejected unauthenticated connection: ${client.id}`);
       client.emit('error', { message: 'Unauthorized' });

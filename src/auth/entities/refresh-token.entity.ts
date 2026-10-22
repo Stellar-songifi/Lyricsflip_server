@@ -22,8 +22,10 @@ export class RefreshToken {
   @JoinColumn()
   user: User;
 
+  // SHA-256 hex digest, so always 64 characters (the column's width since
+  // CreateRefreshTokensTable).
   @Index({ unique: true })
-  @Column()
+  @Column({ type: 'varchar', length: 64 })
   tokenHash: string;
 
   @Column({ type: 'timestamptz' })

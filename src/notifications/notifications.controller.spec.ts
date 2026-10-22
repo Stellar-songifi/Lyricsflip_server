@@ -124,6 +124,7 @@ describe('NotificationsController', () => {
       ({
         getHandler: () => handler,
         getClass: () => controllerClass,
+        getType: () => 'http',
         switchToHttp: () => ({ getRequest: () => ({ user: { id: 'user1', role } }) }),
       }) as unknown as ExecutionContext;
 
