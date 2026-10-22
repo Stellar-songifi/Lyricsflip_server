@@ -16,7 +16,7 @@ This document outlines the retention and archiving strategy for high-volume hist
 | `game_sessions` | 180 days after completion or abandonment | Archive completed/abandoned sessions with no open wagers. |
 | `wagers` | 365 days after terminal state (`SETTLED`, `REFUNDED`, `FAILED`) | Retain financial records on-chain and in archival cold storage for tax/compliance purposes. |
 | `audit_logs` | 180 days in primary database | Stream to cold storage or log aggregator (e.g. OpenSearch / BigQuery) for long-term retention. |
-| `refresh_tokens` | Immediate deletion upon revocation or expiration | Scheduled cleanup job purges expired and revoked tokens automatically. |
+| `refresh_tokens` | Until expiry, or 30 days after revocation | `SessionCleanupJob` deletes them daily (see Personal data retention below). |
 
 ## 3. Recommended Archive & Purge Procedure
 
@@ -72,3 +72,30 @@ Daily retention job: a scheduled job runs once per day and is guarded by the dis
 
 Retention settings (seen window and N days) are configurable; `game_rounds` size is therefore bounded by those settings rather than by total traffic.
 Always execute purges in bounded batches during off-peak hours to avoid prolonged table locks.
+
+## 5. Personal data retention
+
+GDPR and NDPR require a stated retention period for every store of personal data. This table is that statement; each period is enforced by the job named in the last column. Periods marked *configurable* can be changed with the environment variable shown.
+
+| Store | Personal data it holds | Kept for | Why | Enforced by |
+|---|---|---|---|---|
+| `users` | Email, username, name, Stellar address, preferences | Life of the account. On deletion the row is anonymised (email, username, name, address cleared) and kept so foreign keys stay valid | Needed to provide the service | `UsersService.remove` |
+| `refresh_tokens` | User agent, network (IP truncated to /24 or /48), device name, last use | Until expiry (30 days), or 30 days after revocation. Deleted with the account | Lets users see and revoke their sessions; revoked rows kept briefly to trace token reuse | `SessionCleanupJob` (daily 04:00); `UsersService.erasePersonalData` |
+| `email_tokens`, `password_reset_tokens` | Hash of a one-time token | Until used or expired. Deleted with the account | Account verification and recovery | Existing token services; `UsersService.erasePersonalData` |
+| `notifications` | Events about the user's games | Read notifications: 90 days. Deleted with the account | Shown in the app; no value once read and old | `NotificationsService.purgeOldNotifications` (daily 03:00); `UsersService.erasePersonalData` |
+| `audit_logs` | Actor id, action, sanitised request, IP address | Rows: kept (see section 2 for archiving). IP: 90 days, *configurable* `AUDIT_IP_RETENTION_DAYS`. IP cleared on account deletion | Audit trail for admin and settlement actions, used to resolve disputes; the IP is only needed while an incident is fresh | `RetentionJob` (daily 05:00); `UsersService.erasePersonalData` |
+| `game_rounds` | Lyrics served to a player, timing | Unguessed: the seen window. Guessed: `roundRetentionDays` | Seen-window lyric selection and anti-cheat | `GameService.pruneGameRounds` (section 4) |
+| `game_history` | Each guess, its value and result | 2 years in `game_history`, *configurable* `GAME_HISTORY_RETENTION_DAYS`; then moved to `game_history_archive`. Linked only by id after account deletion | Stats, leaderboards and dispute evidence | `RetentionJob` (daily 05:00) |
+| `game_sessions`, `room_users`, `rooms` | Who played whom, scores, guesses in rooms | See section 2. Linked only by id after account deletion | Match records | Section 2 procedure |
+| `wagers` | Stakes, payouts, transaction hashes, player ids | At least 365 days after settlement, then cold storage (section 2). Kept after account deletion | Financial record; the settlement is also on-chain | Section 2 procedure |
+| Application logs (`LOG_TO_FILE=true`) | Request method, URL, IP address, user agent, user id | `logs/app-*.log`: 14 days. `logs/error-*.log`: 30 days | Debugging and incident response | winston daily rotation (`maxFiles`) |
+| Application logs (stdout) | As above | Set by the hosting platform's log retention; configure it to 30 days or less | As above | Hosting platform |
+
+### Account deletion
+
+`DELETE /users/me` (and the admin delete) apply the table above to the user's other rows (in one transaction), then anonymise the `users` row:
+
+- **Deleted:** refresh tokens, email and password-reset tokens, notifications.
+- **IP cleared:** audit rows where the user is the actor. The rows themselves stay as the audit record.
+- **Kept, linked only by id:** wagers (financial record), game history and its archive, sessions, rounds and room participation. Once the `users` row is anonymised these no longer identify the person.
+

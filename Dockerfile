@@ -39,4 +39,6 @@ USER app
 EXPOSE 3000
 
 ENTRYPOINT ["./docker-entrypoint.sh"]
-CMD ["node", "dist/main.js"]
+# docker-entrypoint.sh finds the compiled main.js itself: tsconfig.json also
+# compiles typeorm.config.ts, so tsc emits it under dist/src/.
+CMD ["node-main"]
