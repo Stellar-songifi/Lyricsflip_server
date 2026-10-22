@@ -1,5 +1,8 @@
 name: CI
 
+# Every check runs once per PR, from this one workflow. The Node version
+# comes from .nvmrc (also engines.node in package.json and the Dockerfile).
+
 on:
   pull_request:
   push:
@@ -11,6 +14,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  migration-location:
+    name: No migrations outside src/migrations
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check migration location
+        run: bash scripts/check-migration-location.sh
+
   lint-typecheck-test-build:
     name: Lint, type-check, tests and build
     runs-on: ubuntu-latest
@@ -21,14 +34,14 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version-file: .nvmrc
           cache: npm
 
       - name: Install dependencies
         run: npm ci
 
       - name: Lint (check mode)
-        run: npm run lint -- --no-fix
+        run: npm run lint:check
 
       - name: Type-check
         run: npx tsc --noEmit
@@ -40,7 +53,7 @@ jobs:
         run: npm run build
 
   e2e:
-    name: E2E (Postgres) and migration drift check
+    name: Migrations, drift check and E2E (Postgres)
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -53,11 +66,17 @@ jobs:
           - 5432:5432
         options: >-
           --health-cmd "pg_isready -U postgres"
-          --health-interval 10s
+          --health-interval 5s
           --health-timeout 5s
-          --health-retries 5
+          --health-retries 10
+    # The variables typeorm.config.ts, AppModule and the e2e setup read.
     env:
-      DATABASE_URL: postgres://postgres:postgres@localhost:5432/test
+      DB_HOST: localhost
+      DB_PORT: 5432
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: test
+      JWT_SECRET: ci-only-jwt-secret-not-used-anywhere-else
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -65,36 +84,104 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version-file: .nvmrc
           cache: npm
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Run migrations
+      - name: Run all migrations on an empty database
         run: npm run migration:run
 
-      - name: Migration drift check
-        run: npm run migration:generate -- src/migrations/DriftCheck
+      # Exits non-zero when the entities describe a schema the migrations do
+      # not produce, i.e. an entity change shipped without a migration.
+      - name: Check the entities match the migrated schema
+        run: npm run migration:check
 
       - name: E2E tests
         run: npm run test:e2e
 
   contract:
-    name: Contract
+    name: Escrow contract (tests and release build)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          node-version: 20
-          cache: npm
+          targets: wasm32-unknown-unknown
 
-      - name: Install dependencies
-        run: npm ci
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            contracts/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('contracts/Cargo.lock') }}
 
       - name: Contract tests
-        run: npm run test:contract
+        working-directory: contracts
+        run: cargo test
+
+      - name: Release build (wasm)
+        working-directory: contracts
+        run: cargo build --release --target wasm32-unknown-unknown
+
+  docker:
+    name: Docker build and smoke test
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: smoke
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t lyricsflip-server:ci .
+
+      # Starts the image the way production would (migrations on start) and
+      # waits for the readiness probe, so a Dockerfile, entrypoint or boot
+      # failure fails CI.
+      - name: Smoke test
+        run: |
+          docker run -d --name api --network host \
+            -e NODE_ENV=development \
+            -e HOST=0.0.0.0 \
+            -e PORT=3000 \
+            -e DB_HOST=localhost \
+            -e DB_PORT=5432 \
+            -e DB_USERNAME=postgres \
+            -e DB_PASSWORD=postgres \
+            -e DB_NAME=smoke \
+            -e JWT_SECRET=ci-only-jwt-secret-not-used-anywhere-else \
+            -e RUN_MIGRATIONS=true \
+            lyricsflip-server:ci
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://localhost:3000/health/ready; then
+              echo
+              echo "API ready after ${attempt} attempt(s)"
+              exit 0
+            fi
+            if [ "$(docker inspect -f '{{.State.Running}}' api)" != "true" ]; then
+              echo "Container exited"
+              break
+            fi
+            sleep 2
+          done
+          docker logs api
+          exit 1

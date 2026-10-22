@@ -688,6 +688,7 @@ All configuration comes from environment variables, loaded from `.env` by `@nest
 | Variable         | Default                  | Notes                                                                 |
 | ---------------- | ------------------------ | --------------------------------------------------------------------- |
 | `PORT`           | `3000`                   | HTTP port                                                             |
+| `HOST`           | `0.0.0.0`                | Interface to listen on. All interfaces by default, so the port works from inside a container; `127.0.0.1` for local-only. The bound address is logged at startup |
 | `NODE_ENV`       | –                        | `production` hides validation messages and database error details, and drops the mock notification endpoints |
 | `FRONTEND_URL`   | `http://localhost:3000`  | CORS origin                                                           |
 | `LOG_LEVEL`      | `info`                   | Used by the Winston `LoggerService`                                   |
@@ -699,7 +700,10 @@ All configuration comes from environment variables, loaded from `.env` by `@nest
 
 | Variable                                                      | Default          | Notes                                  |
 | ------------------------------------------------------------- | ---------------- | -------------------------------------- |
-| `DB_HOST`, `DB_PORT`, `DB_USERNAME`, `DB_PASSWORD`, `DB_NAME` | **required**     | Primary. Boot fails if any is missing  |
+| `DATABASE_URL`                                                | unset            | `postgres://user:pass@host:port/db`. Takes precedence over the `DB_*` variables below; an `?sslmode=` in it applies when `DB_SSL` is unset |
+| `DB_HOST`, `DB_PORT`, `DB_USERNAME`, `DB_PASSWORD`, `DB_NAME` | **required** without `DATABASE_URL` | Primary. Boot fails if any is missing and `DATABASE_URL` is unset |
+| `DB_SSL`                                                      | `disable`        | `disable`, `require` (TLS without certificate verification, what most managed providers need) or `verify-full` |
+| `DB_SSL_CA`                                                   | unset            | CA for `verify-full`: the PEM itself (`\n` accepted for line breaks) or a path to a PEM file |
 | `DB_REPLICA_HOST`, `DB_REPLICA_PORT`, `DB_REPLICA_USERNAME`, `DB_REPLICA_PASSWORD`, `DB_REPLICA_NAME` | unset (no replica) | Optional read replica, enabled by `DB_REPLICA_HOST`; the others default to the primary's values |
 
 **Stellar** (in `mock` mode, only the first variable is read)
