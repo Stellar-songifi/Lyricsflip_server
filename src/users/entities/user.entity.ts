@@ -9,7 +9,7 @@ import {
   OneToMany,
 } from 'typeorm';
 import { GameSession } from '../../game-sessions/entities/game-session.entity';
-import { Role } from 'src/auth/roles/role.enum';
+import { Role } from '../../auth/roles/role.enum';
 import { PRIVATE_USER_GROUPS } from '../user-serialization';
 
 export enum UserLevel {

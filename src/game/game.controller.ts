@@ -33,9 +33,9 @@ import { GameLogicService } from './game.service';
 import { RandomLyricOptionsDto } from './dto/random-lyrics-option.dto';
 import { MultipleLyricsDto } from './dto/multiple-lyrics.dto';
 import { GuessDto } from './dto/guess.dto';
-import { GetUser } from 'src/auth/decorators/user.decorator';
-import { User } from 'src/users/entities/user.entity';
-import { Genre } from 'src/lyrics/entities/genre.enum';
+import { GetUser } from '../auth/decorators/user.decorator';
+import { User } from '../users/entities/user.entity';
+import { Genre } from '../lyrics/entities/genre.enum';
 
 @ApiTags('game')
 @Controller('game')

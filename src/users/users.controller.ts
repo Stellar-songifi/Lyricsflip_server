@@ -19,12 +19,12 @@ import { DeleteAccountDto } from './dto/delete-account.dto';
 import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
 import { User } from './entities/user.entity';
 import { UserGroup } from './user-serialization';
-import { GetUser } from 'src/auth/decorators/user.decorator';
-import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
-import { OptionalJwtAuthGuard } from 'src/auth/guards/optional-jwt-auth.guard';
-import { Public } from 'src/auth/decorators/public.decorator';
-import { Roles } from 'src/auth/roles/roles.decorator';
-import { Role } from 'src/auth/roles/role.enum';
+import { GetUser } from '../auth/decorators/user.decorator';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { OptionalJwtAuthGuard } from '../auth/guards/optional-jwt-auth.guard';
+import { Public } from '../auth/decorators/public.decorator';
+import { Roles } from '../auth/roles/roles.decorator';
+import { Role } from '../auth/roles/role.enum';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 
 // Accounts are created through POST /auth/signup; there is no POST /users.

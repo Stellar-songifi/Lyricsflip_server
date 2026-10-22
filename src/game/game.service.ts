@@ -10,9 +10,9 @@ import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Lyrics } from 'src/lyrics/entities/lyrics.entity';
+import { Lyrics } from '../lyrics/entities/lyrics.entity';
 import { matchGuess, normalizeAnswer } from './guess-matcher';
-import { Genre, isGenre, toGenre } from 'src/lyrics/entities/genre.enum';
+import { Genre, isGenre, toGenre } from '../lyrics/entities/genre.enum';
 import {
   In,
   IsNull,
@@ -25,14 +25,14 @@ import { GameRound } from './entities/game-round.entity';
 import {
   GameSession,
   GameSessionStatus,
-} from 'src/game-sessions/entities/game-session.entity';
+} from '../game-sessions/entities/game-session.entity';
 import { GAME_CONSTANTS } from './constants/game.constants';
 import { maxRoundPoints, scoreRound } from './round-scoring.util';
 import {
   RealtimeEvent,
   RoundEndedPayload,
   RoundStartedPayload,
-} from 'src/realtime/realtime.events';
+} from '../realtime/realtime.events';
 
 export interface RandomLyricOptions {
   category?: string;

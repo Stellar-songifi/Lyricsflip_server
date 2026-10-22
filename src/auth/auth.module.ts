@@ -11,7 +11,7 @@ import { AuthTokenService } from './services/auth-token.service';
 import { MailerService } from './services/mailer.service';
 import { EmailVerificationService } from './services/email-verification.service';
 import { PasswordResetService } from './services/password-reset.service';
-import { User } from 'src/users/entities/user.entity';
+import { User } from '../users/entities/user.entity';
 import { RefreshToken } from './entities/refresh-token.entity';
 import { EmailToken } from './entities/email-token.entity';
 import { PasswordResetToken } from './entities/password-reset-token.entity';

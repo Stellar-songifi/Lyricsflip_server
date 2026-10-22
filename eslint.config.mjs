@@ -31,6 +31,19 @@ export default tseslint.config(
       '@typescript-eslint/no-unsafe-argument': 'warn',
       'no-unreachable': 'error',
       'no-duplicate-imports': 'error',
+      // `src/...` resolves only through tsconfig's baseUrl at compile time;
+      // the emitted require("src/...") crashes `node dist/main` (#355).
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['src/*'],
+              message: 'Use a relative import: bare src/... paths break the compiled build.',
+            },
+          ],
+        },
+      ],
     },
   },
   {
