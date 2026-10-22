@@ -63,6 +63,127 @@ describe('AllExceptionsFilter', () => {
     );
   });
 
+  it('maps an invalid-text-representation QueryFailedError to 400', () => {
+    const error = new QueryFailedError('query', [], new Error('invalid input'));
+    (error as unknown as { code: string }).code = '22P02';
+
+    filter.catch(error, mockHost);
+
+    expect(statusMock).toHaveBeenCalledWith(HttpStatus.BAD_REQUEST);
+    expect(jsonMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        statusCode: HttpStatus.BAD_REQUEST,
+        message: 'Invalid input syntax',
+      }),
+    );
+  });
+
+  it('maps a string-too-long QueryFailedError to 400', () => {
+    const error = new QueryFailedError('query', [], new Error('too long'));
+    (error as unknown as { code: string }).code = '22001';
+
+    filter.catch(error, mockHost);
+
+    expect(statusMock).toHaveBeenCalledWith(HttpStatus.BAD_REQUEST);
+    expect(jsonMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        statusCode: HttpStatus.BAD_REQUEST,
+        message: 'Value too long',
+      }),
+    );
+  });
+
+  it('maps a check-violation QueryFailedError to 400', () => {
+    const error = new QueryFailedError('query', [], new Error('check'));
+    (error as unknown as { code: string }).code = '23514';
+
+    filter.catch(error, mockHost);
+
+    expect(statusMock).toHaveBeenCalledWith(HttpStatus.BAD_REQUEST);
+    expect(jsonMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        statusCode: HttpStatus.BAD_REQUEST,
+        message: 'Value violates a constraint',
+      }),
+    );
+  });
+
+  it('maps a serialisation-failure QueryFailedError to 409', () => {
+    const error = new QueryFailedError('query', [], new Error('serialisation'));
+    (error as unknown as { code: string }).code = '40001';
+
+    filter.catch(error, mockHost);
+
+    expect(statusMock).toHaveBeenCalledWith(HttpStatus.CONFLICT);
+    expect(jsonMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        statusCode: HttpStatus.CONFLICT,
+        message: expect.stringContaining('retry'),
+      }),
+    );
+  });
+
+  it('maps a deadlock-detected QueryFailedError to 503', () => {
+    const error = new QueryFailedError('query', [], new Error('deadlock'));
+    (error as unknown as { code: string }).code = '40P01';
+
+    filter.catch(error, mockHost);
+
+    expect(statusMock).toHaveBeenCalledWith(HttpStatus.SERVICE_UNAVAILABLE);
+    expect(jsonMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        statusCode: HttpStatus.SERVICE_UNAVAILABLE,
+        message: expect.stringContaining('retry'),
+      }),
+    );
+  });
+
+  it('uses production-safe messages for mapped database errors', () => {
+    process.env.NODE_ENV = 'production';
+    const prodFilter = new AllExceptionsFilter();
+
+    const error = new QueryFailedError('query', [], new Error('raw detail'));
+    (error as unknown as { code: string }).code = '22P02';
+
+    prodFilter.catch(error, mockHost);
+
+    expect(jsonMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        statusCode: HttpStatus.BAD_REQUEST,
+        message: 'Invalid input syntax',
+      }),
+    );
+
+    process.env.NODE_ENV = 'test';
+  });
+
+  it('names a 429 response "Too Many Requests"', () => {
+    filter.catch(
+      new HttpException('Rate limit exceeded', HttpStatus.TOO_MANY_REQUESTS),
+      mockHost,
+    );
+
+    expect(statusMock).toHaveBeenCalledWith(HttpStatus.TOO_MANY_REQUESTS);
+    expect(jsonMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        statusCode: HttpStatus.TOO_MANY_REQUESTS,
+        error: 'Too Many Requests',
+      }),
+    );
+  });
+
+  it('names a 410 response "Gone"', () => {
+    filter.catch(new HttpException('Expired', HttpStatus.GONE), mockHost);
+
+    expect(statusMock).toHaveBeenCalledWith(HttpStatus.GONE);
+    expect(jsonMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        statusCode: HttpStatus.GONE,
+        error: 'Gone',
+      }),
+    );
+  });
+
   it('hides an unknown error message in production', () => {
     process.env.NODE_ENV = 'production';
     const prodFilter = new AllExceptionsFilter();

@@ -17,23 +17,35 @@ export const envValidationSchema = Joi.object({
     .default('debug'),
   FRONTEND_URL: Joi.string().uri().default('http://localhost:3000'),
 
-  // Auth
+  // Auth. JWT_SECRET must be at least 32 characters in every environment
+  // except `test`, where short throwaway secrets are allowed.
   JWT_SECRET: Joi.string()
-    .min(32)
     .required()
     .when('NODE_ENV', {
-      is: 'production',
-      then: Joi.string().min(32).required(),
-      otherwise: Joi.string().min(1).required(),
+      is: 'test',
+      then: Joi.string().min(1).required(),
+      otherwise: Joi.string().min(32).required(),
     }),
   JWT_EXPIRES_IN: Joi.string().default('15m'),
+
+  // Swagger UI. Off by default in production; must be set explicitly there
+  // (see ProductionSafetyCheck).
+  SWAGGER_ENABLED: Joi.string()
+    .valid('true', 'false')
+    .default('false'),
+
+  // Metrics endpoint protection. Either an IP allowlist or basic auth must be
+  // configured in production (see ProductionSafetyCheck).
+  METRICS_IP_ALLOWLIST: Joi.string().optional().allow(''),
+  METRICS_BASIC_AUTH: Joi.string().optional().allow(''),
 
   // Gameplay. ROUND_ANSWER_WINDOW_SECONDS is how long a player has to score on
   // a round; SESSION_TIMEOUT_MINUTES is how long a session may sit idle.
   ROUND_ANSWER_WINDOW_SECONDS: Joi.number().integer().min(1).default(20),
   SESSION_TIMEOUT_MINUTES: Joi.number().integer().min(1).default(30),
 
-  // Misc
+  // Misc. SEED_ADMIN_* are read by ProductionSafetyCheck to refuse booting
+  // production with the seed's default admin credentials still in place.
   INVITATION_TTL_MINUTES: Joi.number().positive().default(30),
   SEED_ADMIN_EMAIL: Joi.string().email().optional(),
   SEED_ADMIN_PASSWORD: Joi.string().optional(),
