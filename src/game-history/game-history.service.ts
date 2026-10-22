@@ -1,4 +1,6 @@
-import { ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { ForbiddenException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
+import { Cache } from 'cache-manager';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Between } from 'typeorm';
 import { GameHistory } from './entities/game-history.entity';
@@ -30,6 +32,49 @@ export interface GameHistoryResponse {
   };
 }
 
+export interface UserStats {
+  totalGames: number;
+  correctGuesses: number;
+  incorrectGuesses: number;
+  accuracy: number;
+  totalPointsEarned: number;
+  totalXpGained: number;
+  bestStreak: number;
+  averagePointsPerGame: number;
+}
+
+/** Stats are cached briefly per user and dropped when a guess is recorded. */
+const USER_STATS_CACHE_TTL_MS = 30_000;
+const userStatsCacheKey = (userId: string) => `game-history:stats:${userId}`;
+
+/**
+ * Every stat in one round trip, however long the history is.
+ *
+ * Best streak is gaps-and-islands: within a run of equal isCorrect values,
+ * (row number over all guesses) - (row number within that isCorrect value)
+ * is constant, so grouping correct guesses by that difference yields one
+ * group per streak. Ties on createdAt are broken by id, so the order is
+ * stable.
+ */
+const USER_STATS_SQL = `
+  WITH ordered AS (
+    SELECT "isCorrect", "pointsAwarded", "xpChange",
+           ROW_NUMBER() OVER (ORDER BY "createdAt", "id")
+             - ROW_NUMBER() OVER (PARTITION BY "isCorrect" ORDER BY "createdAt", "id") AS run
+      FROM "game_history"
+     WHERE "playerId" = $1
+  ),
+  streaks AS (
+    SELECT COUNT(*) AS length FROM ordered WHERE "isCorrect" GROUP BY run
+  )
+  SELECT COUNT(*)                                  AS "totalGames",
+         COUNT(*) FILTER (WHERE "isCorrect")       AS "correctGuesses",
+         COALESCE(SUM("pointsAwarded"), 0)         AS "totalPointsEarned",
+         COALESCE(SUM("xpChange"), 0)              AS "totalXpGained",
+         (SELECT COALESCE(MAX(length), 0) FROM streaks) AS "bestStreak"
+    FROM ordered
+`;
+
 export interface PaginatedGameHistoryResponse {
   data: GameHistoryResponse[];
   pagination: {
@@ -47,6 +92,8 @@ export class GameHistoryService {
   constructor(
     @InjectRepository(GameHistory)
     private gameHistoryRepository: Repository<GameHistory>,
+    @Inject(CACHE_MANAGER)
+    private readonly cacheManager: Cache,
   ) { }
 
   /**
@@ -58,6 +105,7 @@ export class GameHistoryService {
     try {
       const gameHistory = this.gameHistoryRepository.create(createGameHistoryDto);
       const savedHistory = await this.gameHistoryRepository.save(gameHistory);
+      await this.cacheManager.del(userStatsCacheKey(savedHistory.playerId));
 
       this.logger.debug(`Game history created with ID: ${savedHistory.id}`);
       return savedHistory;
@@ -135,71 +183,44 @@ export class GameHistoryService {
   }
 
   /**
-   * Gets user statistics from their game history
+   * Gets user statistics from their game history: one aggregate query
+   * (USER_STATS_SQL), cached per user for USER_STATS_CACHE_TTL_MS.
    */
-  async getUserStats(userId: string): Promise<{
-    totalGames: number;
-    correctGuesses: number;
-    incorrectGuesses: number;
-    accuracy: number;
-    totalPointsEarned: number;
-    totalXpGained: number;
-    bestStreak: number;
-    averagePointsPerGame: number;
-  }> {
+  async getUserStats(userId: string): Promise<UserStats> {
+    const cacheKey = userStatsCacheKey(userId);
+    const cached = await this.cacheManager.get<UserStats>(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
     this.logger.debug(`Calculating stats for user ${userId}`);
 
     try {
-      const histories = await this.gameHistoryRepository.find({
-        where: { playerId: userId },
-        order: { createdAt: 'ASC' },
-      });
+      const [row] = await this.gameHistoryRepository.query(USER_STATS_SQL, [
+        userId,
+      ]);
 
-      if (histories.length === 0) {
-        return {
-          totalGames: 0,
-          correctGuesses: 0,
-          incorrectGuesses: 0,
-          accuracy: 0,
-          totalPointsEarned: 0,
-          totalXpGained: 0,
-          bestStreak: 0,
-          averagePointsPerGame: 0,
-        };
-      }
-
-      const totalGames = histories.length;
-      const correctGuesses = histories.filter(h => h.isCorrect).length;
-      const incorrectGuesses = totalGames - correctGuesses;
+      // COUNT and SUM come back from Postgres as strings (bigint/numeric).
+      const totalGames = Number(row?.totalGames ?? 0);
+      const correctGuesses = Number(row?.correctGuesses ?? 0);
+      const totalPointsEarned = Number(row?.totalPointsEarned ?? 0);
       const accuracy = totalGames > 0 ? (correctGuesses / totalGames) * 100 : 0;
-      const totalPointsEarned = histories.reduce((sum, h) => sum + h.pointsAwarded, 0);
-      const totalXpGained = histories.reduce((sum, h) => sum + h.xpChange, 0);
+      const averagePointsPerGame =
+        totalGames > 0 ? totalPointsEarned / totalGames : 0;
 
-      // Calculate best streak
-      let currentStreak = 0;
-      let bestStreak = 0;
-
-      for (const history of histories) {
-        if (history.isCorrect) {
-          currentStreak++;
-          bestStreak = Math.max(bestStreak, currentStreak);
-        } else {
-          currentStreak = 0;
-        }
-      }
-
-      const averagePointsPerGame = totalGames > 0 ? totalPointsEarned / totalGames : 0;
-
-      return {
+      const stats: UserStats = {
         totalGames,
         correctGuesses,
-        incorrectGuesses,
+        incorrectGuesses: totalGames - correctGuesses,
         accuracy: Math.round(accuracy * 100) / 100, // Round to 2 decimal places
         totalPointsEarned,
-        totalXpGained,
-        bestStreak,
+        totalXpGained: Number(row?.totalXpGained ?? 0),
+        bestStreak: Number(row?.bestStreak ?? 0),
         averagePointsPerGame: Math.round(averagePointsPerGame * 100) / 100,
       };
+
+      await this.cacheManager.set(cacheKey, stats, USER_STATS_CACHE_TTL_MS);
+      return stats;
     } catch (error) {
       this.logger.error('Error calculating user stats:', error.stack);
       throw error;

@@ -7,6 +7,13 @@ import { GameHistory } from './entities/game-history.entity';
 import { User } from '../users/entities/user.entity';
 import { Role } from '../auth/roles/role.enum';
 import { ROLES_KEY } from '../auth/roles/roles.decorator';
+import { Cache } from 'cache-manager';
+
+const noCache = {
+  get: jest.fn().mockResolvedValue(undefined),
+  set: jest.fn().mockResolvedValue(undefined),
+  del: jest.fn().mockResolvedValue(undefined),
+};
 
 describe('Game history authorization', () => {
   const owner = { id: 'owner-1', role: Role.User } as User;
@@ -40,6 +47,7 @@ describe('Game history authorization', () => {
     repository = { findOne: jest.fn().mockResolvedValue(record) };
     service = new GameHistoryService(
       repository as unknown as Repository<GameHistory>,
+      noCache as unknown as Cache,
     );
   });
 
@@ -89,5 +97,75 @@ describe('Game history authorization', () => {
     );
 
     expect(roles).toEqual([Role.Admin]);
+  });
+});
+
+describe('GameHistoryService.getUserStats', () => {
+  // The aggregate row Postgres returns for this history, oldest first:
+  // correct, correct, wrong, correct, correct, correct (best streak 3).
+  const row = {
+    totalGames: '6',
+    correctGuesses: '5',
+    totalPointsEarned: '500',
+    totalXpGained: '50',
+    bestStreak: '3',
+  };
+
+  let query: jest.Mock;
+  let cache: { get: jest.Mock; set: jest.Mock; del: jest.Mock };
+  let service: GameHistoryService;
+
+  beforeEach(() => {
+    query = jest.fn().mockResolvedValue([row]);
+    cache = {
+      get: jest.fn().mockResolvedValue(undefined),
+      set: jest.fn().mockResolvedValue(undefined),
+      del: jest.fn().mockResolvedValue(undefined),
+    };
+    service = new GameHistoryService(
+      { query } as unknown as Repository<GameHistory>,
+      cache as unknown as Cache,
+    );
+  });
+
+  it('computes every stat from one query', async () => {
+    await expect(service.getUserStats('user-1')).resolves.toEqual({
+      totalGames: 6,
+      correctGuesses: 5,
+      incorrectGuesses: 1,
+      accuracy: 83.33,
+      totalPointsEarned: 500,
+      totalXpGained: 50,
+      bestStreak: 3,
+      averagePointsPerGame: 83.33,
+    });
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(query.mock.calls[0][1]).toEqual(['user-1']);
+  });
+
+  it('returns zeros for a player with no history', async () => {
+    query.mockResolvedValue([
+      {
+        totalGames: '0',
+        correctGuesses: '0',
+        totalPointsEarned: '0',
+        totalXpGained: '0',
+        bestStreak: '0',
+      },
+    ]);
+    await expect(service.getUserStats('user-1')).resolves.toMatchObject({
+      totalGames: 0,
+      accuracy: 0,
+      bestStreak: 0,
+      averagePointsPerGame: 0,
+    });
+  });
+
+  it('serves a cached result without querying', async () => {
+    cache.get.mockResolvedValue({ totalGames: 1 });
+    await expect(service.getUserStats('user-1')).resolves.toEqual({
+      totalGames: 1,
+    });
+    expect(query).not.toHaveBeenCalled();
   });
 });

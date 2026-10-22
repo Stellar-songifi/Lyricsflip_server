@@ -7,11 +7,25 @@ import * as Joi from 'joi';
  * malformed value fails startup with a message naming the offending key
  * instead of surfacing later as an obscure runtime error.
  */
+/** Required unless DATABASE_URL is set, which then supplies the value. */
+const requiredWithoutDatabaseUrl = (schema: Joi.StringSchema) =>
+  schema.when('DATABASE_URL', {
+    is: Joi.exist(),
+    then: Joi.optional(),
+    otherwise: Joi.required(),
+  });
+
 export const envValidationSchema = Joi.object({
   NODE_ENV: Joi.string()
     .valid('development', 'test', 'production')
     .default('development'),
   PORT: Joi.number().port().default(3000),
+  // Interface to listen on. 0.0.0.0 (all interfaces) so the server is
+  // reachable through a container's published port; set 127.0.0.1 to accept
+  // local connections only.
+  HOST: Joi.alternatives()
+    .try(Joi.string().ip(), Joi.string().hostname())
+    .default('0.0.0.0'),
   LOG_LEVEL: Joi.string()
     .valid('error', 'warn', 'log', 'debug', 'verbose')
     .default('debug'),
@@ -38,15 +52,22 @@ export const envValidationSchema = Joi.object({
   SEED_ADMIN_EMAIL: Joi.string().email().optional(),
   SEED_ADMIN_PASSWORD: Joi.string().optional(),
 
-  // Database. DATABASE_URL is accepted as an alternative to the discrete
-  // DB_* variables, but nothing currently reads it directly - it is kept
-  // here only so setting it does not fail validation.
-  DATABASE_URL: Joi.string().uri().optional(),
-  DB_HOST: Joi.string().required(),
+  // Database (src/config/database.config.ts). Either DATABASE_URL, which
+  // takes precedence, or the discrete DB_* variables.
+  DATABASE_URL: Joi.string()
+    .uri({ scheme: ['postgres', 'postgresql'] })
+    .optional(),
+  DB_HOST: requiredWithoutDatabaseUrl(Joi.string()),
   DB_PORT: Joi.number().port().default(5432),
-  DB_USERNAME: Joi.string().required(),
-  DB_PASSWORD: Joi.string().required(),
-  DB_NAME: Joi.string().required(),
+  DB_USERNAME: requiredWithoutDatabaseUrl(Joi.string()),
+  DB_PASSWORD: requiredWithoutDatabaseUrl(Joi.string()),
+  DB_NAME: requiredWithoutDatabaseUrl(Joi.string()),
+  // TLS: disable (default), require (encrypted, certificate not verified), or
+  // verify-full (verified against DB_SSL_CA or the system CAs). When unset,
+  // an sslmode in DATABASE_URL applies.
+  DB_SSL: Joi.string().valid('disable', 'require', 'verify-full').optional(),
+  // CA certificate: the PEM itself (literal \n accepted) or a path to it.
+  DB_SSL_CA: Joi.string().optional(),
   DB_REPLICA_HOST: Joi.string().optional(),
   DB_REPLICA_PORT: Joi.number().port().optional(),
   DB_REPLICA_USERNAME: Joi.string().optional(),
