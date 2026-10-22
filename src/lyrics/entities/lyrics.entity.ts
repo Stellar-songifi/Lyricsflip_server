@@ -24,8 +24,12 @@ export class Lyrics {
   @PrimaryGeneratedColumn()
   id: number
 
-  @Column("text")
-  content: string
+  // Full lyric text is no longer stored (R2-89): the game only ever serves
+  // lyricSnippet, and keeping whole songs is exactly what CONTENT_POLICY.md
+  // rules out. The column is kept nullable so old clients that still send
+  // `content` do not break; LyricsService never persists it.
+  @Column("text", { nullable: true })
+  content: string | null
 
   @Column()
   artist: string
@@ -66,6 +70,26 @@ export class Lyrics {
 
   @Column({ type: "int", default: 0 })
   timesUsed: number
+
+  // Where the lyric came from, so everything from one source can be found
+  // and deactivated in one action if its rights holder objects. Free text,
+  // stored trimmed and lower-cased so "Genius" and "genius " match.
+  @Column({ type: "varchar", length: 100 })
+  @Index("IDX_lyrics_source")
+  source: string
+
+  @Column({ type: "varchar", length: 500, nullable: true })
+  sourceUrl: string | null
+
+  // Licence or agreement the snippet is used under, e.g. "fair-use-quote" or
+  // a contract reference.
+  @Column({ type: "varchar", length: 100, nullable: true })
+  licence: string | null
+
+  // Who added the lyric: the admin's user id, or "seed". Unlike createdBy
+  // this is plain text, so it survives the account being removed.
+  @Column({ type: "varchar", length: 100, nullable: true })
+  addedBy: string | null
 
   // Nullable + SET NULL so deleting or deactivating the admin who seeded a
   // lyric never deletes the lyric itself (and by extension the game history

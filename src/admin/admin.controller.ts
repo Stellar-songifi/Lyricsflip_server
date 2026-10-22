@@ -37,8 +37,7 @@ import {
   GrantMockBalanceDto,
   GrantMockBalanceMode,
 } from './dto/grant-mock-balance.dto';
-import { AdminUserQueryDto } from './dto/admin-user-query.dto';
-import { AdminLyricQueryDto } from './dto/admin-lyric-query.dto';
+import { AdminLyricQueryDto, AdminUserQueryDto } from './dto/admin-query.dto';
 import { AdminReportQueryDto } from './dto/admin-report-query.dto';
 import { ResolveReportDto } from './dto/resolve-report.dto';
 import { GetUser } from '../auth/decorators/get-user.decorator';
@@ -116,6 +115,12 @@ export class AdminController {
     required: false,
     enum: ['active', 'inactive', 'all'],
   })
+  @ApiQuery({
+    name: 'source',
+    required: false,
+    type: String,
+    description: 'Only lyrics from this source',
+  })
   @ApiResponse({ status: 200, description: 'List of lyrics.', type: [Object] })
   findAllLyrics(@Query() query: AdminLyricQueryDto) {
     return this.adminService.findAllLyrics(query);
@@ -136,6 +141,26 @@ export class AdminController {
     const dryRun = body?.dryRun === true || body?.dryRun === 'true';
     const mode = body?.mode === 'create-only' ? 'create-only' : 'upsert';
     return this.adminService.importLyrics(file, dryRun, user, mode);
+  }
+
+  /**
+   * Takedown by source: deactivates every active lyric recorded as coming
+   * from `source` in one statement. Audited with the source as the target;
+   * the response lists the ids so individual lyrics can be restored.
+   */
+  @Post('lyrics/sources/:source/deactivate')
+  @Audited({
+    action: 'admin.lyric.deactivate-by-source',
+    targetType: 'lyric_source',
+    targetParam: 'source',
+  })
+  @ApiOperation({ summary: 'Deactivate all lyrics from one source' })
+  @ApiResponse({
+    status: 201,
+    description: 'Lyrics deactivated; returns the count and their ids.',
+  })
+  deactivateLyricsBySource(@Param('source') source: string) {
+    return this.adminService.deactivateLyricsBySource(source);
   }
 
   @Post('lyrics/:id/restore')

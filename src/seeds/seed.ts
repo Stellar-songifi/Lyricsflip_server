@@ -157,8 +157,10 @@ export async function bootstrap() {
 
     await lyricsRepo.save(
       lyricsRepo.create({
-        content: entry.content,
+        // Only the snippet is stored; see CONTENT_POLICY.md.
         lyricSnippet: entry.lyricSnippet,
+        source: 'seed',
+        addedBy: 'seed',
         songTitle: entry.songTitle,
         artist: entry.artist,
         genre: toGenre(entry.genre),

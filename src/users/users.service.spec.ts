@@ -17,6 +17,7 @@ import { Wager, WagerStatus } from '../tokens/entities/wager.entity';
 import { cacheConfig } from '../config/cache.config';
 import * as bcrypt from 'bcrypt';
 import { TokenRevocationService } from '../auth/token-revocation.service';
+import { TOKEN_SERVICE } from '../tokens/interfaces/token.interface';
 
 jest.mock('bcrypt', () => ({
   compare: jest.fn(),
@@ -48,6 +49,10 @@ describe('UsersService', () => {
     del: jest.fn(),
   };
 
+  const mockTokenService = {
+    getUserBalance: jest.fn().mockResolvedValue('0'),
+  };
+
   const mockTokenRevocationService = {
     revokeAllForUser: jest.fn(),
     revokeAllUserTokens: jest.fn(),
@@ -72,6 +77,10 @@ describe('UsersService', () => {
         {
           provide: TokenRevocationService,
           useValue: mockTokenRevocationService,
+        },
+        {
+          provide: TOKEN_SERVICE,
+          useValue: mockTokenService,
         },
       ],
     }).compile();

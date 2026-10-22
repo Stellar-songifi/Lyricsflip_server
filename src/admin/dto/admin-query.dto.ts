@@ -1,5 +1,6 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsEnum, IsIn, IsOptional } from 'class-validator';
+import { Transform } from 'class-transformer';
+import { IsEnum, IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 
 export enum AdminUserSortBy {
@@ -72,4 +73,16 @@ export class AdminLyricQueryDto extends PaginationQueryDto {
   @IsOptional()
   @IsIn([AdminLyricStatus.ACTIVE, AdminLyricStatus.INACTIVE, AdminLyricStatus.ALL])
   status?: AdminLyricStatus = AdminLyricStatus.ALL;
+
+  @ApiPropertyOptional({
+    description: 'Only lyrics from this source (case-insensitive)',
+    maxLength: 100,
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim().toLowerCase() : value,
+  )
+  source?: string;
 }
