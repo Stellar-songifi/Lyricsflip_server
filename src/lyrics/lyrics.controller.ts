@@ -30,9 +30,9 @@ import {
   ApiBadRequestResponse,
 } from '@nestjs/swagger';
 import { User } from '../users/entities/user.entity';
-import { Roles } from 'src/auth/roles/roles.decorator';
-import { Role } from 'src/auth/roles/role.enum';
-import { GetUser } from 'src/auth/decorators/user.decorator';
+import { Roles } from '../auth/roles/roles.decorator';
+import { Role } from '../auth/roles/role.enum';
+import { GetUser } from '../auth/decorators/user.decorator';
 import { Lyrics } from './entities/lyrics.entity';
 import { AdminLyricDto, PlayerLyricDto } from './dto/lyric-response.dto';
 import { normalizeDecade } from '../game/progression.util';

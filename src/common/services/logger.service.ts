@@ -2,6 +2,7 @@ import { Injectable, LoggerService as NestLoggerService } from '@nestjs/common';
 import * as winston from 'winston';
 import * as DailyRotateFile from 'winston-daily-rotate-file';
 import { getRequestId } from '../request-context';
+import { resolveLogLevel } from './log-level';
 
 /**
  * Winston-backed NestJS logger.
@@ -25,7 +26,9 @@ export class LoggerService implements NestLoggerService {
   constructor() {
     const isProduction = process.env.NODE_ENV === 'production';
     const logToFile = process.env.LOG_TO_FILE === 'true';
-    const level = process.env.LOG_LEVEL || (isProduction ? 'info' : 'debug');
+    // `log` (Nest) maps to `info`: Winston has no `log` level and would drop
+    // every message (#359).
+    const level = resolveLogLevel(process.env.LOG_LEVEL, process.env.NODE_ENV);
 
     // ------------------------------------------------------------------
     // Formats

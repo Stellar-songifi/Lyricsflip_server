@@ -1,4 +1,5 @@
 import * as Joi from 'joi';
+import { ACCEPTED_LOG_LEVELS } from '../common/services/log-level';
 
 /**
  * Validates every environment variable the app reads at boot.
@@ -12,9 +13,17 @@ export const envValidationSchema = Joi.object({
     .valid('development', 'test', 'production')
     .default('development'),
   PORT: Joi.number().port().default(3000),
-  LOG_LEVEL: Joi.string()
-    .valid('error', 'warn', 'log', 'debug', 'verbose')
-    .default('debug'),
+  // Winston levels, plus Nest's `log` (mapped to `info`) for compatibility.
+  // Default: info in production, debug otherwise (#359).
+  LOG_LEVEL: Joi.when('NODE_ENV', {
+    is: 'production',
+    then: Joi.string()
+      .valid(...ACCEPTED_LOG_LEVELS)
+      .default('info'),
+    otherwise: Joi.string()
+      .valid(...ACCEPTED_LOG_LEVELS)
+      .default('debug'),
+  }),
   FRONTEND_URL: Joi.string().uri().default('http://localhost:3000'),
 
   // Auth

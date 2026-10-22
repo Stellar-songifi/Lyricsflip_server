@@ -18,7 +18,7 @@ import { Role } from './roles/role.enum';
 import { AuthResult, AuthTokenService } from './services/auth-token.service';
 import { EmailVerificationService } from './services/email-verification.service';
 import { PasswordResetService } from './services/password-reset.service';
-import { User } from 'src/users/entities/user.entity';
+import { User } from '../users/entities/user.entity';
 import { RefreshToken } from './entities/refresh-token.entity';
 
 // 30 days: long enough that a client does not need to re-login often, short

@@ -12,7 +12,7 @@ import {
 } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { Genre, toGenre } from 'src/lyrics/entities/genre.enum';
+import { Genre, toGenre } from '../../lyrics/entities/genre.enum';
 
 export class RandomLyricOptionsDto {
   @ApiPropertyOptional({ description: 'Category filter' })

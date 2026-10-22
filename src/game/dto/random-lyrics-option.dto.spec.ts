@@ -1,7 +1,7 @@
 import 'reflect-metadata';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
-import { Genre } from 'src/lyrics/entities/genre.enum';
+import { Genre } from '../../lyrics/entities/genre.enum';
 import { RandomLyricOptionsDto } from './random-lyrics-option.dto';
 
 async function check(query: object) {
