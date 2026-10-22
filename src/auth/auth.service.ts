@@ -4,9 +4,10 @@ import {
   ConflictException,
   UnauthorizedException,
   BadRequestException,
+  NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { IsNull, Repository } from 'typeorm';
+import { IsNull, MoreThan, Repository } from 'typeorm';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
@@ -20,6 +21,7 @@ import { EmailVerificationService } from './services/email-verification.service'
 import { PasswordResetService } from './services/password-reset.service';
 import { User } from 'src/users/entities/user.entity';
 import { RefreshToken } from './entities/refresh-token.entity';
+import { truncateIp } from '../common/utils/ip.util';
 
 // 30 days: long enough that a client does not need to re-login often, short
 // enough to bound how long a leaked-but-unused refresh token stays valid.
@@ -28,6 +30,24 @@ const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export interface TokenPair {
   accessToken: string;
   refreshToken: string;
+}
+
+/** Where a refresh token is being used from; recorded on the session. */
+export interface ClientContext {
+  userAgent?: string | null;
+  ip?: string | null;
+  deviceName?: string | null;
+}
+
+/** One signed-in device, as shown by GET /auth/sessions. */
+export interface SessionView {
+  id: string;
+  deviceName: string | null;
+  userAgent: string | null;
+  ip: string | null;
+  createdAt: Date;
+  lastUsedAt: Date | null;
+  expiresAt: Date;
 }
 
 @Injectable()
@@ -131,7 +151,10 @@ export class AuthService {
    * pair. The presented token is revoked as part of the rotation, so it
    * cannot be replayed even if it leaks after use.
    */
-  async refresh(refreshToken: string): Promise<TokenPair> {
+  async refresh(
+    refreshToken: string,
+    context: ClientContext = {},
+  ): Promise<TokenPair> {
     const tokenHash = this.hashRefreshToken(refreshToken);
 
     const existing = await this.refreshTokenRepository.findOne({
@@ -156,7 +179,62 @@ export class AuthService {
     existing.revokedAt = new Date();
     await this.refreshTokenRepository.save(existing);
 
-    return this.issueTokenPair(user);
+    // The rotated token is the same device, so it keeps its name unless the
+    // client sends a new one.
+    return this.issueTokenPair(user, {
+      ...context,
+      deviceName: context.deviceName ?? existing.deviceName,
+    });
+  }
+
+  /** The user's signed-in devices: unrevoked, unexpired refresh tokens. */
+  async listSessions(userId: string): Promise<SessionView[]> {
+    const tokens = await this.refreshTokenRepository.find({
+      where: {
+        userId,
+        revokedAt: IsNull(),
+        expiresAt: MoreThan(new Date()),
+      },
+      order: { lastUsedAt: { direction: 'DESC', nulls: 'LAST' }, createdAt: 'DESC' },
+    });
+
+    return tokens.map((token) => ({
+      id: token.id,
+      deviceName: token.deviceName,
+      userAgent: token.userAgent,
+      ip: token.ip,
+      createdAt: token.createdAt,
+      lastUsedAt: token.lastUsedAt,
+      expiresAt: token.expiresAt,
+    }));
+  }
+
+  /**
+   * Signs one device out by revoking its refresh token. Its current access
+   * token stays valid until it expires (JWT_EXPIRES_IN, 15 minutes by
+   * default); use logoutAll to cut every access token off immediately.
+   */
+  async revokeSession(userId: string, sessionId: string): Promise<void> {
+    const result = await this.refreshTokenRepository.update(
+      { id: sessionId, userId, revokedAt: IsNull() },
+      { revokedAt: new Date() },
+    );
+    if (!result.affected) {
+      throw new NotFoundException('Session not found');
+    }
+  }
+
+  /**
+   * Signs out everywhere without a password change: bumps tokenVersion, so
+   * every outstanding access token is rejected by JwtStrategy, and revokes
+   * every refresh token.
+   */
+  async logoutAll(userId: string): Promise<void> {
+    await this.userRepository.increment({ id: userId }, 'tokenVersion', 1);
+    await this.refreshTokenRepository.update(
+      { userId, revokedAt: IsNull() },
+      { revokedAt: new Date() },
+    );
   }
 
   /** Revokes a single refresh token, e.g. on explicit logout. */
@@ -273,7 +351,10 @@ export class AuthService {
   }
 
   /** Signs a short-lived access token and issues a new stored refresh token. */
-  private async issueTokenPair(user: User): Promise<TokenPair> {
+  private async issueTokenPair(
+    user: User,
+    context: ClientContext = {},
+  ): Promise<TokenPair> {
     const payload: JwtPayload = {
       sub: user.id,
       email: user.email,
@@ -292,6 +373,10 @@ export class AuthService {
         tokenHash,
         expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_MS),
         revokedAt: null,
+        userAgent: context.userAgent?.slice(0, 255) ?? null,
+        ip: truncateIp(context.ip),
+        lastUsedAt: new Date(),
+        deviceName: context.deviceName ?? null,
       }),
     );
 

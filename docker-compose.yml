@@ -39,17 +39,51 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    environment:
-      NODE_ENV: production
-      DATABASE_HOST: postgres
-      DATABASE_PORT: 5432
-      DATABASE_USER: ${POSTGRES_USER:-app}
-      DATABASE_PASSWORD: ${POSTGRES_PASSWORD:-app}
-      DATABASE_NAME: ${POSTGRES_DB:-app}
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
+    # The variable names here are the ones src/config/env.validation.ts reads.
+    environment: &app-env
+      # Local development stack. NODE_ENV=production would also require a
+      # 32+ character JWT_SECRET and STELLAR_WEB_AUTH_SECRET.
+      NODE_ENV: ${NODE_ENV:-development}
+      # Listen on all interfaces so the published port reaches the API.
+      HOST: 0.0.0.0
+      PORT: 3000
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USERNAME: ${POSTGRES_USER:-app}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-app}
+      DB_NAME: ${POSTGRES_DB:-app}
+      REDIS_URL: redis://redis:6379
+      # DEVELOPMENT ONLY. Never use this value anywhere reachable from the
+      # internet; set JWT_SECRET in your shell or .env to override it.
+      JWT_SECRET: ${JWT_SECRET:-dev-only-jwt-secret-do-not-use-in-production}
+      # docker-entrypoint.sh applies pending migrations before starting.
+      RUN_MIGRATIONS: "true"
     ports:
       - "3000:3000"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # One-off seed: docker compose run --rm seed
+  # Uses the build stage, which has the TypeScript sources and ts-node that
+  # `npm run seed` needs.
+  seed:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: build
+    profiles:
+      - seed
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      <<: *app-env
+      RUN_MIGRATIONS: "false"
+    command: ["npm", "run", "seed"]
 
   stellar:
     image: stellar/quickstart

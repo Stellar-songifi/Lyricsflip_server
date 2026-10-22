@@ -14,10 +14,25 @@ export class PlayerSummaryDto {
   }
 }
 
-/** A user as anyone may see them: identity plus leaderboard-public stats. */
-export class PublicUserDto extends PlayerSummaryDto {
+/** An unlocked achievement as shown on a public profile. */
+export class PublicAchievementDto {
   @ApiProperty()
-  xp: number;
+  code: string;
+
+  @ApiProperty()
+  name: string;
+
+  @ApiProperty()
+  description: string;
+}
+
+/**
+ * A player as anyone may see them (GET /users/:username/public). These are
+ * the only public fields; email, wallet, preferences and flags never appear.
+ */
+export class PublicUserDto {
+  @ApiProperty()
+  username: string;
 
   @ApiProperty()
   level: number;
@@ -25,13 +40,40 @@ export class PublicUserDto extends PlayerSummaryDto {
   @ApiProperty({ enum: UserLevel })
   levelTitle: UserLevel;
 
-  static from(user: User): PublicUserDto {
+  @ApiProperty()
+  xp: number;
+
+  @ApiProperty({ description: 'When the account was created' })
+  createdAt: Date;
+
+  @ApiProperty({ description: 'Completed head-to-head sessions won' })
+  wins: number;
+
+  @ApiProperty({ description: 'Completed head-to-head sessions lost' })
+  losses: number;
+
+  @ApiProperty({ description: 'wins / (wins + losses), 0 with no games' })
+  winRate: number;
+
+  @ApiProperty({ type: [PublicAchievementDto] })
+  achievements: PublicAchievementDto[];
+
+  static from(
+    user: User,
+    record: { wins: number; losses: number },
+    achievements: PublicAchievementDto[],
+  ): PublicUserDto {
+    const games = record.wins + record.losses;
     return {
-      id: user.id,
       username: user.username,
-      xp: user.xp,
       level: user.level,
       levelTitle: user.levelTitle,
+      xp: user.xp,
+      createdAt: user.createdAt,
+      wins: record.wins,
+      losses: record.losses,
+      winRate: games > 0 ? record.wins / games : 0,
+      achievements,
     };
   }
 }

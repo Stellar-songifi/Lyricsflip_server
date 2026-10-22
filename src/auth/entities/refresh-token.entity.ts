@@ -26,11 +26,31 @@ export class RefreshToken {
   @Column()
   tokenHash: string;
 
+  @Index('IDX_refresh_tokens_expiresAt')
   @Column({ type: 'timestamptz' })
   expiresAt: Date;
 
+  @Index('IDX_refresh_tokens_revokedAt')
   @Column({ type: 'timestamptz', nullable: true })
   revokedAt: Date | null;
+
+  /** User-Agent of the client that last used this session, capped at 255. */
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  userAgent: string | null;
+
+  /**
+   * Network the session was last used from, truncated per the retention
+   * policy (IPv4 /24, IPv6 /48; see truncateIp). Never the full address.
+   */
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  ip: string | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  lastUsedAt: Date | null;
+
+  /** Optional name the client gives the device, e.g. "Ada's iPhone". */
+  @Column({ type: 'varchar', length: 100, nullable: true })
+  deviceName: string | null;
 
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;

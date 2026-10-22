@@ -23,6 +23,7 @@ import { ChallengesModule } from './challenges/challenges.module';
 import { TokensModule } from './tokens/tokens.module';
 import { GameHistoryModule } from './game-history/game-history.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { RetentionModule } from './retention/retention.module';
 import { XpModule } from './xp-level/xp.module';
 import { AuditModule } from './audit/audit.module';
 import { MetricsModule } from './metrics/metrics.module';
@@ -212,6 +213,7 @@ import type { LoggingOptions } from 'typeorm';
     TokensModule,
     GameHistoryModule,
     NotificationsModule,
+    RetentionModule,
     XpModule,
     AuditModule,
     MetricsModule,
