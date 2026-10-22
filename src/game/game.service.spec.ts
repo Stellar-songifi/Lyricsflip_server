@@ -2,7 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { BadRequestException } from '@nestjs/common';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { GameService } from './game.service';
-import { Lyric } from '../lyrics/entities/lyric.entity';
+import { Lyrics as Lyric } from '../lyrics/entities/lyrics.entity';
 import { Genre } from '../lyrics/entities/genre.enum';
 import { MusicGenre } from '../users/entities/user.entity';
 
@@ -21,7 +21,7 @@ describe('GameService', () => {
   let service: GameService;
   let lyricRepository: { createQueryBuilder: jest.Mock };
 
-  const lyric = { id: 'lyric-1', content: 'line', genre: Genre.Pop } as Lyric;
+  const lyric = { id: 1, content: 'line', genre: Genre.Pop } as Lyric;
 
   beforeEach(async () => {
     lyricRepository = {

@@ -20,6 +20,8 @@ export interface ErrorResponse {
   requestId?: string;
 }
 
+import { WsExceptionFilter } from './ws-exception.filter';
+
 /**
  * Global exception filter, replacing `ErrorInterceptor`.
  *
@@ -39,7 +41,21 @@ export class AllExceptionsFilter implements ExceptionFilter {
   private readonly logger = new Logger(AllExceptionsFilter.name);
   private readonly isProduction = process.env.NODE_ENV === 'production';
 
+  private readonly wsFilter = new WsExceptionFilter();
+
   catch(exception: unknown, host: ArgumentsHost): void {
+    // Only HTTP has a request and response to format (#362). getType is
+    // missing only on hand-built hosts in unit tests, which are HTTP.
+    const type = typeof host.getType === 'function' ? host.getType() : 'http';
+    if (type === 'ws') {
+      this.catchWs(exception, host);
+      return;
+    }
+    if (type !== 'http') {
+      this.logNonHttp(exception, type);
+      return;
+    }
+
     const ctx = host.switchToHttp();
     const request = ctx.getRequest<Request>();
     const response = ctx.getResponse<Response>();
@@ -163,6 +179,58 @@ export class AllExceptionsFilter implements ExceptionFilter {
       method,
       requestId,
     };
+  }
+
+  /**
+   * A WebSocket handler failed: log the real error with the event and socket,
+   * then emit the socket error contract (docs/realtime.md) to the client.
+   */
+  private catchWs(exception: unknown, host: ArgumentsHost): void {
+    const client = host.switchToWs().getClient<{ id?: string }>();
+    const name = exception instanceof Error ? exception.name : 'UnknownError';
+    const message =
+      exception instanceof Error ? exception.message : String(exception);
+    const event = this.wsEvent(host);
+    const context = {
+      transport: 'ws',
+      event,
+      socketId: client?.id,
+      errorName: name,
+      errorMessage: message,
+    };
+    const stack = exception instanceof Error ? exception.stack : undefined;
+    if (!this.isProduction && stack) {
+      this.logger.error(
+        `WS error occurred: ${name} - ${message}`,
+        stack,
+        context,
+      );
+    } else {
+      this.logger.error(`WS error occurred: ${name} - ${message}`, context);
+    }
+
+    this.wsFilter.catch(exception, host);
+  }
+
+  /** The @SubscribeMessage event name, when the host exposes the handler. */
+  private wsEvent(host: ArgumentsHost): string | undefined {
+    const getHandler = (host as { getHandler?: () => unknown }).getHandler;
+    const handler =
+      typeof getHandler === 'function' ? getHandler.call(host) : undefined;
+    if (typeof handler !== 'function') return undefined;
+    return Reflect.getMetadata('message', handler) as string | undefined;
+  }
+
+  /** Any other context (RPC): there is no response to write, so just log. */
+  private logNonHttp(exception: unknown, type: string): void {
+    const name = exception instanceof Error ? exception.name : 'UnknownError';
+    const message =
+      exception instanceof Error ? exception.message : String(exception);
+    this.logger.error(`Error occurred (${type}): ${name} - ${message}`, {
+      transport: type,
+      errorName: name,
+      errorMessage: message,
+    });
   }
 
   private logError(exception: unknown, request: Request, requestId: string): void {

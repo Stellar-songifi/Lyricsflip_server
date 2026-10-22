@@ -23,6 +23,7 @@ function getFactory(): Factory {
 
 const contextFor = (user?: Partial<User>) =>
   ({
+    getType: () => 'http',
     switchToHttp: () => ({ getRequest: () => ({ user }) }),
   }) as unknown as ExecutionContext;
 
@@ -42,5 +43,28 @@ describe('GetUser', () => {
   it('returns undefined when there is no authenticated user', () => {
     expect(factory(undefined, contextFor())).toBeUndefined();
     expect(factory('id', contextFor())).toBeUndefined();
+  });
+});
+
+describe('GetUser in a WebSocket handler (#362)', () => {
+  const factory = getFactory();
+  const wsContextFor = (data: Record<string, unknown> | undefined) =>
+    ({
+      getType: () => 'ws',
+      switchToHttp: () => {
+        throw new Error('switchToHttp must not be used for a socket');
+      },
+      switchToWs: () => ({ getClient: () => ({ id: 'socket-1', data }) }),
+    }) as unknown as ExecutionContext;
+
+  it('reads client.data.user', () => {
+    const user = { id: 'a1b2c3d4-uuid', username: 'player' };
+    expect(factory(undefined, wsContextFor({ user }))).toBe(user);
+    expect(factory('id', wsContextFor({ user }))).toBe('a1b2c3d4-uuid');
+  });
+
+  it('returns undefined for a socket without a user', () => {
+    expect(factory('id', wsContextFor({}))).toBeUndefined();
+    expect(factory(undefined, wsContextFor(undefined))).toBeUndefined();
   });
 });

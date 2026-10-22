@@ -61,13 +61,77 @@ INSERT INTO "migrations" ("timestamp", "name") VALUES
   (1788480000000, 'MigrateWagersToStellarEscrow1788480000000'),
   (1788490000000, 'CreateGameRoundsTable1788490000000'),
   (1790000000000, 'AddLatestStakeHashesToWagers1790000000000'),
-  (1790000000000, 'CreateAuditLogsTable1790000000000'),
+  (1790000000001, 'CreateAuditLogsTable1790000000001'),
   (1790363455031, 'RepairSchemaToMatchEntities1790363455031'),
   (1790363500000, 'RenameGossipGodToGossipGuru1790363500000'),
   (1791000000000, 'AddStakeDeadlineToWagers1791000000000'),
   (1792000000000, 'AddTimedRoundsHintsAndDailyChallenges1792000000000'),
   (1793000000000, 'AddDifficultyConstraintAndDefault1793000000000'),
-  (1793000000000, 'AddEmailVerificationAndPasswordReset1793000000000');
+  (1793000000001, 'AddEmailVerificationAndPasswordReset1793000000001'),
+  (1794000000000, 'AddRoomCodeHostAndLifecycle1794000000000'),
+  (1794000000001, 'AddAliasesAndFixLyricsCreatedBy1794000000001'),
+  (1794000000002, 'AddWagerSettlementIntent1794000000002'),
+  (1794000000003, 'AlignAuthTokenTables1794000000003'),
+  (1794000000004, 'AddResponsiblePlayColumnsToUsers1794000000004'),
+  (1794000000005, 'CreateNotificationsTable1794000000005'),
+  (1794000000006, 'AlignIndexNames1794000000006');
+```
+
+Every migration has its own timestamp. TypeORM orders migrations by it, so
+two sharing one ran in file-system order and were recorded ambiguously.
+`scripts/check-migration-location.sh` (the `Migration location` workflow) and
+`src/migration-chain.spec.ts` fail when a timestamp is reused or a filename
+prefix disagrees with its class name. Pick a timestamp later than every
+existing one; `migration:generate` does this for you.
+
+## Entity drift repaired in 1794000000000–1794000000006
+
+Several entity changes were merged without migrations, so a database built
+from the chain failed at the first query touching them (#358). Each of these
+migrations is guarded (`IF NOT EXISTS`, or a check of the current type or
+name), so it also brings a database built with `synchronize` in line:
+
+| Migration | Brings in line |
+|---|---|
+| `AddRoomCodeHostAndLifecycle` | `rooms.code` (unique; existing rooms get a code), `hostId`, `maxPlayers`, `status` (closed rooms become `finished`), `startedAt`, `roundCount` |
+| `AddAliasesAndFixLyricsCreatedBy` | `lyrics.artistAliases`, `titleAliases`; `createdById` nullable with ON DELETE SET NULL; the difficulty check under TypeORM's name |
+| `AddWagerSettlementIntent` | `wagers.settlementKind`, `intendedWinnerId` |
+| `AlignAuthTokenTables` | `refresh_tokens`, `email_tokens`, `password_reset_tokens`: `timestamptz`, TypeORM index and key names, `email_tokens.purpose` rewritten to `verify_email` |
+| `AddResponsiblePlayColumnsToUsers` | `users.dailyStakeLimit`, `dailyStakeLimitEffectiveAt`, `selfExclusionEndsAt` |
+| `CreateNotificationsTable` | `notifications` |
+| `AlignIndexNames` | `audit_logs` index names; the `game_history (createdAt, playerId)` and `game_rounds (userId, issuedAt)` indexes |
+
+Two earlier migrations failed on an empty database because they ran before
+the table or column they change existed. They now skip that step, and a later
+migration does it instead:
+
+- `AddCaseInsensitiveUniqueIndexToUsers` skips the `username` index when
+  `users.username` does not exist yet; `AddResponsiblePlayColumnsToUsers`
+  creates it.
+- `AddSetNullToLyricsCreatedBy` does nothing when `lyrics` does not exist yet;
+  `AddAliasesAndFixLyricsCreatedBy` makes the change.
+
+`src/lyrics/entities/lyric.entity.ts` was removed. It mapped a second entity,
+with a uuid primary key, onto the same `lyrics` table, so `migration:check`
+could never pass. Nothing imported it.
+
+### Databases that ran a migration under its old name
+
+`CreateAuditLogsTable` and `AddEmailVerificationAndPasswordReset` were renamed
+to give them unique timestamps. On a database that already ran them under the
+old name, `migration:run` sees the new name as pending and runs it again.
+Both are idempotent, so this only records the new name next to the old one.
+To keep the `migrations` table tidy instead, update the rows before running
+the new migrations:
+
+```sql
+UPDATE "migrations"
+SET "timestamp" = 1790000000001, "name" = 'CreateAuditLogsTable1790000000001'
+WHERE "name" = 'CreateAuditLogsTable1790000000000';
+
+UPDATE "migrations"
+SET "timestamp" = 1793000000001, "name" = 'AddEmailVerificationAndPasswordReset1793000000001'
+WHERE "name" = 'AddEmailVerificationAndPasswordReset1793000000000';
 ```
 
 ## Upgrading an existing database

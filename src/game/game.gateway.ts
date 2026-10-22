@@ -15,6 +15,8 @@ import { JwtService } from '@nestjs/jwt';
 import { GameLogicService } from './game.service';
 import { RandomLyricOptionsDto } from './dto/random-lyrics-option.dto';
 import { GuessDto } from './dto/guess.dto';
+import type { SocketUser } from '../auth/auth-context.util';
+import type { JwtPayload } from '../auth/interfaces/jwt-payload.interface';
 
 interface GameSession {
   playerId: string;
@@ -83,13 +85,18 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
   async handleConnection(client: Socket) {
     const token = this.extractToken(client);
     let userId: string;
+    let user: SocketUser;
     try {
       if (!token) throw new Error('missing token');
-      const payload = await this.jwtService.verifyAsync<{ sub: string }>(
-        token,
-        { secret: this.configService.get<string>('JWT_SECRET') },
-      );
+      const payload = await this.jwtService.verifyAsync<
+        Pick<JwtPayload, 'sub' | 'username' | 'role'>
+      >(token, { secret: this.configService.get<string>('JWT_SECRET') });
       userId = payload.sub;
+      user = {
+        id: payload.sub,
+        username: payload.username,
+        role: payload.role,
+      };
     } catch {
       this.logger.warn(`Rejected unauthenticated connection: ${client.id}`);
       client.emit('error', { message: 'Unauthorized' });
@@ -97,6 +104,8 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       return;
     }
     client.data.userId = userId;
+    // Read by @GetUser, RolesGuard and JwtAuthGuard in handlers (#362).
+    client.data.user = user;
     this.logger.log(`Client connected: ${client.id} (user ${userId})`);
 
     // Initialize per-socket session, keyed by client.id.
