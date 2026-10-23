@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-unused-vars */
 import {
   Injectable,
   ConflictException,
@@ -66,7 +65,7 @@ export class AuthService {
     let passwordHash: string;
     try {
       passwordHash = await this.hashPassword(password);
-    } catch (err) {
+    } catch {
       throw new BadRequestException('Failed to hash password');
     }
 
@@ -79,7 +78,7 @@ export class AuthService {
 
     try {
       await this.userRepository.save(user);
-    } catch (error) {
+    } catch {
       throw new BadRequestException('Failed to create user');
     }
 
@@ -107,7 +106,7 @@ export class AuthService {
         password,
         user.passwordHash,
       );
-    } catch (err) {
+    } catch {
       throw new UnauthorizedException('Invalid credentials');
     }
 

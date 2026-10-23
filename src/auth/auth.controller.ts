@@ -7,7 +7,6 @@ import {
   ValidationPipe,
   HttpCode,
   HttpStatus,
-  UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
@@ -27,7 +26,6 @@ import { ResetPasswordDto } from './dto/reset-password.dto';
 import { StellarChallengeDto, StellarVerifyDto } from './dto/stellar-auth.dto';
 import { Public } from './decorators/public.decorator';
 import { GetUser } from './decorators/user.decorator';
-import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { User } from '../users/entities/user.entity';
 import {
   ApiTags,
@@ -149,7 +147,6 @@ export class AuthController {
     return { message: 'Password reset. Please log in again.' };
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @Throttle(authThrottle)
   @Post('change-password')
@@ -205,7 +202,6 @@ export class AuthController {
     return this.stellarAuthService.loginWithWallet(dto.transaction);
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @Throttle(stellarThrottle)
   @Post('stellar/link')
@@ -229,7 +225,6 @@ export class AuthController {
     return this.stellarAuthService.linkWallet(user.id, dto.transaction);
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @Get('stellar/wallet')
   @ApiOperation({
@@ -243,7 +238,6 @@ export class AuthController {
     };
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @Throttle(stellarThrottle)
   @Delete('stellar/wallet')
@@ -260,3 +254,4 @@ export class AuthController {
     await this.stellarAuthService.unlinkWallet(user.id);
     return { message: 'Stellar wallet unlinked' };
   }
+}

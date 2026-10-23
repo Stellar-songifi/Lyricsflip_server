@@ -105,4 +105,45 @@ export const envValidationSchema = Joi.object({
   STELLAR_VAULT_ADDR: Joi.string().uri().optional(),
   STELLAR_VAULT_TOKEN: Joi.string().optional(),
   STELLAR_VAULT_TRANSIT_KEY: Joi.string().optional(),
+  // Server / networking
+  HOST: Joi.string().default('0.0.0.0'),
+  TRUST_PROXY: Joi.string().optional().allow(''),
+  SETTLEMENT_DRAIN_TIMEOUT_MS: Joi.number().integer().min(1).default(30000),
+  CACHE_MAX_ITEMS: Joi.number().integer().min(1).default(5000),
+  CALIBRATION_ENABLED: Joi.string().valid('true', 'false').default('false'),
+  DAILY_CHALLENGE_SALT: Joi.string().optional().allow(''),
+
+  // Observability
+  OTEL_EXPORTER_OTLP_ENDPOINT: Joi.string().uri().optional().allow(''),
+  OTEL_SERVICE_NAME: Joi.string().optional().allow(''),
+  METRICS_IP_ALLOWLIST: Joi.string().optional().allow(''),
+  METRICS_BASIC_AUTH: Joi.string().optional().allow(''),
+
+  // Stellar submission / polling tuning
+  STELLAR_MAX_FEE: Joi.number().integer().min(1).optional(),
+  STELLAR_TRY_AGAIN_MAX_ATTEMPTS: Joi.number().integer().min(0).default(5),
+  STELLAR_TRY_AGAIN_BASE_DELAY_MS: Joi.number().integer().min(0).default(500),
+  STELLAR_POLL_ATTEMPTS: Joi.number().integer().min(0).default(15),
+  STELLAR_POLL_SLEEP_STRATEGY: Joi.string()
+    .valid('linear', 'basic')
+    .default('linear'),
+  LYRIC_TOKEN_DECIMALS: Joi.number().integer().min(0).max(18).optional(),
+
+  // Wager reconciliation
+  WAGER_RECONCILE_MIN_AGE_SECONDS: Joi.number().integer().min(1).default(120),
+  WAGER_RECONCILE_MAX_ATTEMPTS: Joi.number().integer().min(1).default(8),
+  WAGER_RECONCILE_BASE_DELAY_SECONDS: Joi.number()
+    .integer()
+    .min(1)
+    .default(60),
+
+  // Rate limiting (ttl in ms, limit in requests per window)
+  THROTTLE_TTL_MS: Joi.number().integer().min(1).default(60000),
+  THROTTLE_LIMIT: Joi.number().integer().min(1).default(100),
+  THROTTLE_AUTH_TTL_MS: Joi.number().integer().min(1).default(60000),
+  THROTTLE_AUTH_LIMIT: Joi.number().integer().min(1).default(5),
+  THROTTLE_STELLAR_TTL_MS: Joi.number().integer().min(1).default(60000),
+  THROTTLE_STELLAR_LIMIT: Joi.number().integer().min(1).default(10),
+  THROTTLE_GUESS_TTL_MS: Joi.number().integer().min(1).default(60000),
+  THROTTLE_GUESS_LIMIT: Joi.number().integer().min(1).default(30),
 }).unknown(true);

@@ -2,14 +2,12 @@ import {
   Controller,
   Get,
   Query,
-  UseGuards,
   Param,
   ParseUUIDPipe,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiQuery } from '@nestjs/swagger';
 import { GameHistoryService } from './game-history.service';
 import { GameHistoryQueryDto } from './dto/game-history-query.dto';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { GetUser } from '../auth/decorators/user.decorator';
 import { User } from '../users/entities/user.entity';
 import { GuessType } from '../game/dto/guess.dto';
@@ -18,7 +16,6 @@ import { Role } from '../auth/roles/role.enum';
 
 @ApiTags('game-history')
 @Controller('game-history')
-@UseGuards(JwtAuthGuard)
 export class GameHistoryController {
   constructor(private readonly gameHistoryService: GameHistoryService) { }
 

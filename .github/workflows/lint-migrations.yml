@@ -27,6 +27,8 @@ jobs:
         run: npm run lint -- --no-fix
       - name: Type-check
         run: npx tsc --noEmit
+      - name: Dead code report (knip, report only)
+        run: npx --yes knip@5 --include files,exports || true
       - name: Tests with coverage
         run: npm test -- --coverage
       - name: Build

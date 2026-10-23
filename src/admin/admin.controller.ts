@@ -4,7 +4,6 @@ import {
   Delete,
   Post,
   Param,
-  UseGuards,
   UseInterceptors,
   ParseUUIDPipe,
   ParseIntPipe,
@@ -24,8 +23,6 @@ import {
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/roles/roles.decorator';
 import { Role } from '../auth/roles/role.enum';
 import { AdminService } from './admin.service';
@@ -46,7 +43,6 @@ import { User } from '../users/entities/user.entity';
 
 @ApiTags('admin')
 @Controller('admin')
-@UseGuards(JwtAuthGuard, RolesGuard)
 @Roles(Role.Admin)
 @UseInterceptors(AuditInterceptor)
 @ApiBearerAuth('JWT-auth')

@@ -20,7 +20,6 @@ import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
 import { User } from './entities/user.entity';
 import { UserGroup } from './user-serialization';
 import { GetUser } from 'src/auth/decorators/user.decorator';
-import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 import { OptionalJwtAuthGuard } from 'src/auth/guards/optional-jwt-auth.guard';
 import { Public } from 'src/auth/decorators/public.decorator';
 import { Roles } from 'src/auth/roles/roles.decorator';
@@ -49,7 +48,6 @@ export class UsersController {
    * Returns the profile plus levelTitle, the linked wallet, the balance
    * summary and stats. Declared before `:id` so `me` is not treated as an ID.
    */
-  @UseGuards(JwtAuthGuard)
   @Get('me')
   @ApiOperation({ summary: 'Get your own rich profile' })
   @ApiResponse({ status: 200, description: 'Profile with level, wallet, balance and stats.' })
@@ -58,7 +56,6 @@ export class UsersController {
     return this.usersService.getSelfProfile(user.id);
   }
 
-  @UseGuards(JwtAuthGuard)
   @Get('profile')
   @ApiOperation({ summary: 'Get user profile (alias of /users/me)' })
   @ApiResponse({ status: 200, description: 'Profile with level, wallet, balance and stats.' })
@@ -71,7 +68,6 @@ export class UsersController {
    * PATCH /users/me - Update the current user's own account.
    * Declared before `:id` so `me` is not treated as an ID.
    */
-  @UseGuards(JwtAuthGuard)
   @Patch('me')
   @SerializeOptions({ groups: [UserGroup.SELF] })
   @ApiOperation({ summary: 'Update your own account' })
@@ -89,7 +85,6 @@ export class UsersController {
    * financial/audit purposes (see issue #130).
    */
   /** DELETE /users/me - Delete the current user's own account. */
-  @UseGuards(JwtAuthGuard)
   @Delete('me')
   @ApiOperation({ summary: 'Delete your own account' })
   @ApiResponse({ status: 200, description: 'Account deleted and anonymized.' })
@@ -103,7 +98,6 @@ export class UsersController {
    * GET /users/me/export - Export the current user's data as a JSON bundle.
    * Declared before `:id` so `me` is not treated as an ID.
    */
-  @UseGuards(JwtAuthGuard)
   @Get('me/export')
   @ApiOperation({ summary: 'Export your own data' })
   @ApiResponse({ status: 200, description: 'Profile, game history and wagers.' })
@@ -115,7 +109,6 @@ export class UsersController {
    * PATCH /users/preferences - Update user preferences
    * Updates the current user's music genre and decade preferences
    */
-  @UseGuards(JwtAuthGuard)
   @Patch('preferences')
   @ApiOperation({ summary: 'Update user preferences' })
   @ApiResponse({ status: 200, description: 'User preferences updated successfully.' })
@@ -139,7 +132,6 @@ export class UsersController {
    * GET /users/preferences - Get user preferences
    * Returns the current user's music preferences
    */
-  @UseGuards(JwtAuthGuard)
   @Get('preferences')
   @ApiOperation({ summary: 'Get user preferences' })
   @ApiResponse({ status: 200, description: 'User preferences retrieved successfully.' })

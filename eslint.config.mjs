@@ -57,6 +57,12 @@ export default tseslint.config(
           message:
             'Use a value import: `import type` breaks dependency injection and DTO validation.',
         },
+        {
+          selector:
+            "Decorator[expression.callee.name='UseGuards'] Identifier[name=/^(JwtAuthGuard|RolesGuard)$/]",
+          message:
+            'JwtAuthGuard and RolesGuard are global (APP_GUARD); do not re-apply them.',
+        },
       ],
     },
   },

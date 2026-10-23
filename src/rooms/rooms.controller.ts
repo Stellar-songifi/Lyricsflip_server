@@ -1,4 +1,4 @@
-import { Controller, Post, Body, Param, Get, UseGuards, Query } from '@nestjs/common';
+import { Controller, Post, Body, Param, Get, Query } from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiBody,
@@ -12,12 +12,10 @@ import { RoomsService } from './rooms.service';
 import { CreateRoomDto } from './dto/create-room.dto';
 import { GuessLyricDto } from './dto/guess-lyric.dto';
 import { ListRoomsQueryDto } from './dto/list-rooms-query.dto';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { GetUser } from '../auth/decorators/user.decorator';
 
 @ApiTags('rooms')
 @Controller('rooms')
-@UseGuards(JwtAuthGuard)
 @ApiBearerAuth('JWT-auth')
 export class RoomsController {
   constructor(private readonly roomsService: RoomsService) {}
