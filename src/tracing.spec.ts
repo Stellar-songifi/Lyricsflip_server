@@ -1,5 +1,8 @@
 import { initOpenTelemetry, getTracer, getActiveTraceId } from './tracing';
 
+// Note: initOpenTelemetry() must be invoked before the Nest application boots
+// (see src/main.ts) so that auto-instrumentation can patch HTTP, Express, pg and Socket.IO.
+
 describe('Tracing Module', () => {
   const originalEnv = process.env;
 

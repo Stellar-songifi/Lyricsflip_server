@@ -16,6 +16,8 @@ export async function runWithRootSpan<T>(
     const api = require('@opentelemetry/api');
     const tracer = api.trace.getTracer('wager-jobs');
     const rootContext = api.ROOT_CONTEXT;
+    // Each job run gets a fresh root span (no parent) so scheduled runs are
+    // independent traces; the wager is linked via attributes above.
     return await api.context.with(rootContext, () => {
       return tracer.startActiveSpan(spanName, { attributes }, async (span: any) => {
         try {
@@ -135,6 +137,7 @@ export class WagerReconcileJob {
           'wager_id': wager.id,
           'session.id': wager.sessionId,
           'session_id': wager.sessionId,
+          'wager.linked_span': 'job.wager_reconcile.run',
         },
         async () => {
           try {

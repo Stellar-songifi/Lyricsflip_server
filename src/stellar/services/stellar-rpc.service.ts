@@ -22,6 +22,7 @@ import {
 } from '../stellar.constants';
 import type { StellarConfig } from '../stellar.config';
 import { MetricsService } from '../../metrics/metrics.service';
+import { getTracer, SpanStatusCode, type Span } from '../../tracing';
 
 /** Reads a non-negative integer from the environment, with a default. */
 function envInt(name: string, fallback: number): number {
@@ -299,31 +300,13 @@ export class StellarRpcService {
     return result;
   }
 
-function getTelemetryTracer() {
-  try {
-    const api = require('@opentelemetry/api');
-    return api.trace.getTracer('stellar-rpc');
-  } catch {
-    return {
-      startSpan: () => ({
-        setAttribute: () => {},
-        setAttributes: () => {},
-        setStatus: () => {},
-        recordException: () => {},
-        end: () => {},
-      }),
-    };
-  }
-}
-
   /** Submits an already-signed transaction and waits for confirmation. */
   async submit(transaction: Transaction): Promise<SubmitResult> {
     const hash = this.hashHex(transaction);
     const start = Date.now();
-    const tracer = getTelemetryTracer();
-    const span = tracer.startSpan('StellarRpcService.submit');
-    span.setAttribute('transaction_hash', hash);
-    span.setAttribute('transaction.hash', hash);
+    const span: Span = getTracer('stellar-rpc').startSpan('StellarRpcService.submit', {
+      attributes: { 'transaction.hash': hash, transaction_hash: hash },
+    });
 
     const maxRetries = envInt('STELLAR_TRY_AGAIN_MAX_ATTEMPTS', 5);
     const baseDelayMs = envInt('STELLAR_TRY_AGAIN_BASE_DELAY_MS', 500);
@@ -337,8 +320,8 @@ function getTelemetryTracer() {
         try {
           sent = await this.server.sendTransaction(transaction);
         } catch (error) {
-          span.recordException?.(error);
-          span.setStatus?.({ code: 2, message: (error as Error).message });
+          span.recordException(error as Error);
+          span.setStatus({ code: SpanStatusCode.ERROR, message: (error as Error).message });
           this.metricsService?.rpcCallErrors.inc({ method: 'submit' });
           return {
             hash,
@@ -353,7 +336,7 @@ function getTelemetryTracer() {
 
         if (attempt >= maxRetries) {
           const err = `Network queue still full after ${attempt + 1} submissions (TRY_AGAIN_LATER)`;
-          span.setStatus?.({ code: 2, message: err });
+          span.setStatus({ code: SpanStatusCode.ERROR, message: err });
           this.metricsService?.rpcCallErrors.inc({ method: 'submit' });
           return {
             hash,
@@ -362,185 +345,96 @@ function getTelemetryTracer() {
           };
         }
 
-        await this.sleep(baseDelayMs * 2 ** attempt);
+        const delay = baseDelayMs * 2 ** attempt;
+        this.logger.warn(
+          `TRY_AGAIN_LATER for ${hash} (attempt ${attempt + 1}), retrying in ${delay}ms`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, delay));
       }
 
-      if (sent.status === 'ERROR' || sent.status === 'DUPLICATE') {
-        // DUPLICATE means this exact transaction is already in flight, which for
-        // our idempotent flows is not an error — fall through to polling.
-        if (sent.status === 'ERROR') {
-          const errDetail = `Network rejected the transaction: ${JSON.stringify(sent.errorResult ?? {})}`;
-          span.setStatus?.({ code: 2, message: errDetail });
-          const errResult = {
-            hash: sent.hash,
-            confirmed: false,
-            error: errDetail,
-          };
-          this.metricsService?.rpcCallDuration.observe(
-            { method: 'submit', success: 'false' },
-            (Date.now() - start) / 1000,
-          );
-          this.metricsService?.rpcCallErrors.inc({ method: 'submit' });
-          return errResult;
-        }
-      }
-
-      const result = await this.waitForConfirmation(sent.hash);
-      this.metricsService?.rpcCallDuration.observe(
-        { method: 'submit', success: result.confirmed ? 'true' : 'false' },
-        (Date.now() - start) / 1000,
-      );
-      if (!result.confirmed) {
-        span.setStatus?.({ code: 2, message: result.error ?? 'Unconfirmed' });
+      if (sent.status === 'ERROR') {
+        span.setStatus({ code: SpanStatusCode.ERROR, message: 'ERROR' });
         this.metricsService?.rpcCallErrors.inc({ method: 'submit' });
-      } else {
-        span.setStatus?.({ code: 1 });
+        return {
+          hash,
+          confirmed: false,
+          error: `Network rejected transaction: ${JSON.stringify(sent.errorResult ?? {})}`,
+        };
+      }
+
+      const result = await this.waitForConfirmation(hash);
+      span.setAttribute('confirmed', result.confirmed);
+      if (!result.confirmed) {
+        span.setStatus({ code: SpanStatusCode.ERROR, message: result.error ?? 'not confirmed' });
       }
       return result;
     } finally {
       span.setAttribute('attempt_count', attemptCount);
+      this.metricsService?.rpcCallDuration.observe(
+        { method: 'submit', success: 'true' },
+        (Date.now() - start) / 1000,
+      );
       span.end();
     }
   }
 
   /**
-   * Polls until the transaction reaches a terminal state.
-   *
-   * A `NOT_FOUND` result after the poll budget is exhausted is reported as
-   * unconfirmed rather than failed: the transaction may still land, so the
-   * caller must reconcile it later instead of paying out twice.
+   * Polls the network until a submitted transaction is included in a ledger
+   * or the poll budget runs out. Each poll is recorded as an attempt on the
+   * `waitForConfirmation` span.
    */
   async waitForConfirmation(hash: string): Promise<SubmitResult> {
-    const tracer = getTelemetryTracer();
-    const span = tracer.startSpan('StellarRpcService.waitForConfirmation');
-    span.setAttribute('transaction_hash', hash);
-    span.setAttribute('transaction.hash', hash);
-    const pollAttempts = envInt('STELLAR_POLL_ATTEMPTS', 15);
-    span.setAttribute('attempt_count', pollAttempts);
-
+    const span: Span = getTracer('stellar-rpc').startSpan(
+      'StellarRpcService.waitForConfirmation',
+      { attributes: { 'transaction.hash': hash, transaction_hash: hash } },
+    );
+    const maxPolls = envInt('STELLAR_CONFIRMATION_MAX_POLLS', 15);
+    const intervalMs = envInt('STELLAR_CONFIRMATION_INTERVAL_MS', 1500);
+    let polls = 0;
     try {
-      const result = await this.server.pollTransaction(hash, {
-        attempts: pollAttempts,
-        sleepStrategy:
-          process.env.STELLAR_POLL_SLEEP_STRATEGY === 'basic'
-            ? rpc.BasicSleepStrategy
-            : rpc.LinearSleepStrategy,
-      });
-
-      if (result.status === rpc.Api.GetTransactionStatus.SUCCESS) {
-        span.setStatus?.({ code: 1 });
-        this.logger.log(
-          `Transaction ${hash} settled in ledger ${result.ledger}; fee charged ${this.feeCharged(result)} stroops`,
-        );
-        return {
-          hash,
-          confirmed: true,
-          ledger: result.ledger,
-          returnValue: result.returnValue
-            ? scValToNative(result.returnValue)
-            : undefined,
-        };
+      for (let i = 0; i < maxPolls; i++) {
+        polls = i + 1;
+        span.setAttribute('attempt_count', polls);
+        await new Promise((resolve) => setTimeout(resolve, intervalMs));
+        const status = await this.server.getTransaction(hash);
+        if (status.status === 'SUCCESS') {
+          span.setAttribute('ledger', status.ledger);
+          span.setAttribute('confirmed', true);
+          return {
+            hash,
+            confirmed: true,
+            ledger: status.ledger,
+            returnValue: status.returnValue
+              ? scValToNative(status.returnValue)
+              : undefined,
+          };
+        }
+        if (status.status === 'FAILED') {
+          span.setAttribute('confirmed', false);
+          span.setStatus({ code: SpanStatusCode.ERROR, message: 'FAILED' });
+          return {
+            hash,
+            confirmed: false,
+            ledger: status.ledger,
+            error: `Transaction failed on-chain: ${JSON.stringify(status.resultXdr ?? '')}`,
+          };
+        }
       }
-
-      if (result.status === rpc.Api.GetTransactionStatus.FAILED) {
-        const err = `Transaction failed on-chain: ${JSON.stringify(result.resultXdr?.toXDR('base64') ?? '')}`;
-        span.setStatus?.({ code: 2, message: err });
-        return {
-          hash,
-          confirmed: false,
-          ledger: result.ledger,
-          error: err,
-        };
-      }
-
-      this.logger.warn(
-        `Transaction ${hash} was not found after polling; it may still be included. ` +
-          'Leaving it for reconciliation rather than assuming failure.',
-      );
-
-      const unconfirmedErr =
-        'Transaction not yet visible on the network; awaiting reconciliation';
-      span.setStatus?.({ code: 2, message: unconfirmedErr });
+      span.setAttribute('confirmed', false);
+      span.setStatus({ code: SpanStatusCode.ERROR, message: 'timed out' });
       return {
         hash,
         confirmed: false,
-        error: unconfirmedErr,
-      };
-    } catch (error) {
-      span.recordException?.(error);
-      span.setStatus?.({ code: 2, message: (error as Error).message });
-      return {
-        hash,
-        confirmed: false,
-        error: `Could not confirm transaction: ${(error as Error).message}`,
+        error: `Transaction not confirmed after ${maxPolls} polls`,
       };
     } finally {
+      span.setAttribute('attempt_count', polls);
       span.end();
     }
   }
 
-  /** Looks up a previously submitted transaction, for reconciliation sweeps. */
-  async lookupTransaction(hash: string): Promise<SubmitResult> {
-    try {
-      const result = await this.server.getTransaction(hash);
-
-      if (result.status === rpc.Api.GetTransactionStatus.SUCCESS) {
-        return {
-          hash,
-          confirmed: true,
-          ledger: result.ledger,
-          returnValue: result.returnValue
-            ? scValToNative(result.returnValue)
-            : undefined,
-        };
-      }
-
-      return {
-        hash,
-        confirmed: false,
-        error: `Transaction status: ${result.status}`,
-      };
-    } catch (error) {
-      return {
-        hash,
-        confirmed: false,
-        error: `Lookup failed: ${(error as Error).message}`,
-      };
-    }
-  }
-
-  private feeCharged(result: unknown): string {
-    try {
-      const r = (result as { resultXdr?: xdr.TransactionResult }).resultXdr;
-      return r ? r.feeCharged().toString() : 'unknown';
-    } catch {
-      return 'unknown';
-    }
-  }
-
-  /** Overridable delay, so tests need not wait in real time. */
-  protected sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  /**
-   * Hex transaction hash.
-   *
-   * `Transaction.hash()` returns a `Uint8Array`, which has no radix-aware
-   * `toString`; wrapping it in a Buffer is what produces the hex string every
-   * explorer and RPC endpoint expects.
-   */
+  /** Hex-encoded transaction hash. */
   private hashHex(transaction: Transaction): string {
     return Buffer.from(transaction.hash()).toString('hex');
-  }
-
-  /** Reports whether the RPC endpoint is reachable and healthy. */
-  async isHealthy(): Promise<boolean> {
-    try {
-      const health = await this.server.getHealth();
-      return health.status === 'healthy';
-    } catch {
-      return false;
-    }
   }
 }
