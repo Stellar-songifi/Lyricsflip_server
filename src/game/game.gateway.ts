@@ -15,6 +15,11 @@ import { JwtService } from '@nestjs/jwt';
 import { GameLogicService } from './game.service';
 import { RandomLyricOptionsDto } from './dto/random-lyrics-option.dto';
 import { GuessDto } from './dto/guess.dto';
+import { WsRateLimiter } from '../common/websocket/ws-rate-limiter';
+import {
+  WsConnectionLimiter,
+  WS_MAX_HTTP_BUFFER_SIZE,
+} from '../common/websocket/ws-connection-limiter';
 
 interface GameSession {
   playerId: string;
@@ -52,6 +57,7 @@ interface GameSession {
     credentials: true,
   },
   namespace: '/game',
+  maxHttpBufferSize: WS_MAX_HTTP_BUFFER_SIZE,
 })
 export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()
@@ -61,6 +67,8 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
   // Socket-local state keyed by client.id so two tabs of the same user play
   // independently. Authoritative round/score state lives in the database.
   private sessions = new Map<string, GameSession>();
+  private readonly rateLimiter = new WsRateLimiter();
+  private readonly connectionLimiter = new WsConnectionLimiter();
 
   constructor(
     private readonly gameLogicService: GameLogicService,
@@ -80,6 +88,11 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     return undefined;
   }
 
+  /** Returns false (and disconnects) if the event exceeds its rate limit. */
+  private allow(client: Socket, event: string): boolean {
+    return this.rateLimiter.consume(client, event);
+  }
+
   async handleConnection(client: Socket) {
     const token = this.extractToken(client);
     let userId: string;
@@ -96,6 +109,13 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       client.disconnect(true);
       return;
     }
+
+    if (!this.connectionLimiter.acquire(userId, client.id)) {
+      client.emit('error', { message: 'Too many concurrent connections' });
+      client.disconnect(true);
+      return;
+    }
+
     client.data.userId = userId;
     this.logger.log(`Client connected: ${client.id} (user ${userId})`);
 
@@ -114,6 +134,8 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
   handleDisconnect(client: Socket) {
     this.logger.log(`Client disconnected: ${client.id}`);
     this.sessions.delete(client.id);
+    this.rateLimiter.clear(client.id);
+    this.connectionLimiter.release(client.data?.userId, client.id);
   }
 
   @SubscribeMessage('requestLyric')
@@ -121,6 +143,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @MessageBody() options: RandomLyricOptionsDto,
     @ConnectedSocket() client: Socket,
   ) {
+    if (!this.allow(client, 'requestLyric')) return;
     this.logger.log(`Lyric requested by ${client.id}`);
 
     try {
@@ -182,6 +205,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @MessageBody() guessDto: Omit<GuessDto, 'roundId'>,
     @ConnectedSocket() client: Socket,
   ) {
+    if (!this.allow(client, 'submitGuess')) return;
     this.logger.log(`Guess submitted by ${client.id}`);
 
     try {
@@ -227,6 +251,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   @SubscribeMessage('requestHint')
   async handleRequestHint(@ConnectedSocket() client: Socket) {
+    if (!this.allow(client, 'requestHint')) return;
     this.logger.log(`Hint requested by ${client.id}`);
 
     try {
@@ -256,6 +281,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   @SubscribeMessage('getSession')
   handleGetSession(@ConnectedSocket() client: Socket) {
+    if (!this.allow(client, 'getSession')) return;
     const session = this.sessions.get(client.id);
 
     if (session) {

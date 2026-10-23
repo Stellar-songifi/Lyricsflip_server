@@ -4,10 +4,16 @@ import { createAdapter } from '@socket.io/redis-adapter';
 import { createClient } from 'redis';
 import type { ServerOptions } from 'socket.io';
 
+/** Default cap on a single inbound WebSocket message (16 KB). */
+export const DEFAULT_MAX_HTTP_BUFFER_SIZE = 16 * 1024;
+
 /**
  * Socket.IO adapter that broadcasts through Redis, so an event emitted on one
  * instance reaches sockets connected to any other. Without REDIS_URL the
  * default in-memory adapter is used and a single instance still works.
+ *
+ * Also enforces a per-message size cap (`maxHttpBufferSize`) on every server
+ * it creates, so oversized frames are rejected before they are parsed.
  */
 export class RedisIoAdapter extends IoAdapter {
   private readonly logger = new Logger(RedisIoAdapter.name);
@@ -29,7 +35,10 @@ export class RedisIoAdapter extends IoAdapter {
   }
 
   createIOServer(port: number, options?: ServerOptions) {
-    const server = super.createIOServer(port, options);
+    const server = super.createIOServer(port, {
+      maxHttpBufferSize: DEFAULT_MAX_HTTP_BUFFER_SIZE,
+      ...options,
+    });
 
     if (this.adapterConstructor) {
       server.adapter(this.adapterConstructor);
