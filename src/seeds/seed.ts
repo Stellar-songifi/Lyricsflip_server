@@ -39,6 +39,12 @@ const seedData: Array<{
   lyricSnippet: string;
 }> = require('./seed-data.json');
 
+// Load-test volume (issue R2-117). Enabled only when LOAD_SEED=1 so the
+// default fixture seed is unaffected.
+const LOAD_SEED_LYRICS = parseInt(process.env.LOAD_SEED_LYRICS ?? '100000', 10);
+const LOAD_SEED_USERS = parseInt(process.env.LOAD_SEED_USERS ?? '10000', 10);
+const GENRES = [Genre.Afrobeats, Genre.HipHop, Genre.Pop, Genre.Other];
+
 // ---------------------------------------------------------------------------
 // Guard: refuse to run in production without explicit credentials
 // ---------------------------------------------------------------------------
@@ -99,6 +105,48 @@ function toGenre(raw: string): Genre {
     Other: Genre.Other,
   };
   return map[raw] ?? Genre.Other;
+}
+
+// ---------------------------------------------------------------------------
+// Load-test seeding (issue R2-117): bulk users and lyrics in batches.
+// bcrypt cost 4 is used only for load fixtures, never for real accounts.
+// ---------------------------------------------------------------------------
+async function seedLoadData(dataSource: DataSource, adminId: number): Promise<void> {
+  const userRepo = dataSource.getRepository(User);
+  const lyricsRepo = dataSource.getRepository(Lyrics);
+  const BATCH = 1000;
+  const passwordHash = await bcrypt.hash('loadtest_password', 4);
+
+  for (let start = 0; start < LOAD_SEED_USERS; start += BATCH) {
+    const rows = [];
+    for (let i = start; i < Math.min(start + BATCH, LOAD_SEED_USERS); i++) {
+      rows.push({
+        email: `load${i}@lyricflip.local`,
+        username: `load_user_${i}`,
+        name: `Load User ${i}`,
+        passwordHash,
+        role: Role.Player,
+      });
+    }
+    await userRepo.createQueryBuilder().insert().values(rows).orIgnore().execute();
+  }
+
+  for (let start = 0; start < LOAD_SEED_LYRICS; start += BATCH) {
+    const rows = [];
+    for (let i = start; i < Math.min(start + BATCH, LOAD_SEED_LYRICS); i++) {
+      rows.push({
+        content: `Load lyric line ${i} ${'la '.repeat(20)}`,
+        lyricSnippet: `Load lyric ${i}`,
+        songTitle: `Load Song ${i}`,
+        artist: `Load Artist ${i % 500}`,
+        genre: GENRES[i % GENRES.length],
+        decade: '2010s',
+        difficulty: (i % 5) + 1,
+        createdBy: { id: adminId },
+      });
+    }
+    await lyricsRepo.createQueryBuilder().insert().values(rows).orIgnore().execute();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -173,6 +221,10 @@ export async function bootstrap() {
   console.log(
     `Lyrics: ${created} created, ${skipped} already present (${seedData.length} total).`,
   );
+
+  if (process.env.LOAD_SEED === '1') {
+    await seedLoadData(dataSource, admin.id);
+  }
   console.log('Seeding complete.');
 
   await dataSource.destroy();
