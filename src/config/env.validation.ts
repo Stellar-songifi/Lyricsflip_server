@@ -17,6 +17,27 @@ export const envValidationSchema = Joi.object({
     .default('debug'),
   FRONTEND_URL: Joi.string().uri().default('http://localhost:3000'),
 
+  // HTTP server limits and timeouts (#R2-120). Tune for the load balancer in
+  // front of the app; see docs/deployment.md for recommended values.
+  // - HTTP_JSON_BODY_LIMIT / HTTP_URLENCODED_BODY_LIMIT: body-parser size limits.
+  // - HTTP_REQUEST_TIMEOUT_MS: max time to receive a full request (slow-loris guard).
+  // - HTTP_HEADERS_TIMEOUT_MS: max time to receive request headers. Must be
+  //   <= HTTP_REQUEST_TIMEOUT_MS per Node.js.
+  // - HTTP_KEEP_ALIVE_TIMEOUT_MS: idle keep-alive lifetime. Keep it longer than
+  //   the load balancer's idle timeout (AWS ALB default 60 s) to avoid 502s.
+  HTTP_JSON_BODY_LIMIT: Joi.string().default('100kb'),
+  HTTP_URLENCODED_BODY_LIMIT: Joi.string().default('100kb'),
+  HTTP_REQUEST_TIMEOUT_MS: Joi.number().integer().min(0).default(30000),
+  HTTP_HEADERS_TIMEOUT_MS: Joi.number()
+    .integer()
+    .min(0)
+    .default(20000)
+    .when('HTTP_REQUEST_TIMEOUT_MS', {
+      is: Joi.number().integer().min(1),
+      then: Joi.number().integer().min(0).max(Joi.ref('HTTP_REQUEST_TIMEOUT_MS')),
+    }),
+  HTTP_KEEP_ALIVE_TIMEOUT_MS: Joi.number().integer().min(1000).default(65000),
+
   // Auth
   JWT_SECRET: Joi.string()
     .min(32)

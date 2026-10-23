@@ -4,6 +4,7 @@ import {
   ValidationPipe,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
+import { json, urlencoded } from 'express';
 
 /**
  * Global request validation and response serialization.
@@ -25,12 +26,30 @@ export function configureApp(app: INestApplication): void {
   // User.passwordHash and User.email are stripped from every response.
   app.useGlobalInterceptors(new ClassSerializerInterceptor(app.get(Reflector)));
 
+  // Explicit body size limits. Requests exceeding these receive 413.
+  // Multipart uploads are not handled here; see [R2-27].
+  app.use(json({ limit: getBodyLimit('JSON_BODY_LIMIT', '100kb') }));
+  app.use(
+    urlencoded({
+      extended: true,
+      limit: getBodyLimit('URLENCODED_BODY_LIMIT', '100kb'),
+    }),
+  );
+
   // CORS must be registered before the HTTP adapter starts listening,
   // otherwise the configuration is never applied to the running server.
   app.enableCors({
     origin: parseAllowedOrigins(process.env.FRONTEND_URL),
     credentials: true,
   });
+}
+
+/**
+ * Resolves a body limit from the environment, falling back to a default.
+ */
+export function getBodyLimit(envVar: string, fallback: string): string {
+  const value = process.env[envVar]?.trim();
+  return value && value.length > 0 ? value : fallback;
 }
 
 /**

@@ -72,6 +72,11 @@ INSERT INTO "migrations" ("timestamp", "name") VALUES
 
 ## Upgrading an existing database
 
+For the load balancer and server timeout settings that accompany the app (see
+`src/main.ts`), see the deployment notes in the README; the key rule is that the
+load balancer's idle timeout must be shorter than the app's `keepAliveTimeout`
+(default 65 s, longer than the AWS ALB default of 60 s).
+
 Back the database up first (see [`BACKUP_STRATEGY.md`](BACKUP_STRATEGY.md)).
 
 Run `npm run migration:run`. If you are bringing an existing database that was
