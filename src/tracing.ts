@@ -126,3 +126,40 @@ export function getActiveTraceId(): string | undefined {
   }
   return undefined;
 }
+
+/**
+ * Runs a scheduled job inside a new root span, linked to the wager it operates on.
+ * Each run gets its own trace so periodic jobs do not inherit an unrelated parent.
+ */
+export async function runAsJobSpan<T>(
+  jobName: string,
+  wagerId: string | number | undefined,
+  fn: () => Promise<T>,
+): Promise<T> {
+  let api: any = null;
+  try {
+    api = require('@opentelemetry/api');
+  } catch {
+    return fn();
+  }
+  const tracer = api.trace.getTracer('lyricsflip-server');
+  const span = tracer.startSpan(
+    `job.${jobName}`,
+    {
+      root: true,
+      attributes: wagerId !== undefined ? { 'wager.id': String(wagerId) } : {},
+    },
+  );
+  try {
+    return await api.context.with(
+      api.trace.setSpan(api.context.active(), span),
+      fn,
+    );
+  } catch (err) {
+    span.recordException(err as Error);
+    span.setStatus({ code: 2, message: (err as Error)?.message });
+    throw err;
+  } finally {
+    span.end();
+  }
+}
