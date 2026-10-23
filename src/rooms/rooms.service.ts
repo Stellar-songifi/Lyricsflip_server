@@ -1,3 +1,4 @@
+import { PaginatedResponseDto, toPaginated } from '../common/dto/paginated-response.dto';
 import {
   Injectable,
   Logger,
@@ -425,7 +426,7 @@ export class RoomsService {
   async findOpenRooms(
     limit: number = 20,
     offset: number = 0,
-  ): Promise<{ items: Room[]; total: number }> {
+  ): Promise<PaginatedResponseDto<Room>> {
     const now = new Date();
     const qb = this.roomRepository
       .createQueryBuilder('room')
@@ -438,7 +439,7 @@ export class RoomsService {
 
     const [items, total] = await qb.getManyAndCount();
 
-    return { items, total };
+    return toPaginated(items, total, limit, offset);
   }
 
   async getRoomStatus(

@@ -13,6 +13,6 @@ export class DailyChallenge {
   @Column({ type: 'int', array: true })
   lyricIds: number[];
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;
 }

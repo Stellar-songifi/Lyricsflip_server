@@ -56,8 +56,16 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+    timeout-minutes: 5
     env:
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/test
+      DB_HOST: localhost
+      DB_PORT: 5432
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: test
+      JWT_SECRET: ci-jwt-secret-ci-jwt-secret-ci-jwt-secret
+      TZ: America/New_York
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -79,6 +87,9 @@ jobs:
 
       - name: E2E tests
         run: npm run test:e2e
+
+      - name: E2E tests (real Postgres)
+        run: npm run test:e2e:db
 
   contract:
     name: Contract

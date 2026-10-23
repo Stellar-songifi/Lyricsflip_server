@@ -1,0 +1,17 @@
+{
+  "moduleFileExtensions": ["js", "json", "ts"],
+  "rootDir": "../..",
+  "testEnvironment": "node",
+  "testRegex": "test/db/.*\\.db-e2e-spec.ts$",
+  "maxWorkers": 1,
+  "testTimeout": 30000,
+  "transform": {
+    "^.+\\.(t|j)s$": ["ts-jest", { "tsconfig": "tsconfig.test.json" }]
+  },
+  "transformIgnorePatterns": [
+    "/node_modules/(?!.*(@exodus/bytes|@noble/curves|@noble/ed25519|@noble/hashes|eventsource|smol-toml|uint8array-extras)/)"
+  ],
+  "moduleNameMapper": {
+    "^src/(.*)$": "<rootDir>/src/$1"
+  }
+}

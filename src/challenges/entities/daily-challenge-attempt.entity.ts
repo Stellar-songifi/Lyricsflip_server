@@ -37,6 +37,6 @@ export class DailyChallengeAttempt {
   @Column({ type: 'int' })
   points: number;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;
 }
