@@ -3,6 +3,7 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { User } from '../users/entities/user.entity';
+import { toPaginated } from '../common/dto/paginated-response.dto';
 import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
 import { GrantMockBalanceMode } from './dto/grant-mock-balance.dto';
 import { MockTokenService } from '../tokens/services/mock-token.service';
@@ -36,7 +37,7 @@ export interface LyricsImportReport {
 
 export interface PaginatedResult<T> {
   data: T[];
-  meta: { total: number; limit: number; offset: number };
+  meta: { total: number; limit: number; offset: number; hasNext: boolean };
 }
 
 interface ParsedImportRow {
@@ -75,7 +76,7 @@ export class AdminService {
       this.usersService.findAll(limit, offset),
       this.usersService.count(),
     ]);
-    return { data, meta: { total, limit, offset } };
+    return toPaginated(data, total, limit, offset);
   }
 
   async deleteUser(id: string) {
@@ -98,7 +99,7 @@ export class AdminService {
       this.lyricsService.findAll(limit, offset, query.sortBy, query.sortOrder),
       this.lyricsService.count(isActive),
     ]);
-    return { data, meta: { total, limit, offset } };
+    return toPaginated(data, total, limit, offset);
   }
 
   deleteLyric(id: number) {

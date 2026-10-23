@@ -1,10 +1,15 @@
-import { Controller, Get, Query, UseGuards } from '@nestjs/common';
-import { ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { Controller, Get, Query, Res, UseGuards } from '@nestjs/common';
+import { Response } from 'express';
+import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/roles/roles.decorator';
 import { Role } from '../auth/roles/role.enum';
 import { AuditService } from './audit.service';
+import {
+  AuditLogExportQueryDto,
+  AuditLogQueryDto,
+} from './dto/audit-log-query.dto';
 
 @ApiTags('admin')
 @Controller('admin/audit-logs')
@@ -20,27 +25,58 @@ export class AuditController {
       'Read-only. There is no write or delete endpoint - audit rows can only ' +
       'be created by the actions they describe.',
   })
-  @ApiQuery({ name: 'actorId', required: false })
-  @ApiQuery({ name: 'action', required: false })
-  @ApiQuery({ name: 'targetType', required: false })
-  @ApiQuery({ name: 'targetId', required: false })
-  @ApiQuery({ name: 'limit', required: false })
-  @ApiQuery({ name: 'offset', required: false })
-  find(
-    @Query('actorId') actorId?: string,
-    @Query('action') action?: string,
-    @Query('targetType') targetType?: string,
-    @Query('targetId') targetId?: string,
-    @Query('limit') limit?: string,
-    @Query('offset') offset?: string,
-  ) {
-    return this.auditService.find({
-      actorId,
-      action,
-      targetType,
-      targetId,
-      limit: limit ? parseInt(limit, 10) : undefined,
-      offset: offset ? parseInt(offset, 10) : undefined,
-    });
+  find(@Query() query: AuditLogQueryDto) {
+    return this.auditService.find(query);
   }
+
+  @Get('export')
+  @ApiOperation({
+    summary: 'Export matching audit log entries as streamed CSV',
+  })
+  async export(@Query() query: AuditLogExportQueryDto, @Res() res: Response) {
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader(
+      'Content-Disposition',
+      'attachment; filename="audit-logs.csv"',
+    );
+    res.write(CSV_COLUMNS.join(',') + '\n');
+    for await (const row of this.auditService.iterate(query)) {
+      const line = [
+        row.id,
+        row.timestamp.toISOString() as string | null,
+        row.actorId,
+        row.actorUsername,
+        row.action,
+        row.targetType,
+        row.targetId,
+        row.ip,
+        row.payload ? JSON.stringify(row.payload) : '',
+      ]
+        .map(csvCell)
+        .join(',');
+      if (!res.write(line + '\n')) {
+        await new Promise((resolve) => res.once('drain', resolve));
+      }
+    }
+    res.end();
+  }
+}
+
+const CSV_COLUMNS = [
+  'id',
+  'timestamp',
+  'actorId',
+  'actorUsername',
+  'action',
+  'targetType',
+  'targetId',
+  'ip',
+  'payload',
+];
+
+/** Quotes a CSV cell, and neutralises spreadsheet formula injection. */
+function csvCell(value: string | null): string {
+  let text = value ?? '';
+  if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
+  return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }

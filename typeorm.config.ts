@@ -22,4 +22,5 @@ export default new DataSource({
   entities: [__dirname + '/src/**/*.entity{.ts,.js}'],
   migrations: [__dirname + '/src/migrations/*{.ts,.js}'],
   synchronize: false,
+  extra: { options: '-c timezone=UTC' },
 });

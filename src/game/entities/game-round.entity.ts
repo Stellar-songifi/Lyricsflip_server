@@ -28,10 +28,10 @@ export class GameRound {
   @Column({ type: 'int' })
   lyricId: number;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   issuedAt: Date;
 
-  @Column({ type: 'timestamp' })
+  @Column({ type: 'timestamptz' })
   expiresAt: Date;
 
   /** Seconds after `issuedAt` in which a correct guess still scores. */
@@ -47,6 +47,6 @@ export class GameRound {
   sessionId: string | null;
 
   /** Set when the round's guess is taken; a closed round accepts no more. */
-  @Column({ type: 'timestamp', nullable: true })
+  @Column({ type: 'timestamptz', nullable: true })
   closedAt: Date | null;
 }

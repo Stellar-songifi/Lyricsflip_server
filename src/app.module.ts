@@ -196,6 +196,9 @@ import type { LoggingOptions } from 'typeorm';
             // 'max' is the pg pool option; TypeORM's poolSize is also
             // accepted but extra.max is the canonical pg-pool key.
             max: poolSize,
+            // Safety net: pin the session time zone so date handling never
+            // depends on the server or process time zone.
+            options: '-c timezone=UTC',
           },
         };
       },

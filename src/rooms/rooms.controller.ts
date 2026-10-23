@@ -1,3 +1,5 @@
+import { toPaginated } from '../common/dto/paginated-response.dto';
+import { Room } from './entities/room.entity';
 import { Controller, Post, Body, Param, Get, UseGuards, Query } from '@nestjs/common';
 import {
   ApiBearerAuth,
@@ -91,7 +93,7 @@ export class RoomsController {
   async findOpenRooms(@Query() query: ListRoomsQueryDto) {
     // Only support status=lobby for now
     if (query.status && query.status !== 'lobby') {
-      return { items: [], total: 0 };
+      return toPaginated<Room>([], 0, query.limit ?? 20, query.offset ?? 0);
     }
     const limit = query.limit ?? 20;
     const offset = query.offset ?? 0;

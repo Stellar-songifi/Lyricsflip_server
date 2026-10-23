@@ -31,9 +31,9 @@ export class RoomUser {
   @Column({ type: 'text', nullable: true })
   guess: string;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   joinedAt: Date;
 
-  @Column({ type: 'timestamp', nullable: true })
+  @Column({ type: 'timestamptz', nullable: true })
   guessedAt: Date;
 }
