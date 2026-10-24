@@ -1,14 +1,11 @@
-import { Controller, Get, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Query } from '@nestjs/common';
 import { ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/roles/roles.decorator';
 import { Role } from '../auth/roles/role.enum';
 import { AuditService } from './audit.service';
 
 @ApiTags('admin')
 @Controller('admin/audit-logs')
-@UseGuards(JwtAuthGuard, RolesGuard)
 @Roles(Role.Admin)
 export class AuditController {
   constructor(private readonly auditService: AuditService) {}

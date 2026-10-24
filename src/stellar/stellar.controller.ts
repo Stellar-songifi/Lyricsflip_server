@@ -44,7 +44,9 @@ export class StellarController {
   @Public()
   @Get('health')
   @ApiOperation({
-    summary: 'Whether the configured Soroban RPC endpoint is reachable',
+    summary:
+      'Deprecated: use GET /health/ready, which also checks the Soroban RPC',
+    deprecated: true,
   })
   @ApiResponse({ status: 200, description: 'RPC health.' })
   async getHealth() {

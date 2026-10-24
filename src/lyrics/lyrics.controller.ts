@@ -6,7 +6,6 @@ import {
   Patch,
   Param,
   Delete,
-  UseGuards,
   Query,
   ParseIntPipe,
 } from '@nestjs/common';
@@ -16,8 +15,6 @@ import { LyricsService } from './lyrics.service';
 import { CreateLyricsDto } from './dto/create-lyrics.dto';
 import { UpdateLyricsDto } from './dto/update-lyrics.dto';
 import { SearchLyricsQueryDto } from './dto/search-lyrics-query.dto';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import { RolesGuard } from '../auth/guards/roles.guard';
 import {
   ApiTags,
   ApiBearerAuth,
@@ -58,7 +55,6 @@ export class LyricsController {
   @ApiBody({ type: CreateLyricsDto })
   @ApiCreatedResponse({ description: 'Lyrics created.', type: AdminLyricDto })
   @ApiBadRequestResponse({ description: 'The payload failed validation.' })
-  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.Admin)
   @Post()
   async create(
@@ -165,7 +161,6 @@ export class LyricsController {
     required: true,
     description: 'Artist to filter by',
   })
-  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.Admin)
   @Get('artist/:artist')
   getLyricsByArtist(@Param('artist') artist: string) {
@@ -192,7 +187,6 @@ export class LyricsController {
   })
   @ApiOkResponse({ description: 'Matching lyrics.', type: [AdminLyricDto] })
   @ApiBadRequestResponse({ description: 'The query failed validation.' })
-  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.Admin)
   @Get('search')
   async search(@Query() query: SearchLyricsQueryDto): Promise<AdminLyricDto[]> {
@@ -218,7 +212,6 @@ export class LyricsController {
   @ApiOkResponse({ description: 'Lyrics updated.', type: AdminLyricDto })
   @ApiBadRequestResponse({ description: 'The payload failed validation.' })
   @ApiResponse({ status: 404, description: 'Lyrics not found.' })
-  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.Admin)
   @Patch(':id')
   async update(
@@ -234,7 +227,6 @@ export class LyricsController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Delete lyrics' })
   @ApiResponse({ status: 204, description: 'Lyrics deleted.' })
-  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.Admin)
   @Delete(':id')
   remove(@Param('id', ParseIntPipe) id: number) {
@@ -244,7 +236,6 @@ export class LyricsController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Clear lyrics cache (Admin only)' })
   @ApiResponse({ status: 200, description: 'Cache cleared successfully.' })
-  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.Admin)
   @Post('cache/clear')
   clearCache() {
@@ -254,7 +245,6 @@ export class LyricsController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Get cache statistics (Admin only)' })
   @ApiResponse({ status: 200, description: 'Cache statistics retrieved.' })
-  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.Admin)
   @Get('cache/stats')
   getCacheStats() {

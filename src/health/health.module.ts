@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { TerminusModule } from '@nestjs/terminus';
 import { HealthController } from './health.controller';
 import { StellarRpcHealthIndicator } from './stellar-rpc.health';
+import { RedisHealthIndicator } from './redis.health';
 
 /**
  * Exposes /health/live and /health/ready probe endpoints.
@@ -10,6 +11,6 @@ import { StellarRpcHealthIndicator } from './stellar-rpc.health';
 @Module({
   imports: [TerminusModule],
   controllers: [HealthController],
-  providers: [StellarRpcHealthIndicator],
+  providers: [StellarRpcHealthIndicator, RedisHealthIndicator],
 })
 export class HealthModule {}

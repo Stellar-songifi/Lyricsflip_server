@@ -3,20 +3,20 @@ import {
   HealthCheck,
   HealthCheckService,
   TypeOrmHealthIndicator,
-  MemoryHealthIndicator,
 } from '@nestjs/terminus';
 import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { Public } from '../auth/decorators/public.decorator';
 import { ConfigService } from '@nestjs/config';
 import { StellarRpcHealthIndicator } from './stellar-rpc.health';
+import { RedisHealthIndicator } from './redis.health';
 
 /**
  * Kubernetes / load-balancer probe endpoints.
  *
  * GET /health/live  — liveness: is the process up and responding?
  * GET /health/ready — readiness: can it serve traffic?
- *                     Checks DB connectivity, optionally the Soroban RPC
- *                     (in stellar mode), and heap memory usage.
+ *                     Checks DB connectivity, Redis (when REDIS_URL is set)
+ *                     and, in stellar mode, the Soroban RPC.
  *
  * Both endpoints are @Public() so they require no auth token.
  */
@@ -26,8 +26,8 @@ export class HealthController {
   constructor(
     private readonly health: HealthCheckService,
     private readonly db: TypeOrmHealthIndicator,
-    private readonly memory: MemoryHealthIndicator,
     private readonly stellarRpc: StellarRpcHealthIndicator,
+    private readonly redis: RedisHealthIndicator,
     private readonly config: ConfigService,
   ) {}
 
@@ -43,10 +43,9 @@ export class HealthController {
   @ApiResponse({ status: 200, description: 'Process is alive.' })
   @ApiResponse({ status: 503, description: 'Process unhealthy.' })
   live() {
-    // Only verify heap is not exhausted; no DB or RPC calls.
-    return this.health.check([
-      () => this.memory.checkHeap('memory_heap', 512 * 1024 * 1024),
-    ]);
+    // Plain 200: reaching this handler proves the event loop is alive. Memory
+    // pressure is left to the container's memory limit.
+    return this.health.check([]);
   }
 
   /**
@@ -58,7 +57,8 @@ export class HealthController {
   @Get('ready')
   @HealthCheck()
   @ApiOperation({
-    summary: 'Readiness probe — database (and RPC in stellar mode) reachable',
+    summary:
+      'Readiness probe — database, Redis (if configured) and RPC (stellar mode) reachable',
   })
   @ApiResponse({ status: 200, description: 'All dependencies healthy.' })
   @ApiResponse({ status: 503, description: 'One or more dependencies down.' })
@@ -72,6 +72,9 @@ export class HealthController {
       () => this.db.pingCheck('database'),
       ...(stellarMode === 'stellar'
         ? [() => this.stellarRpc.isHealthy('stellar_rpc')]
+        : []),
+      ...(this.config.get<string>('REDIS_URL')
+        ? [() => this.redis.isHealthy('redis')]
         : []),
     ];
 

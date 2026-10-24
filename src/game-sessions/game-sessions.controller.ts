@@ -6,7 +6,6 @@ import {
   Patch,
   Param,
   Delete,
-  UseGuards,
   Query,
   Put,
   HttpCode,
@@ -20,7 +19,6 @@ import { ConfirmStakeDto } from './dto/confirm-stake.dto';
 import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
 import { TopScoresQueryDto } from './dto/top-scores-query.dto';
 import { CompleteWageredGameDto } from './dto/complete-wagered-game.dto';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { Roles } from '../auth/roles/roles.decorator';
 import { Role } from '../auth/roles/role.enum';
 import { GetUser } from '../auth/decorators/user.decorator';
@@ -36,7 +34,6 @@ import {
 
 @ApiTags('game-sessions')
 @Controller('game-sessions')
-@UseGuards(JwtAuthGuard)
 @UseInterceptors(AuditInterceptor)
 export class GameSessionsController {
   constructor(private readonly gameSessionsService: GameSessionsService) {}
