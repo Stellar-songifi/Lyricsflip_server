@@ -1,8 +1,8 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { SelectQueryBuilder } from 'typeorm';
-import { Lyrics } from 'src/lyrics/entities/lyrics.entity';
-import { GameHistory } from 'src/game-history/entities/game-history.entity';
+import { Lyrics } from '../lyrics/entities/lyrics.entity';
+import { GameHistory } from '../game-history/entities/game-history.entity';
 import { DifficultyCalibratorJob } from './difficulty-calibrator.job';
 
 describe('DifficultyCalibratorJob', () => {

@@ -1,7 +1,7 @@
 import { DataSource, Repository } from 'typeorm';
-import { User } from 'src/users/entities/user.entity';
-import { Lyrics } from 'src/lyrics/entities/lyrics.entity';
-import { Role } from 'src/common/enums/role.enum';
+import { User } from '../users/entities/user.entity';
+import { Lyrics } from '../lyrics/entities/lyrics.entity';
+import { Role } from '../common/enums/role.enum';
 
 jest.mock('typeorm', () => {
   const actual = jest.requireActual('typeorm');

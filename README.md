@@ -690,7 +690,7 @@ All configuration comes from environment variables, loaded from `.env` by `@nest
 | `PORT`           | `3000`                   | HTTP port                                                             |
 | `NODE_ENV`       | –                        | `production` hides validation messages and database error details, and drops the mock notification endpoints |
 | `FRONTEND_URL`   | `http://localhost:3000`  | CORS origin                                                           |
-| `LOG_LEVEL`      | `info`                   | Used by the Winston `LoggerService`                                   |
+| `LOG_LEVEL`      | `info` in production, `debug` otherwise | Winston level: `error`, `warn`, `info`, `http`, `verbose` or `debug`. Nest's `log` is accepted and treated as `info` |
 | `JWT_SECRET`     | **required**             | The app refuses to start without it, and it must be at least 32 characters. Use a long random value |
 | `JWT_EXPIRES_IN` | `15m`                    | Any format accepted by `jsonwebtoken`. Refresh tokens are separate, opaque and valid for 30 days |
 | `INVITATION_TTL_MINUTES` | `30`             | How long player two has to accept a session invitation before it is abandoned and player one refunded |

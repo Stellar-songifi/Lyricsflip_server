@@ -39,6 +39,60 @@ jobs:
       - name: Build
         run: npm run build
 
+      # The compiled app must load: a bare src/... import builds fine but
+      # crashes `node dist/main` (#355).
+      - name: Start the compiled build (smoke test)
+        run: bash scripts/smoke-start.sh
+
+  docker-build:
+    name: Docker image builds and migrates an empty database
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: lyricsflip
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Build only, never push: a broken Dockerfile fails the PR (#352).
+      - name: Build image
+        run: docker build --tag lyricsflip-server:ci .
+
+      - name: Image contains the compiled data source and entrypoint
+        run: |
+          docker run --rm --entrypoint sh lyricsflip-server:ci -c \
+            'test -f dist/main.js && test -f dist/data-source.js && test -x docker-entrypoint.sh && ls dist/migrations | head -n 3'
+
+      - name: Run with RUN_MIGRATIONS=true against the empty database
+        run: |
+          docker run -d --name api --network host \
+            -e RUN_MIGRATIONS=true -e PORT=3000 \
+            -e JWT_SECRET=ci-secret-that-is-at-least-32-characters-long \
+            -e DB_HOST=127.0.0.1 -e DB_PORT=5432 -e DB_USERNAME=postgres \
+            -e DB_PASSWORD=postgres -e DB_NAME=lyricsflip \
+            lyricsflip-server:ci
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:3000/health/live; then echo; break; fi
+            if [ "$(docker inspect -f '{{.State.Running}}' api)" != "true" ]; then break; fi
+            sleep 2
+          done
+          docker logs api
+          curl -fsS http://127.0.0.1:3000/health/live
+          applied=$(PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -d lyricsflip -tAc 'SELECT count(*) FROM migrations')
+          echo "migrations applied: $applied"
+          test "$applied" -gt 0
+
   e2e:
     name: E2E (Postgres) and migration drift check
     runs-on: ubuntu-latest

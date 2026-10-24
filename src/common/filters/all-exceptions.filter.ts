@@ -9,6 +9,7 @@ import {
 import { randomUUID } from 'crypto';
 import { QueryFailedError } from 'typeorm';
 import { Request, Response } from 'express';
+import { getRequestId } from '../request-context';
 
 export interface ErrorResponse {
   statusCode: number;
@@ -53,17 +54,26 @@ export class AllExceptionsFilter implements ExceptionFilter {
   }
 
   /**
-   * Reuses an incoming `x-request-id` if the caller (or a proxy) supplied
-   * one, otherwise generates one and echoes it back on the response so a
-   * client can always correlate a failed request with a log line, even on
-   * its first call. See issue #200.
+   * The ID every log line of this request already carries, so the one a
+   * client reports from an error body matches the logs (#200, #360). In
+   * order: the request context set by RequestIdMiddleware, the response
+   * header it set, the incoming header, and only then a new UUID (for
+   * errors raised before the middleware ran). Echoed on the response.
    */
   private resolveRequestId(request: Request, response: Response): string {
-    const incoming = request.headers['x-request-id'];
+    const fromHeader = (value: unknown): string | undefined => {
+      const first = Array.isArray(value) ? value[0] : value;
+      return typeof first === 'string' && first !== '' ? first : undefined;
+    };
     const requestId =
-      (Array.isArray(incoming) ? incoming[0] : incoming) || randomUUID();
+      getRequestId() ||
+      (typeof response.getHeader === 'function'
+        ? fromHeader(response.getHeader('x-request-id'))
+        : undefined) ||
+      fromHeader(request.headers['x-request-id']) ||
+      randomUUID();
 
-    response.setHeader('x-request-id', requestId);
+    if (!response.headersSent) response.setHeader('x-request-id', requestId);
     return requestId;
   }
 

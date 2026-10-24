@@ -1,4 +1,3 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -7,8 +6,8 @@ import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
 import { GrantMockBalanceMode } from './dto/grant-mock-balance.dto';
 import { MockTokenService } from '../tokens/services/mock-token.service';
 import { UsersService } from '../users/users.service';
-import { LyricsService } from 'src/lyrics/lyrics.service';
-import { CreateLyricsDto } from 'src/lyrics/dto/create-lyrics.dto';
+import { LyricsService } from '../lyrics/lyrics.service';
+import { CreateLyricsDto } from '../lyrics/dto/create-lyrics.dto';
 import { validate } from 'class-validator';
 import { plainToInstance } from 'class-transformer';
 import { AdminUserQueryDto } from './dto/admin-user-query.dto';
