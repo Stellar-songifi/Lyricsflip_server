@@ -3,6 +3,9 @@ import {
   Post,
   Delete,
   Get,
+  Param,
+  ParseUUIDPipe,
+  Req,
   Body,
   ValidationPipe,
   HttpCode,
@@ -12,7 +15,8 @@ import {
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { authThrottle, stellarThrottle } from '../common/throttler/throttle.config';
-import { AuthService } from './auth.service';
+import { Request } from 'express';
+import { AuthService, ClientContext } from './auth.service';
 import { AuditInterceptor } from '../audit/audit.interceptor';
 import { Audited } from '../audit/decorators/audited.decorator';
 import { StellarAuthService } from './services/stellar-auth.service';
@@ -70,8 +74,14 @@ export class AuthController {
   @ApiResponse({ status: 200, description: 'New access and refresh tokens.' })
   @ApiResponse({ status: 401, description: 'Refresh token invalid or expired.' })
   @HttpCode(HttpStatus.OK)
-  async refresh(@Body(ValidationPipe) dto: RefreshTokenDto) {
-    return this.authService.refresh(dto.refreshToken);
+  async refresh(
+    @Body(ValidationPipe) dto: RefreshTokenDto,
+    @Req() request: Request,
+  ) {
+    return this.authService.refresh(
+      dto.refreshToken,
+      this.clientContext(request, dto.deviceName),
+    );
   }
 
   @Public()
@@ -82,6 +92,51 @@ export class AuthController {
   async logout(@Body(ValidationPipe) dto: RefreshTokenDto) {
     await this.authService.logout(dto.refreshToken);
     return { message: 'Logged out' };
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @Get('sessions')
+  @ApiOperation({
+    summary: 'List the devices you are signed in on',
+    description:
+      'One entry per active refresh token. IP addresses are truncated to the network.',
+  })
+  @ApiResponse({ status: 200, description: 'Active sessions.' })
+  async listSessions(@GetUser() user: User) {
+    return this.authService.listSessions(user.id);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @Delete('sessions/:id')
+  @Audited({ action: 'auth.session.revoke', targetType: 'refresh_token' })
+  @ApiOperation({ summary: 'Sign one device out' })
+  @ApiResponse({ status: 200, description: 'Session revoked.' })
+  @ApiResponse({ status: 404, description: 'No such active session.' })
+  @HttpCode(HttpStatus.OK)
+  async revokeSession(
+    @GetUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    await this.authService.revokeSession(user.id, id);
+    return { message: 'Session revoked' };
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @Post('logout-all')
+  @Audited({ action: 'auth.logout-all', targetType: 'user' })
+  @ApiOperation({
+    summary: 'Sign out everywhere',
+    description:
+      'Revokes every refresh token and invalidates every access token, including the one used for this request.',
+  })
+  @ApiResponse({ status: 200, description: 'Signed out on every device.' })
+  @HttpCode(HttpStatus.OK)
+  async logoutAll(@GetUser() user: User) {
+    await this.authService.logoutAll(user.id);
+    return { message: 'Signed out on every device' };
   }
 
   @Public()
@@ -260,3 +315,13 @@ export class AuthController {
     await this.stellarAuthService.unlinkWallet(user.id);
     return { message: 'Stellar wallet unlinked' };
   }
+
+  private clientContext(request: Request, deviceName?: string): ClientContext {
+    const userAgent = request.headers['user-agent'];
+    return {
+      userAgent: typeof userAgent === 'string' ? userAgent : null,
+      ip: request.ip ?? null,
+      deviceName: deviceName ?? null,
+    };
+  }
+}

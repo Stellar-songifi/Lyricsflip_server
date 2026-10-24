@@ -6,8 +6,9 @@
 # 2. When RUN_MIGRATIONS=true, applies pending migrations with the compiled
 #    data source (dist/data-source.js). No ts-node is needed, so this works in
 #    the production image, which has no dev dependencies.
-# 3. Execs the container command (default: node dist/main.js), so the app is
-#    PID 1's direct child and receives SIGTERM.
+# 3. Execs the container command, so the app is PID 1's direct child and
+#    receives SIGTERM. The default CMD, "node-main", starts the compiled app
+#    from dist/main.js, or dist/src/main.js if tsc nested the output.
 set -eu
 
 wait_for_database() {
@@ -54,6 +55,13 @@ wait_for_database
 if [ "${RUN_MIGRATIONS:-false}" = "true" ]; then
   echo "[entrypoint] running migrations"
   node node_modules/typeorm/cli.js migration:run -d dist/data-source.js
+fi
+
+if [ "${1:-}" = "node-main" ]; then
+  if [ -f dist/main.js ]; then
+    exec node dist/main.js
+  fi
+  exec node dist/src/main.js
 fi
 
 exec "$@"

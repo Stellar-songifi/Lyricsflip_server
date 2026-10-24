@@ -191,14 +191,18 @@ export class UsersController {
    * Declared before `@Get(':id')` so the literal `public` segment is not
    * swallowed by the wildcard route.
    */
+  @Public()
   @Get(':username/public')
   @ApiOperation({ summary: 'Get a user’s public profile by username' })
   @ApiResponse({ status: 200, description: 'Public user data.', type: PublicUserDto })
-  @ApiResponse({ status: 404, description: 'User not found.' })
-  async findPublicByUsername(
+  @ApiResponse({
+    status: 404,
+    description: 'No active user with that username (case-insensitive).',
+  })
+  findPublicByUsername(
     @Param('username') username: string,
   ): Promise<PublicUserDto> {
-    return PublicUserDto.from(await this.usersService.findByUsername(username));
+    return this.usersService.findPublicProfile(username);
   }
 
   @Get(':id')

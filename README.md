@@ -668,6 +668,25 @@ npm run build && npm run start:prod
 
 The API listens on `PORT` (default `3000`). Swagger UI is served at **`/api/docs`**.
 
+### Run with Docker
+
+`docker-compose.yml` runs Postgres, Redis and the API together. Nothing needs to be installed or configured besides Docker:
+
+```bash
+docker compose up --build
+curl -i localhost:3000/health/ready     # 200 once Postgres and Redis are reachable
+```
+
+The API container applies pending migrations on start (`RUN_MIGRATIONS=true`, handled by `docker-entrypoint.sh`) and listens on `0.0.0.0:3000`. It runs with `NODE_ENV=development`, settlement in mock mode, and a development-only `JWT_SECRET`; set `JWT_SECRET` (and `POSTGRES_USER`/`POSTGRES_PASSWORD`/`POSTGRES_DB`) in your shell or a `.env` file next to `docker-compose.yml` to override them. Never expose this stack to the internet with the default secret.
+
+To load the sample data once the API is healthy:
+
+```bash
+docker compose run --rm seed
+```
+
+The `seed` service is behind a compose profile, so `docker compose up` does not start it. A local Stellar network is available with `docker compose --profile stellar up`.
+
 ### Useful scripts
 
 | Script                                              | Purpose                                         |

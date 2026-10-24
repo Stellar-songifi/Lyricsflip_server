@@ -47,4 +47,6 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:' + (process.env.PORT || 3000) + '/health/live').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
 
 ENTRYPOINT ["./docker-entrypoint.sh"]
-CMD ["node", "dist/main.js"]
+# docker-entrypoint.sh finds the compiled main.js itself: tsconfig.json also
+# compiles typeorm.config.ts, so tsc emits it under dist/src/.
+CMD ["node-main"]

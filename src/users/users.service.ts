@@ -45,19 +45,21 @@ const NON_TERMINAL_WAGER_STATUSES = [
 import { AdminUpdateUserDto, UpdateProfileDto } from './dto/update-user.dto';
 import { MAX_PAGE_SIZE } from '../common/dto/pagination-query.dto';
 import { cacheConfig } from '../config/cache.config';
+import { Optional } from '@nestjs/common';
+import { PublicUserDto } from './dto/public-user.dto';
+import { AchievementsService } from '../achievements/achievements.service';
+import {
+  GameSession,
+  GameSessionStatus,
+} from '../game-sessions/entities/game-session.entity';
+import { RefreshToken } from '../auth/entities/refresh-token.entity';
+import { EmailToken } from '../auth/entities/email-token.entity';
+import { PasswordResetToken } from '../auth/entities/password-reset-token.entity';
+import { Notification } from '../notifications/entities/notification.entity';
+import { AuditLog } from '../audit/entities/audit-log.entity';
 
-// Fields that are safe to expose on a public player profile. Everything else
-// on the User entity (email, wallet address, preferences, flags, timestamps)
-// is considered private and must never leak through the public endpoint.
-const PUBLIC_PROFILE_FIELDS = [
-  'username',
-  'level',
-  'levelTitle',
-  'xp',
-  'achievements',
-  'wins',
-  'losses',
-] as const;
+/** Public profiles are cached briefly; they change only after a match. */
+const PUBLIC_PROFILE_CACHE_TTL_MS = 60_000;
 
 /** Symbol of the staking token; the balance is never XLM. */
 const TOKEN_SYMBOL = 'LYRIC';
@@ -79,6 +81,13 @@ export class UsersService {
     @Inject(TOKEN_SERVICE)
     private readonly tokenService: ITokenService,
   ) {}
+
+  // Property injection keeps the constructor stable. Optional because the
+  // achievements persistence (R2-66) is not wired up on every deployment;
+  // without it public profiles report no achievements.
+  @Optional()
+  @Inject(AchievementsService)
+  private readonly achievementsService?: AchievementsService;
 
   async findAll(limit: number = 20, offset: number = 0) {
     return this.userRepository.find({
@@ -103,38 +112,80 @@ export class UsersService {
   }
 
   /**
-   * Returns the deliberately public view of a player profile, looked up by
-   * username. Only fields listed in PUBLIC_PROFILE_FIELDS are exposed; the
-   * full entity (email, wallet, preferences, etc.) is never returned here.
+   * The one public view of a player (GET /users/:username/public): the
+   * fields in PublicUserDto and nothing else. Looked up case-insensitively;
+   * deactivated and anonymised accounts are 404. Cached for a minute.
    */
-  async findPublicProfile(username: string) {
-    // Usernames are unique case-insensitively (IDX_users_username_lower), so
-    // /users/Alice/public and /users/alice/public are the same player.
-    const user = await this.userRepository.findOne({
-      where: {
-        username: Raw((column) => `LOWER(${column}) = LOWER(:username)`, {
-          username,
-        }),
-      },
-      select: [...PUBLIC_PROFILE_FIELDS],
-    });
+  async findPublicProfile(username: string): Promise<PublicUserDto> {
+    const cacheKey = `users:public:${username.toLowerCase()}`;
+    const cached = await this.cacheManager.get<PublicUserDto>(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    const user = await this.userRepository
+      .createQueryBuilder('user')
+      .where('LOWER(user.username) = LOWER(:username)', { username })
+      .andWhere('user.isActive = true')
+      .andWhere('user.username NOT LIKE :anonymised', {
+        anonymised: 'deleted\\_%',
+      })
+      .getOne();
     if (!user) {
       throw new NotFoundException(`User with username ${username} not found`);
     }
 
-    const wins = user.wins ?? 0;
-    const losses = user.losses ?? 0;
-    const totalGames = wins + losses;
-    const winRate = totalGames > 0 ? wins / totalGames : 0;
+    const [record, achievements] = await Promise.all([
+      this.getHeadToHeadRecord(user.id),
+      this.getPublicAchievements(user.id),
+    ]);
+
+    const profile = PublicUserDto.from(user, record, achievements);
+    await this.cacheManager.set(cacheKey, profile, PUBLIC_PROFILE_CACHE_TTL_MS);
+    return profile;
+  }
+
+  /**
+   * Wins and losses in completed two-player sessions. Wagered matches are
+   * sessions too, so they are counted here once, not again from wagers.
+   * Sessions that ended without a winner (draws) count as neither.
+   */
+  private async getHeadToHeadRecord(
+    userId: string,
+  ): Promise<{ wins: number; losses: number }> {
+    const row = await this.userRepository.manager
+      .getRepository(GameSession)
+      .createQueryBuilder('gs')
+      .select('COUNT(*) FILTER (WHERE gs.winnerId = :userId)', 'wins')
+      .addSelect(
+        'COUNT(*) FILTER (WHERE gs.winnerId IS NOT NULL AND gs.winnerId <> :userId)',
+        'losses',
+      )
+      .where('gs.status = :completed', {
+        completed: GameSessionStatus.COMPLETED,
+      })
+      .andWhere('gs.playerTwoId IS NOT NULL')
+      .andWhere('(gs."playerId" = :userId OR gs.playerTwoId = :userId)', {
+        userId,
+      })
+      .getRawOne<{ wins: string; losses: string }>();
 
     return {
-      username: user.username,
-      level: user.level,
-      levelTitle: user.levelTitle,
-      xp: user.xp,
-      achievements: user.achievements ?? [],
-      winRate,
+      wins: Number(row?.wins ?? 0),
+      losses: Number(row?.losses ?? 0),
     };
+  }
+
+  private async getPublicAchievements(userId: string) {
+    if (!this.achievementsService) {
+      return [];
+    }
+    const unlocked = await this.achievementsService.listForUser(userId);
+    return unlocked.map(({ code, name, description }) => ({
+      code,
+      name,
+      description,
+    }));
   }
 
   /**
@@ -355,6 +406,8 @@ export class UsersService {
         'User has an in-progress wager and cannot be deleted until it is resolved',
       );
     }
+
+    await this.erasePersonalData(id);
 
     user.isActive = false;
     user.email = `deleted-${user.id}@deleted.lyricsflip.local`;
@@ -597,5 +650,27 @@ export class UsersService {
     }
 
     return { rank: Number(rows[0].rank) };
+  }
+
+  /**
+   * Applies the retention policy (docs/DATA_ARCHIVING.md) to a deleted
+   * account's rows outside the users table:
+   *
+   *   deleted     refresh_tokens, email_tokens, password_reset_tokens,
+   *               notifications - no legal reason to keep them
+   *   ip cleared  audit_logs where the user was the actor - the rows stay,
+   *               as the audit record of what was done, but not from where
+   *   kept        wagers (financial record), game_history, game_sessions,
+   *               game_rounds, room_users - linked only by id to the
+   *               anonymised users row, so they no longer identify anyone
+   */
+  private async erasePersonalData(userId: string): Promise<void> {
+    await this.userRepository.manager.transaction(async (manager) => {
+      await manager.delete(RefreshToken, { userId });
+      await manager.delete(EmailToken, { userId });
+      await manager.delete(PasswordResetToken, { userId });
+      await manager.delete(Notification, { userId });
+      await manager.update(AuditLog, { actorId: userId }, { ip: null });
+    });
   }
 }
