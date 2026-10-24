@@ -22,14 +22,10 @@ import {
 } from '../tokens/interfaces/token.interface';
 import { fromStroops } from '../stellar/amount.util';
 import { GameHistory } from '../game-history/entities/game-history.entity';
-import { GameSession } from '../game-sessions/entities/game-session.entity';
 import { GameRound } from '../game/entities/game-round.entity';
 import { DailyChallengeAttempt } from '../challenges/entities/daily-challenge-attempt.entity';
 import { Room } from '../rooms/entities/room.entity';
 import { RoomUser } from '../rooms/entities/room-user.entity';
-import { RefreshToken } from '../auth/entities/refresh-token.entity';
-import { Notification } from '../notifications/entities/notification.entity';
-import { AuditLog } from '../audit/entities/audit-log.entity';
 import { Lyrics } from '../lyrics/entities/lyrics.entity';
 import { usernameRuleViolation } from '../common/validators/username.validator';
 

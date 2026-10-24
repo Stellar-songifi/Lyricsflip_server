@@ -92,7 +92,6 @@ export class AuthController {
     return { message: 'Logged out' };
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @Get('sessions')
   @ApiOperation({
@@ -105,7 +104,6 @@ export class AuthController {
     return this.authService.listSessions(user.id);
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @Delete('sessions/:id')
   @Audited({ action: 'auth.session.revoke', targetType: 'refresh_token' })
@@ -121,7 +119,6 @@ export class AuthController {
     return { message: 'Session revoked' };
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @Post('logout-all')
   @Audited({ action: 'auth.logout-all', targetType: 'user' })
