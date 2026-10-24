@@ -140,11 +140,14 @@ async function bootstrap() {
   httpServer.keepAliveTimeout = keepAliveTimeout;
 
   const port = process.env.PORT ?? 3000;
-  const host = process.env.HOST ?? 'localhost';
+  // All interfaces by default: inside a container, localhost is only the
+  // loopback interface, so the published port would receive nothing.
+  const host = process.env.HOST || '0.0.0.0';
   await app.listen(port, host);
 
+  // The address the server actually bound, not the one that was requested.
   winstonLogger.log(
-    `Application is running on http://${host}:${port}`,
+    `Application is running on ${await app.getUrl()} (bound to ${host}:${port})`,
     'Bootstrap',
   );
 }

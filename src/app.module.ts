@@ -33,7 +33,7 @@ import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { AppThrottlerGuard } from './common/throttler/app-throttler.guard';
 import { defaultThrottle } from './common/throttler/throttle.config';
-import type { LoggingOptions } from 'typeorm';
+import { buildDataSourceOptions } from './config/database.config';
 
 @Module({
   imports: [
@@ -84,125 +84,17 @@ import type { LoggingOptions } from 'typeorm';
       },
     }),
 
-    // 3. Configure TypeORM using environment variables (#202).
-    //
-    //    DB_LOGGING            Comma-separated TypeORM log levels or 'all'.
-    //                          Default: 'error' in production,
-    //                                   'error,warn,slow' in development.
-    //    DB_POOL_SIZE          pg connection pool size.  Default: 10.
-    //    DB_SLOW_QUERY_THRESHOLD_MS  Slow-query warning threshold (ms).
-    //                          Default: 250.
+    // 3. Configure TypeORM from the environment. Connection, TLS, pool,
+    //    logging and replica settings are built by buildDataSourceOptions
+    //    (src/config/database.config.ts), shared with the CLI data source
+    //    (typeorm.config.ts) and the seed so all three connect the same way.
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
-      useFactory: (configService: ConfigService) => {
-        const getRequiredEnv = (key: string): string => {
-          const value = configService.get<string>(key);
-          if (!value) {
-            throw new Error(
-              `FATAL ERROR: Environment variable ${key} is not set.`,
-            );
-          }
-          return value;
-        };
-
-        const dbHost = getRequiredEnv('DB_HOST');
-        const dbPort = parseInt(getRequiredEnv('DB_PORT'), 10);
-        const dbUsername = getRequiredEnv('DB_USERNAME');
-        const dbPassword = getRequiredEnv('DB_PASSWORD');
-        const dbName = getRequiredEnv('DB_NAME');
-
-        const isProduction =
-          configService.get<string>('NODE_ENV') === 'production';
-        const defaultLogging = isProduction ? 'error' : 'error,warn,slow';
-        const loggingRaw = configService.get<string>(
-          'DB_LOGGING',
-          defaultLogging,
-        );
-
-        // Parse DB_LOGGING into the TypeORM LoggingOptions union.
-        // Accepted values: 'all', 'false', or a comma-separated list of
-        // 'query' | 'error' | 'schema' | 'warn' | 'info' | 'log' | 'slow'
-        let logging: LoggingOptions;
-        if (loggingRaw === 'all') {
-          logging = 'all';
-        } else if (loggingRaw === 'false' || loggingRaw === '') {
-          logging = false;
-        } else {
-          logging = loggingRaw
-            .split(',')
-            .map((s) => s.trim()) as LoggingOptions;
-        }
-
-        const poolSize = configService.get<number>('DB_POOL_SIZE', 10);
-        const slowQueryThreshold = configService.get<number>(
-          'DB_SLOW_QUERY_THRESHOLD_MS',
-          250,
-        );
-
-        const primary = {
-          host: dbHost,
-          port: dbPort,
-          username: dbUsername,
-          password: dbPassword,
-          database: dbName,
-        };
-
-        // Replication is only configured when DB_REPLICA_HOST is set, so a
-        // single-database setup has no replication layer at all.
-        const replicaHost = configService.get<string>('DB_REPLICA_HOST');
-        const replicaPort = configService.get<string>('DB_REPLICA_PORT');
-        const connection = replicaHost
-          ? {
-              replication: {
-                master: primary,
-                slaves: [
-                  {
-                    host: replicaHost,
-                    port: replicaPort ? parseInt(replicaPort, 10) : dbPort,
-                    username: configService.get<string>(
-                      'DB_REPLICA_USERNAME',
-                      dbUsername,
-                    ),
-                    password: configService.get<string>(
-                      'DB_REPLICA_PASSWORD',
-                      dbPassword,
-                    ),
-                    database: configService.get<string>(
-                      'DB_REPLICA_NAME',
-                      dbName,
-                    ),
-                  },
-                ],
-                // Every query goes to the primary by default, so write-then-read
-                // flows (wagers, balances, auth) never see replica lag. The
-                // replica is used only by code that explicitly opens a
-                // `dataSource.createQueryRunner('slave')`.
-                defaultMode: 'master' as const,
-              },
-            }
-          : primary;
-
-        return {
-          type: 'postgres',
-          ...connection,
-
+      useFactory: (configService: ConfigService) =>
+        buildDataSourceOptions((key) => configService.get(key), {
           entities: [__dirname + '/**/*.entity{.ts,.js}'],
-          synchronize: false,
-
-          logging,
-          maxQueryExecutionTime: slowQueryThreshold,
-
-          extra: {
-            // 'max' is the pg pool option; TypeORM's poolSize is also
-            // accepted but extra.max is the canonical pg-pool key.
-            max: poolSize,
-            // Safety net: pin the session time zone so date handling never
-            // depends on the server or process time zone.
-            options: '-c timezone=UTC',
-          },
-        };
-      },
+        }),
     }),
     UsersModule,
     AuthModule,

@@ -28,6 +28,10 @@ config({ path: path.resolve(__dirname, '../../.env') });
 import { User } from '../users/entities/user.entity';
 import { Lyrics, Genre } from '../lyrics/entities/lyrics.entity';
 import { Role } from '../auth/roles/role.enum';
+import {
+  buildDataSourceOptions,
+  envFromRecord,
+} from '../config/database.config';
 
 // ---------------------------------------------------------------------------
 // Fixture data
@@ -109,26 +113,17 @@ function resolveCredentials(): { email: string; password: string } {
 // Slim DataSource — only the entities and connection we actually need
 // ---------------------------------------------------------------------------
 function buildDataSource(): DataSource {
-  const required = (key: string): string => {
-    const val = process.env[key];
-    if (!val) {
-      console.error(`ERROR: Required environment variable ${key} is not set.`);
-      process.exit(1);
-    }
-    return val;
-  };
-
-  return new DataSource({
-    type: 'postgres',
-    host: required('DB_HOST'),
-    port: parseInt(process.env.DB_PORT ?? '5432', 10),
-    username: required('DB_USERNAME'),
-    password: required('DB_PASSWORD'),
-    database: required('DB_NAME'),
-    entities: [User, Lyrics],
-    synchronize: false,
-    logging: false,
-  });
+  try {
+    return new DataSource({
+      ...buildDataSourceOptions(envFromRecord(process.env), {
+        entities: [User, Lyrics],
+      }),
+      logging: false,
+    });
+  } catch (error) {
+    console.error(`ERROR: ${(error as Error).message}`);
+    process.exit(1);
+  }
 }
 
 // ---------------------------------------------------------------------------

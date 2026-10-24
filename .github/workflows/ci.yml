@@ -1,5 +1,8 @@
 name: CI
 
+# Every check runs once per PR, from this one workflow. The Node version
+# comes from .nvmrc (also engines.node in package.json and the Dockerfile).
+
 on:
   pull_request:
   push:
@@ -11,6 +14,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  migration-location:
+    name: No migrations outside src/migrations
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check migration location
+        run: bash scripts/check-migration-location.sh
+
   lint-typecheck-test-build:
     name: Lint, type-check, tests and build
     runs-on: ubuntu-latest
@@ -21,14 +34,14 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version-file: .nvmrc
           cache: npm
 
       - name: Install dependencies
         run: npm ci
 
       - name: Lint (check mode)
-        run: npm run lint -- --no-fix
+        run: npm run lint:check
 
       - name: Type-check
         run: npx tsc --noEmit
@@ -96,7 +109,7 @@ jobs:
           test "$applied" -gt 0
 
   e2e:
-    name: E2E (Postgres) and migration drift check
+    name: Migrations, drift check and E2E (Postgres)
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -109,10 +122,12 @@ jobs:
           - 5432:5432
         options: >-
           --health-cmd "pg_isready -U postgres"
-          --health-interval 10s
+          --health-interval 5s
           --health-timeout 5s
-          --health-retries 5
+          --health-retries 10
     timeout-minutes: 5
+    # The variables typeorm.config.ts, AppModule and the e2e setup read.
+    # DATABASE_URL takes precedence over the discrete DB_* values.
     env:
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/test
       DB_HOST: localhost
@@ -120,7 +135,7 @@ jobs:
       DB_USERNAME: postgres
       DB_PASSWORD: postgres
       DB_NAME: test
-      JWT_SECRET: ci-jwt-secret-ci-jwt-secret-ci-jwt-secret
+      JWT_SECRET: ci-only-jwt-secret-not-used-anywhere-else
       TZ: America/New_York
     steps:
       - name: Checkout
@@ -129,17 +144,19 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version-file: .nvmrc
           cache: npm
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Run migrations
+      - name: Run all migrations on an empty database
         run: npm run migration:run
 
-      - name: Migration drift check
-        run: npm run migration:generate -- src/migrations/DriftCheck
+      # Exits non-zero when the entities describe a schema the migrations do
+      # not produce, i.e. an entity change shipped without a migration.
+      - name: Check the entities match the migrated schema
+        run: npm run migration:check
 
       - name: E2E tests
         run: npm run test:e2e
@@ -147,21 +164,56 @@ jobs:
       - name: E2E tests (real Postgres)
         run: npm run test:e2e:db
 
+      # npm run openapi:export builds the app with the same routing and
+      # document configuration as main.ts, so its paths are the ones the API
+      # serves (#363). If an openapi.json is committed it must match.
+      - name: Export the OpenAPI document
+        run: |
+          JWT_SECRET="$(openssl rand -hex 32)" \
+            npm run openapi:export -- "$RUNNER_TEMP/openapi.json"
+
+      - name: Committed openapi.json is up to date
+        run: |
+          if git ls-files --error-unmatch openapi.json >/dev/null 2>&1; then
+            diff -u openapi.json "$RUNNER_TEMP/openapi.json" || {
+              echo "openapi.json is out of date: run npm run openapi:export and commit it." >&2
+              exit 1
+            }
+          else
+            echo "No openapi.json is committed; nothing to compare."
+          fi
+
+      - name: Upload the OpenAPI document
+        uses: actions/upload-artifact@v4
+        with:
+          name: openapi
+          path: ${{ runner.temp }}/openapi.json
+
   contract:
-    name: Contract
+    name: Escrow contract (tests and release build)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          node-version: 20
-          cache: npm
+          targets: wasm32-unknown-unknown
 
-      - name: Install dependencies
-        run: npm ci
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            contracts/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('contracts/Cargo.lock') }}
 
       - name: Contract tests
-        run: npm run test:contract
+        working-directory: contracts
+        run: cargo test
+
+      - name: Release build (wasm)
+        working-directory: contracts
+        run: cargo build --release --target wasm32-unknown-unknown
