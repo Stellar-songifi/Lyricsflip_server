@@ -1,6 +1,7 @@
 import { Injectable, LoggerService as NestLoggerService } from '@nestjs/common';
 import * as winston from 'winston';
 import * as DailyRotateFile from 'winston-daily-rotate-file';
+import { trace as otelTrace, isSpanContextValid } from '@opentelemetry/api';
 import { getRequestId } from '../request-context';
 import { resolveLogLevel } from './log-level';
 
@@ -41,22 +42,13 @@ export class LoggerService implements NestLoggerService {
         info['requestId'] = rid;
       }
 
-      try {
-        const api = require('@opentelemetry/api');
-        const activeSpan = api.trace?.getActiveSpan?.();
-        if (activeSpan) {
-          const spanContext = activeSpan.spanContext();
-          if (
-            spanContext &&
-            spanContext.traceId &&
-            spanContext.traceId !== '00000000000000000000000000000000'
-          ) {
-            info['trace_id'] = spanContext.traceId;
-            info['span_id'] = spanContext.spanId;
-          }
+      const activeSpan = otelTrace.getActiveSpan();
+      if (activeSpan) {
+        const spanContext = activeSpan.spanContext();
+        if (isSpanContextValid(spanContext)) {
+          info['trace_id'] = spanContext.traceId;
+          info['span_id'] = spanContext.spanId;
         }
-      } catch {
-        // Fall back gracefully when OpenTelemetry is unavailable
       }
 
       return info;
@@ -175,10 +167,15 @@ export class LoggerService implements NestLoggerService {
   }
 
   logError(error: Error, context?: string): void {
+    const activeSpan = otelTrace.getActiveSpan();
+    const spanContext = activeSpan?.spanContext();
     this.logger.error(error.message, {
       stack: error.stack,
       name: error.name,
       context,
+      ...(spanContext && isSpanContextValid(spanContext)
+        ? { trace_id: spanContext.traceId, span_id: spanContext.spanId }
+        : {}),
     });
   }
 
