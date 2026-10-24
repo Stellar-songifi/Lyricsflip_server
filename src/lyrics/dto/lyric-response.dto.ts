@@ -31,8 +31,17 @@ export class PlayerLyricDto {
 
 /** A lyric as an admin manages it, answers included. */
 export class AdminLyricDto extends PlayerLyricDto {
+  /** Always null for lyrics added after R2-89; full text is not stored. */
+  @ApiProperty({ nullable: true })
+  content: string | null;
   @ApiProperty()
-  content: string;
+  source: string;
+  @ApiProperty({ nullable: true })
+  sourceUrl: string | null;
+  @ApiProperty({ nullable: true })
+  licence: string | null;
+  @ApiProperty({ nullable: true })
+  addedBy: string | null;
   @ApiProperty()
   artist: string;
   @ApiProperty()
@@ -52,6 +61,10 @@ export class AdminLyricDto extends PlayerLyricDto {
     return {
       ...PlayerLyricDto.from(lyric),
       content: lyric.content,
+      source: lyric.source,
+      sourceUrl: lyric.sourceUrl,
+      licence: lyric.licence,
+      addedBy: lyric.addedBy,
       artist: lyric.artist,
       songTitle: lyric.songTitle,
       difficulty: lyric.difficulty,

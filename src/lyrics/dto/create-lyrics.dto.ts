@@ -5,6 +5,8 @@ import {
   IsInt,
   IsOptional,
   IsArray,
+  IsUrl,
+  ValidateIf,
   ArrayMaxSize,
   Min,
   Max,
@@ -29,12 +31,20 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
  *   automatically by trimming `content` to its first 150 characters.
  *   This keeps every row's lyricSnippet non-empty while still letting
  *   callers override the default with a hand-picked excerpt.
+ * • One of the two is required. `content` itself is never stored (R2-89).
+ *
+ * Every lyric must say where it came from (`source`), so all lyrics from one
+ * source can be found and deactivated together.
  */
 export class CreateLyricDto {
-  @ApiProperty({ description: 'Full lyrics content' })
+  @ApiPropertyOptional({
+    description:
+      'Full lyrics, used only to derive lyricSnippet when it is omitted. Never stored.',
+  })
+  @IsOptional()
   @IsString()
   @IsNotEmpty()
-  content: string;
+  content?: string;
 
   @ApiPropertyOptional({
     description:
@@ -43,7 +53,8 @@ export class CreateLyricDto {
     minLength: 1,
     maxLength: 150,
   })
-  @IsOptional()
+  // Required when there is no content to derive it from.
+  @ValidateIf((o) => o.lyricSnippet !== undefined || !o.content)
   @IsString()
   @MinLength(1)
   @MaxLength(150)
@@ -51,6 +62,38 @@ export class CreateLyricDto {
     typeof value === 'string' ? value.trim() : value,
   )
   lyricSnippet?: string;
+
+  @ApiProperty({
+    description:
+      'Where the lyric came from, e.g. "genius", "artist-submission", "licensed:acme-music". Stored lower-case.',
+    maxLength: 100,
+  })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(100)
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim().toLowerCase() : value,
+  )
+  source: string;
+
+  @ApiPropertyOptional({ description: 'Link to the source', maxLength: 500 })
+  @IsOptional()
+  @IsUrl({ require_protocol: true })
+  @MaxLength(500)
+  sourceUrl?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Licence or agreement the snippet is used under, e.g. "fair-use-quote" or a contract reference',
+    maxLength: 100,
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
+  licence?: string;
 
   @ApiProperty({ description: 'Artist name' })
   @IsString()

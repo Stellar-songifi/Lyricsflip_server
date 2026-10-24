@@ -7,21 +7,18 @@ import {
 } from 'class-validator';
 import { Transform } from 'class-transformer';
 import { ApiProperty } from '@nestjs/swagger';
+import {
+  IsUsername,
+  USERNAME_RULE,
+} from '../../common/validators/username.validator';
 
 export class SignupDto {
   @ApiProperty({
-    description: 'Username: letters, numbers and underscores only',
-    minLength: 3,
-    maxLength: 20,
+    description: USERNAME_RULE.description,
+    minLength: USERNAME_RULE.minLength,
+    maxLength: USERNAME_RULE.maxLength,
   })
-  @IsString()
-  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
-  @MinLength(3)
-  @MaxLength(20)
-  @Matches(/^[a-zA-Z0-9_]{3,20}$/, {
-    message:
-      'Username may only contain letters, numbers and underscores (3-20 characters)',
-  })
+  @IsUsername()
   username: string;
 
   @ApiProperty({ description: 'User email address' })

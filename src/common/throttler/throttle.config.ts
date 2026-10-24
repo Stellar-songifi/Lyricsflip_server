@@ -25,6 +25,17 @@ export const stellarThrottle = {
   },
 };
 
+/**
+ * Data export: THROTTLE_EXPORT_LIMIT per THROTTLE_EXPORT_TTL_MS. An export
+ * reads every table holding the user's data, so it is cheap to abuse.
+ */
+export const exportThrottle = {
+  default: {
+    ttl: num('THROTTLE_EXPORT_TTL_MS', 3_600_000),
+    limit: num('THROTTLE_EXPORT_LIMIT', 3),
+  },
+};
+
 /** Guess endpoint: THROTTLE_GUESS_LIMIT per THROTTLE_GUESS_TTL_MS. */
 export const guessThrottle = {
   default: {

@@ -6,20 +6,25 @@ import {
   IsOptional,
   IsString,
   MaxLength,
-  MinLength,
 } from 'class-validator';
 import { Role } from '../../auth/roles/role.enum';
+import {
+  IsUsername,
+  USERNAME_RULE,
+} from '../../common/validators/username.validator';
 
 /**
  * Fields a user may change on their own account (PATCH /users/me).
  * Password changes are not handled here; they need the auth flow.
  */
 export class UpdateProfileDto {
-  @ApiPropertyOptional({ minLength: 3, maxLength: 20 })
+  @ApiPropertyOptional({
+    description: USERNAME_RULE.description,
+    minLength: USERNAME_RULE.minLength,
+    maxLength: USERNAME_RULE.maxLength,
+  })
   @IsOptional()
-  @IsString()
-  @MinLength(3)
-  @MaxLength(20)
+  @IsUsername()
   username?: string;
 
   @ApiPropertyOptional({ maxLength: 255 })

@@ -10,8 +10,7 @@ import { LyricsService } from '../lyrics/lyrics.service';
 import { CreateLyricsDto } from '../lyrics/dto/create-lyrics.dto';
 import { validate } from 'class-validator';
 import { plainToInstance } from 'class-transformer';
-import { AdminUserQueryDto } from './dto/admin-user-query.dto';
-import { AdminLyricQueryDto } from './dto/admin-lyric-query.dto';
+import { AdminLyricQueryDto, AdminUserQueryDto } from './dto/admin-query.dto';
 import { parse } from 'csv-parse/sync';
 
 export type LyricsImportMode = 'create-only' | 'upsert';
@@ -93,11 +92,20 @@ export class AdminService {
         : query.status === 'active'
           ? true
           : undefined;
-    const [data, total] = await Promise.all([
-      this.lyricsService.findAll(limit, offset, query.sortBy, query.sortOrder),
-      this.lyricsService.count(isActive),
-    ]);
+    const { data, total } = await this.lyricsService.findAllForAdmin({
+      limit,
+      offset,
+      sortBy: query.sortBy,
+      sortOrder: query.sortOrder,
+      isActive,
+      source: query.source,
+    });
     return { data, meta: { total, limit, offset } };
+  }
+
+  /** Deactivates every lyric from one source (takedown by source). */
+  deactivateLyricsBySource(source: string) {
+    return this.lyricsService.deactivateBySource(source);
   }
 
   deleteLyric(id: number) {

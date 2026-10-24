@@ -19,6 +19,27 @@ is **never served to players**.
   lines) rather than full verses or complete songs.
 - Do not submit content obtained from unauthorized sources.
 
+## Source and Rights Records
+
+Every lyric records where it came from, so that everything from one source can
+be found, and removed, if its rights holder objects:
+
+| Field       | Required | Meaning                                                              |
+| ----------- | -------- | -------------------------------------------------------------------- |
+| `source`    | Yes      | Where the snippet came from, e.g. `artist-submission`, `licensed:acme-music`. Stored lower-case. |
+| `sourceUrl` | No       | Link to the source.                                                  |
+| `licence`   | No       | Licence or agreement the snippet is used under, or `fair-use-quote`. |
+| `addedBy`   | Auto     | Id of the admin who added it, or `seed`.                             |
+
+`source` is required both when creating a lyric through the API and on every
+row of a CSV or JSON import. Lyrics that existed before these fields were added
+have `source = unknown`; filter on it (`GET /admin/lyrics?source=unknown`) to
+find rows that still need a source recorded.
+
+Full lyric text is **not stored**. `content` may still be sent when creating a
+lyric, but only to derive `lyricSnippet` when no snippet is given; it is then
+discarded.
+
 ## Attribution
 
 - Every snippet must be attributed to its original songwriter(s) and
@@ -31,8 +52,7 @@ is **never served to players**.
 
 - `lyricSnippet` is limited to **150 characters** (or two lines, whichever is
   shorter). Submissions that exceed this limit are rejected by validation.
-- The optional `content` field, when present, is restricted to administrators
-  and is never returned to players.
+- Full lyric text (`content`) is not stored; see Source and Rights Records.
 
 ## Takedown Requests
 
@@ -46,7 +66,10 @@ copyright, please send a takedown request that includes:
 5. A statement, under penalty of perjury, that the information is accurate and
    that you are authorized to act on behalf of the rights holder.
 
-We will review and remove qualifying content promptly.
+We will review and remove qualifying content promptly. When a request covers
+everything from one source, an admin deactivates it in one action with
+`POST /admin/lyrics/sources/:source/deactivate`, which is recorded in the
+audit log and returns the ids of the lyrics it deactivated.
 
 ## Enforcement
 

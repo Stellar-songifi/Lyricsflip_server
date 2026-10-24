@@ -10,7 +10,9 @@ import {
   ParseUUIDPipe,
   SerializeOptions,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { UsersService } from './users.service';
+import { exportThrottle } from '../common/throttler/throttle.config';
 import { AdminUpdateUserDto, UpdateProfileDto } from './dto/update-user.dto';
 import { UpdateUserPreferencesDto } from './dto/update-user-preferences.dto';
 import { LeaderboardQueryDto } from './dto/leaderboard-query.dto';
@@ -104,9 +106,16 @@ export class UsersController {
    * Declared before `:id` so `me` is not treated as an ID.
    */
   @UseGuards(JwtAuthGuard)
+  @Throttle(exportThrottle)
   @Get('me/export')
   @ApiOperation({ summary: 'Export your own data' })
-  @ApiResponse({ status: 200, description: 'Profile, game history and wagers.' })
+  @ApiResponse({
+    status: 200,
+    description:
+      'Profile, game history, game sessions and rounds, wagers, daily challenge attempts, rooms, login sessions, notifications, audit entries and lyrics added.',
+  })
+  @ApiResponse({ status: 429, description: 'Too many export requests.' })
+  @ApiResponse({ status: 500, description: 'Export failed; no partial data is returned.' })
   exportMe(@GetUser() user: User) {
     return this.usersService.exportData(user.id);
   }

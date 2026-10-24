@@ -17,6 +17,7 @@ import { cacheConfig } from '../config/cache.config';
 import { Genre } from './entities/genre.enum';
 import { MAX_PAGE_SIZE } from '../common/dto/pagination-query.dto';
 import { normalizeDecade } from '../game/progression.util';
+import { AdminLyricSortBy, SortOrder } from '../admin/dto/admin-query.dto';
 
 /**
  * Maximum length of a lyric snippet served to players. Full lyric text is
@@ -31,6 +32,22 @@ export const MAX_LYRIC_SNIPPET_LENGTH = 150;
  * store (in-memory or Redis).
  */
 export const LYRICS_NAMESPACE_KEY = 'lyrics:ns';
+
+export interface AdminLyricsFilter {
+  limit: number;
+  offset: number;
+  sortBy?: AdminLyricSortBy;
+  sortOrder?: SortOrder;
+  isActive?: boolean;
+  source?: string;
+}
+
+/** Admin sort keys mapped to entity columns. */
+const ADMIN_LYRIC_SORT_COLUMNS: Record<AdminLyricSortBy, string> = {
+  [AdminLyricSortBy.CREATED_AT]: 'lyrics.createdAt',
+  [AdminLyricSortBy.TITLE]: 'lyrics.songTitle',
+  [AdminLyricSortBy.ARTIST]: 'lyrics.artist',
+};
 
 export interface LyricsCacheStats {
   keys: number;
@@ -119,10 +136,22 @@ export class LyricsService {
       (createLyricsDto.content ?? '').slice(0, MAX_LYRIC_SNIPPET_LENGTH).trim();
 
     this.assertSnippetWithinLimit(lyricSnippet);
+    if (!lyricSnippet) {
+      throw new BadRequestException(
+        'Either lyricSnippet or content must be provided',
+      );
+    }
+
+    // Full lyric text is only used above to derive the snippet; it is never
+    // stored (R2-89, CONTENT_POLICY.md).
+    const fields = { ...createLyricsDto };
+    delete fields.content;
 
     const lyrics = this.lyricsRepository.create({
-      ...createLyricsDto,
+      ...fields,
+      content: null,
       lyricSnippet,
+      addedBy: user?.id ?? null,
       // Store decades in the canonical "1990s" format used by the seed and
       // the MusicDecade preference enum.
       decade: createLyricsDto.decade
@@ -197,6 +226,73 @@ export class LyricsService {
     }
 
     return this.lyricsRepository.count({ where: { isActive } });
+  }
+
+  /**
+   * Admin listing: every lyric regardless of state unless `isActive` is set,
+   * optionally narrowed to one source. Returns the page and the total count
+   * for the same filter.
+   */
+  async findAllForAdmin(
+    filter: AdminLyricsFilter,
+  ): Promise<{ data: Lyrics[]; total: number }> {
+    const query = this.lyricsRepository.createQueryBuilder('lyrics');
+
+    if (filter.isActive !== undefined) {
+      query.andWhere('lyrics.isActive = :isActive', {
+        isActive: filter.isActive,
+      });
+    }
+    if (filter.source) {
+      query.andWhere('lyrics.source = :source', {
+        source: LyricsService.normalizeSource(filter.source),
+      });
+    }
+
+    const sortColumn =
+      ADMIN_LYRIC_SORT_COLUMNS[filter.sortBy ?? AdminLyricSortBy.CREATED_AT];
+    const [data, total] = await query
+      .orderBy(sortColumn, filter.sortOrder ?? SortOrder.DESC)
+      .addOrderBy('lyrics.id', 'ASC')
+      .take(Math.min(Math.max(filter.limit, 1), MAX_PAGE_SIZE))
+      .skip(Math.max(filter.offset, 0))
+      .getManyAndCount();
+
+    return { data, total };
+  }
+
+  /**
+   * Deactivates every active lyric from one source in a single statement,
+   * e.g. after a rights holder's takedown request. Returns the ids that were
+   * deactivated so the admin can restore individual lyrics later.
+   */
+  async deactivateBySource(
+    source: string,
+  ): Promise<{ source: string; deactivated: number; ids: number[] }> {
+    const normalized = LyricsService.normalizeSource(source);
+    if (!normalized) {
+      throw new BadRequestException('source is required');
+    }
+
+    const result = await this.lyricsRepository
+      .createQueryBuilder()
+      .update(Lyrics)
+      .set({ isActive: false })
+      .where({ source: normalized, isActive: true })
+      .returning(['id'])
+      .execute();
+
+    const ids = (result.raw as Array<{ id: number }>).map((row) => row.id);
+    if (ids.length > 0) {
+      await this.clearCache();
+    }
+
+    return { source: normalized, deactivated: ids.length, ids };
+  }
+
+  /** Sources are stored trimmed and lower-cased; see CreateLyricsDto. */
+  static normalizeSource(source: string): string {
+    return source.trim().toLowerCase();
   }
 
   async findOne(id: number): Promise<Lyrics> {
