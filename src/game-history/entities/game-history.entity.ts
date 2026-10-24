@@ -74,7 +74,7 @@ export class GameHistory {
   wagerAmount: number;
 
   // When the guess was made
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   @Index()
   createdAt: Date;
 }

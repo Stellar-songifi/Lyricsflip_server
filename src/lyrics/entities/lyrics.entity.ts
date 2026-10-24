@@ -99,9 +99,9 @@ export class Lyrics {
   @ManyToOne(() => User, { nullable: true, onDelete: "SET NULL" })
   createdBy: User | null
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date
 
-  @UpdateDateColumn()
+  @UpdateDateColumn({ type: 'timestamptz' })
   updatedAt: Date
 }

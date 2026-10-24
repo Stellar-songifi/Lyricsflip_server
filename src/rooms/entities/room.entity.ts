@@ -36,7 +36,7 @@ export class Room {
   @Column({ type: 'enum', enum: RoomStatus, default: RoomStatus.LOBBY })
   status: RoomStatus;
 
-  @Column({ type: 'timestamp', nullable: true })
+  @Column({ type: 'timestamptz', nullable: true })
   startedAt: Date;
 
   @Column({ type: 'int', default: 0 })
@@ -45,10 +45,10 @@ export class Room {
   @OneToMany(() => RoomUser, roomUser => roomUser.room)
   roomUsers: RoomUser[];
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;
 
-  @Column({ type: 'timestamp', nullable: true })
+  @Column({ type: 'timestamptz', nullable: true })
   expiresAt: Date;
 
   @Column({ default: false })

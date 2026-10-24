@@ -917,6 +917,20 @@ Writes update the per-ID entry. Broader invalidation (`clearCache`) is currently
 - TypeORM logs queries and errors, and warns about queries slower than 250 ms.
 - `src/common/services/logger.service.ts` provides a Winston logger with daily-rotating files, but it is not yet registered as the app logger (issue #114).
 
+## Pagination
+
+List endpoints use `?limit=<1-100>&offset=<n>` (validated; invalid values return 400) and return one envelope:
+
+```json
+{ "data": [], "meta": { "total": 0, "limit": 20, "offset": 0, "hasNext": false } }
+```
+
+Use `paginate(qb, query)` / `toPaginated(...)` and `@ApiPaginatedResponse(Model)` from `src/common/dto/paginated-response.dto.ts`. Migrated so far: `/admin/*`, `/admin/audit-logs`, `/rooms`; remaining legacy shapes must move in a coordinated (`/api/v2`) release.
+
+## Time zones
+
+All date columns are `timestamptz` and connections pin `timezone=UTC`.
+
 ## Audit logging
 
 Admin and settlement actions leave a durable row in `audit_logs` (actor, action, target type/ID, a sanitized request payload, IP and timestamp), so disputes over a deletion or a settlement can be resolved against a record instead of guesswork.

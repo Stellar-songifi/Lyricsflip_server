@@ -51,4 +51,6 @@ export default new DataSource({
   entities: entityGlobs,
   migrations: migrationGlobs,
   synchronize: false,
+  // Sessions run in UTC so timestamptz values round-trip unchanged.
+  extra: { options: '-c timezone=UTC' },
 } as DataSourceOptions);

@@ -184,16 +184,16 @@ export class Wager {
    * the other player's stake locked indefinitely: {@link WagerRefundJob}
    * sweeps past-deadline wagers and refunds whatever staked.
    */
-  @Column({ type: 'timestamp', nullable: true })
+  @Column({ type: 'timestamptz', nullable: true })
   stakeDeadline?: Date | null;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;
 
-  @UpdateDateColumn()
+  @UpdateDateColumn({ type: 'timestamptz' })
   updatedAt: Date;
 
   /** When the wager reached a final state (won, refunded or failed). */
-  @Column({ type: 'timestamp', nullable: true })
+  @Column({ type: 'timestamptz', nullable: true })
   resolvedAt: Date;
 }

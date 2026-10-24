@@ -106,11 +106,11 @@ export class User {
   })
   levelTitle: UserLevel; // human-readable title
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;
 
   @Expose({ groups: PRIVATE_USER_GROUPS })
-  @UpdateDateColumn()
+  @UpdateDateColumn({ type: 'timestamptz' })
   updatedAt: Date;
 
   @Expose({ groups: PRIVATE_USER_GROUPS })
@@ -151,7 +151,7 @@ export class User {
 
   /** When wallet ownership was last proved via SEP-10. */
   @Expose({ groups: PRIVATE_USER_GROUPS })
-  @Column({ type: 'timestamp', nullable: true })
+  @Column({ type: 'timestamptz', nullable: true })
   stellarAddressVerifiedAt?: Date | null;
 
   /**
@@ -161,7 +161,7 @@ export class User {
    * play and link a wallet, but cannot wager (see docs/email-verification.md).
    */
   @Expose({ groups: PRIVATE_USER_GROUPS })
-  @Column({ type: 'timestamp', nullable: true })
+  @Column({ type: 'timestamptz', nullable: true })
   emailVerifiedAt?: Date | null;
 
   /**
@@ -190,7 +190,7 @@ export class User {
 
   /** When a pending (raised) daily stake limit becomes effective. */
   @Expose({ groups: PRIVATE_USER_GROUPS })
-  @Column({ type: 'timestamp', nullable: true })
+  @Column({ type: 'timestamptz', nullable: true })
   dailyStakeLimitEffectiveAt?: Date | null;
 
   /**
@@ -198,7 +198,7 @@ export class User {
    * cannot create or accept wagers. Null means no active exclusion.
    */
   @Expose({ groups: PRIVATE_USER_GROUPS })
-  @Column({ type: 'timestamp', nullable: true })
+  @Column({ type: 'timestamptz', nullable: true })
   selfExclusionEndsAt?: Date | null;
 
   @Expose({ groups: PRIVATE_USER_GROUPS })
