@@ -43,3 +43,20 @@ export const guessThrottle = {
     limit: num('THROTTLE_GUESS_LIMIT', 30),
   },
 };
+
+/**
+ * WebSocket per-socket, per-event token bucket.
+ * WS_RATE_LIMIT_CAPACITY: burst size; WS_RATE_LIMIT_REFILL_PER_SEC: sustained rate.
+ * WS_RATE_LIMIT_DISCONNECT_AFTER: consecutive rejected messages before disconnect.
+ */
+export const wsRateLimit = () => ({
+  capacity: num('WS_RATE_LIMIT_CAPACITY', 20),
+  refillPerSec: num('WS_RATE_LIMIT_REFILL_PER_SEC', 5),
+  disconnectAfter: num('WS_RATE_LIMIT_DISCONNECT_AFTER', 50),
+});
+
+/** WebSocket max message size in bytes (WS_MAX_HTTP_BUFFER_SIZE, default 16 KB). */
+export const wsMaxHttpBufferSize = () => num('WS_MAX_HTTP_BUFFER_SIZE', 16 * 1024);
+
+/** Maximum concurrent sockets per user (WS_MAX_SOCKETS_PER_USER, default 5). */
+export const wsMaxSocketsPerUser = () => num('WS_MAX_SOCKETS_PER_USER', 5);

@@ -20,6 +20,11 @@ import { RoomUser } from '../rooms/entities/room-user.entity';
 import { WsExceptionFilter } from '../common/filters/ws-exception.filter';
 import type { SocketUser } from '../auth/auth-context.util';
 import type { JwtPayload } from '../auth/interfaces/jwt-payload.interface';
+import { WsRateLimiter } from '../common/websocket/ws-rate-limiter';
+import {
+  WsConnectionLimiter,
+  WS_MAX_HTTP_BUFFER_SIZE,
+} from '../common/websocket/ws-connection-limiter';
 import {
   PlayerJoinedPayload,
   RealtimeEvent,
@@ -64,6 +69,7 @@ export type SubscribeAck =
     },
     credentials: true,
   },
+  maxHttpBufferSize: WS_MAX_HTTP_BUFFER_SIZE,
 })
 export class RealtimeGateway
   implements OnGatewayConnection, OnGatewayDisconnect
@@ -72,6 +78,8 @@ export class RealtimeGateway
   server: Server;
 
   private readonly logger = new Logger(RealtimeGateway.name);
+  private readonly rateLimiter = new WsRateLimiter();
+  private readonly connectionLimiter = new WsConnectionLimiter();
 
   constructor(
     private readonly jwtService: JwtService,
@@ -117,12 +125,20 @@ export class RealtimeGateway
       return;
     }
 
+    if (!this.connectionLimiter.acquire(client.data.userId, client.id)) {
+      client.emit('error', { message: 'Too many concurrent connections' });
+      client.disconnect(true);
+      return;
+    }
+
     await client.join(realtimeRooms.user(client.data.userId));
     client.emit('connected', { userId: client.data.userId });
   }
 
   handleDisconnect(client: Socket): void {
     this.logger.debug(`Realtime client disconnected: ${client.id}`);
+    this.rateLimiter.clear(client.id);
+    this.connectionLimiter.release(client.data?.userId, client.id);
   }
 
   /** Joins a session or room channel, if the caller is a member of it. */
@@ -131,6 +147,10 @@ export class RealtimeGateway
     @MessageBody() body: SubscribeRequest,
     @ConnectedSocket() client: Socket,
   ): Promise<SubscribeAck> {
+    if (!this.rateLimiter.consume(client, 'subscribe')) {
+      return { ok: false, error: 'Rate limited' };
+    }
+
     const userId: string | undefined = client.data?.userId;
 
     if (
@@ -166,6 +186,10 @@ export class RealtimeGateway
     @MessageBody() body: SubscribeRequest,
     @ConnectedSocket() client: Socket,
   ): Promise<SubscribeAck> {
+    if (!this.rateLimiter.consume(client, 'unsubscribe')) {
+      return { ok: false, error: 'Rate limited' };
+    }
+
     if (!body || !['session', 'room'].includes(body.type) || !isUUID(body.id)) {
       return { ok: false, error: 'Invalid subscription' };
     }
