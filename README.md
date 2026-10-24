@@ -678,6 +678,7 @@ The API listens on `PORT` (default `3000`). Swagger UI is served at **`/api/docs
 | `npm run migration:check`                           | Fail if the entities differ from the database   |
 | `npm run lint` / `npm run format`                   | ESLint (with `--fix`) / Prettier                |
 | `npm test` / `npm run test:cov` / `npm run test:e2e` | Unit tests / coverage / end-to-end tests        |
+| `npm run openapi:export [-- path]`                  | Write the `/api/docs` OpenAPI document (needs the app's env and database) |
 
 ## Configuration reference
 

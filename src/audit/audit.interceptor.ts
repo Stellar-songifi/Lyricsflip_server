@@ -11,6 +11,15 @@ import { tap } from 'rxjs/operators';
 import { AuditService } from './audit.service';
 import { AUDIT_ACTION_KEY, AuditedOptions } from './decorators/audited.decorator';
 
+/** The parts of a call the audit row records. An Express request fits. */
+interface AuditSource {
+  user?: { id?: string };
+  params?: Record<string, string>;
+  query?: unknown;
+  body?: unknown;
+  ip?: string;
+}
+
 const SENSITIVE_FIELDS = ['password', 'token', 'secret', 'transaction', 'authorization'];
 
 /**
@@ -39,24 +48,58 @@ export class AuditInterceptor implements NestInterceptor {
       return next.handle();
     }
 
-    const request = context.switchToHttp().getRequest<Request>();
+    const source = this.auditSource(context);
+    if (!source) {
+      return next.handle();
+    }
 
     return next.handle().pipe(
       tap((result) => {
         // Audit writes must never block or fail the response they describe -
         // an outage in the audit table should not stop a delete or a
         // settlement from succeeding.
-        void this.write(options, request, result).catch(() => undefined);
+        void this.write(options, source, result).catch(() => undefined);
       }),
     );
   }
 
+  /**
+   * The request-like view of the call being audited (#362). For HTTP it is
+   * the Express request. For a WebSocket message the actor is the socket's
+   * `client.data.user`, the payload is the message body and the IP is the
+   * handshake address. Other contexts have nothing to attribute, so they are
+   * not audited.
+   */
+  private auditSource(context: ExecutionContext): AuditSource | null {
+    switch (context.getType()) {
+      case 'http':
+        return context.switchToHttp().getRequest<Request>();
+      case 'ws': {
+        const ws = context.switchToWs();
+        const client = ws.getClient<{
+          data?: { user?: { id?: string } };
+          handshake?: { address?: string };
+        }>();
+        const data = ws.getData<unknown>();
+        return {
+          user: client?.data?.user,
+          params: {},
+          query: {},
+          body: data,
+          ip: client?.handshake?.address,
+        };
+      }
+      default:
+        return null;
+    }
+  }
+
   private async write(
     options: AuditedOptions,
-    request: Request,
+    request: AuditSource,
     result: unknown,
   ): Promise<void> {
-    const user = (request as Request & { user?: { id?: string } }).user;
+    const user = request.user;
     const targetParam = options.targetParam ?? 'id';
     const targetId =
       request.params?.[targetParam] ?? this.extractIdFromResult(result) ?? null;

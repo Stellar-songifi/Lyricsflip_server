@@ -21,10 +21,18 @@ export class MetricsService implements OnModuleInit {
   // HTTP metrics
   // ------------------------------------------------------------------
 
-  /** Latency distribution for every HTTP request, by method / route / status. */
+  /**
+   * Latency distribution for every HTTP response, by method / route / status.
+   *
+   * Both HTTP metrics are recorded by HttpMetricsMiddleware, so they include
+   * guard and pipe rejections and 404s. `route` is the matched route
+   * template, with `:params` (for example `.../rooms/join/:code`), or
+   * `unmatched`; never the raw URL, which keeps the number of series bounded
+   * (#361).
+   */
   readonly httpRequestDuration: Histogram<string>;
 
-  /** Total HTTP request count, by method / route / status. */
+  /** Total HTTP response count, by method / route / status. */
   readonly httpRequestTotal: Counter<string>;
 
   // ------------------------------------------------------------------

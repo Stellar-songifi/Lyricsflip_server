@@ -16,6 +16,7 @@ describe('LoggingInterceptor', () => {
     interceptor = module.get<LoggingInterceptor>(LoggingInterceptor);
 
     mockExecutionContext = {
+      getType: () => 'http',
       switchToHttp: () => ({
         getRequest: () => ({
           method: 'GET',
@@ -28,6 +29,7 @@ describe('LoggingInterceptor', () => {
         }),
         getResponse: () => ({
           statusCode: 200,
+          getHeader: () => undefined,
         }),
       }),
     } as ExecutionContext;
@@ -90,5 +92,78 @@ describe('LoggingInterceptor', () => {
     expect(sanitized.password).toBe('***REDACTED***');
     expect(sanitized.token).toBe('***REDACTED***');
   });
-});
 
+  describe('in a WebSocket handler (#362)', () => {
+    class FakeGateway {
+      handleSubmitGuess() {
+        return undefined;
+      }
+    }
+    Reflect.defineMetadata(
+      'message',
+      'submitGuess',
+      FakeGateway.prototype.handleSubmitGuess,
+    );
+
+    const wsContext = {
+      getType: () => 'ws',
+      getHandler: () => FakeGateway.prototype.handleSubmitGuess,
+      getClass: () => FakeGateway,
+      switchToHttp: () => {
+        throw new Error('switchToHttp must not be used for a socket');
+      },
+      switchToWs: () => ({
+        getClient: () => ({ id: 'socket-42', data: {} }),
+        getData: () => ({ guess: 'x' }),
+      }),
+    } as unknown as ExecutionContext;
+
+    it('logs the event name and socket ID', (done) => {
+      const logSpy = jest.spyOn(interceptor['logger'], 'log');
+      mockCallHandler.handle = jest.fn(() => of({ ok: true }));
+
+      interceptor.intercept(wsContext, mockCallHandler).subscribe(() => {
+        expect(logSpy).toHaveBeenCalledWith(
+          expect.stringContaining('submitGuess (socket socket-42)'),
+        );
+        done();
+      });
+    });
+
+    it('logs and rethrows the real error', (done) => {
+      const errorSpy = jest.spyOn(interceptor['logger'], 'error');
+      mockCallHandler.handle = jest.fn(() =>
+        throwError(() => new Error('round already closed')),
+      );
+
+      interceptor.intercept(wsContext, mockCallHandler).subscribe({
+        error: (error: Error) => {
+          expect(error.message).toBe('round already closed');
+          expect(errorSpy).toHaveBeenCalledWith(
+            expect.stringContaining('round already closed'),
+            expect.objectContaining({
+              event: 'submitGuess',
+              socketId: 'socket-42',
+            }),
+          );
+          done();
+        },
+      });
+    });
+  });
+
+  it('passes other context types straight through', (done) => {
+    const rpcContext = {
+      getType: () => 'rpc',
+      switchToHttp: () => {
+        throw new Error('switchToHttp must not be used');
+      },
+    } as unknown as ExecutionContext;
+    mockCallHandler.handle = jest.fn(() => of('result'));
+
+    interceptor.intercept(rpcContext, mockCallHandler).subscribe((value) => {
+      expect(value).toBe('result');
+      done();
+    });
+  });
+});

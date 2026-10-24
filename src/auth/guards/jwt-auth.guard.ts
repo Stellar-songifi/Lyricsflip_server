@@ -1,7 +1,12 @@
-import { ExecutionContext, Injectable } from '@nestjs/common';
+import {
+  ExecutionContext,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { AuthGuard } from '@nestjs/passport';
 import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
+import { getAuthUser } from '../auth-context.util';
 
 @Injectable()
 export class JwtAuthGuard extends AuthGuard('jwt') {
@@ -25,6 +30,20 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
       return true;
     }
 
-    return super.canActivate(context);
+    switch (context.getType()) {
+      case 'http':
+        return super.canActivate(context);
+      case 'ws':
+        // A socket is authenticated once, when it connects: the gateway
+        // verifies the handshake token and stores client.data.user. Passport
+        // reads request headers, which a socket does not have (#362).
+        if (!getAuthUser(context)) {
+          throw new UnauthorizedException('Unauthorized');
+        }
+        return true;
+      default:
+        // No other transport carries a token to check.
+        return true;
+    }
   }
 }

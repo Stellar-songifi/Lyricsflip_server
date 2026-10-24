@@ -18,7 +18,10 @@ export class Notification {
   @Column({ type: 'varchar', length: 64 })
   type: string;
 
-  @Column({ type: 'jsonb', default: () => "'{}'::jsonb" })
+  // Written without the `::jsonb` cast: TypeORM strips casts from the default
+  // it reads back from Postgres, so `'{}'::jsonb` would never compare equal
+  // and `migration:check` would always report this column as changed.
+  @Column({ type: 'jsonb', default: () => "'{}'" })
   payload: Record<string, unknown>;
 
   @Column({ type: 'timestamptz', nullable: true })

@@ -16,6 +16,13 @@ export class AddSetNullToLyricsCreatedBy1758900000000
   name = 'AddSetNullToLyricsCreatedBy1758900000000';
 
   public async up(queryRunner: QueryRunner): Promise<void> {
+    // On an empty database `lyrics` does not exist yet: it is created later
+    // by RepairSchemaToMatchEntities, and
+    // AddAliasesAndFixLyricsCreatedBy1794000000001 applies this change there.
+    if (!(await queryRunner.hasTable('lyrics'))) {
+      return;
+    }
+
     const [constraint] = await queryRunner.query(`
       SELECT tc.constraint_name AS name
       FROM information_schema.table_constraints tc
@@ -45,6 +52,9 @@ export class AddSetNullToLyricsCreatedBy1758900000000
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
+    if (!(await queryRunner.hasTable('lyrics'))) {
+      return;
+    }
     await queryRunner.query(
       `ALTER TABLE "lyrics" DROP CONSTRAINT "FK_lyrics_created_by"`,
     );
