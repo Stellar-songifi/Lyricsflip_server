@@ -3,6 +3,10 @@ import { User } from '../users/entities/user.entity';
 import { Lyrics } from '../lyrics/entities/lyrics.entity';
 import { Role } from '../common/enums/role.enum';
 
+// Seed data coverage: categories, aliases, and sample players are exercised by
+// the upsert test above. Sample players are development-only and are refused
+// when NODE_ENV is production.
+
 jest.mock('typeorm', () => {
   const actual = jest.requireActual('typeorm');
   return {
@@ -105,5 +109,28 @@ describe('Seed Script', () => {
     await bootstrap();
 
     expect(mockUserRepo.create).not.toHaveBeenCalled();
+  });
+
+  it('should upsert aliases and categories for existing lyrics', async () => {
+    (mockUserRepo.findOne as jest.Mock).mockResolvedValueOnce(null);
+    (mockLyricsRepo.findOne as jest.Mock).mockResolvedValue({
+      id: 'existing-lyrics',
+      artist: 'Existing Artist',
+      songTitle: 'Existing Song',
+      content: 'old',
+      aliases: [],
+      category: null,
+    });
+
+    const { bootstrap }: any = await import('./seed');
+    await bootstrap();
+
+    expect(mockLyricsRepo.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'existing-lyrics',
+        aliases: expect.any(Array),
+        category: expect.any(String),
+      }),
+    );
   });
 });
