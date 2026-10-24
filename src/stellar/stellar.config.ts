@@ -157,6 +157,8 @@ export function loadStellarConfig(configService: ConfigService): StellarConfig {
       configService.get<number>('STELLAR_STAKE_TX_TIMEOUT_SECONDS') ?? 180,
   };
 
+  assertNoSecretReuse(configService);
+
   if (config.settlementMode === 'stellar') {
     assertContractId(config.escrowContractId, 'STELLAR_ESCROW_CONTRACT_ID');
     assertContractId(config.tokenContractId, 'STELLAR_TOKEN_CONTRACT_ID');
@@ -188,6 +190,32 @@ export function loadStellarConfig(configService: ConfigService): StellarConfig {
   }
 
   return config;
+}
+
+/**
+ * Refuses to boot in production when the SEP-10 web-auth signing key and the
+ * wager resolver key are the same secret (issue 26).
+ *
+ * The two keys have different blast radii: the web-auth key only signs
+ * challenges, while the resolver key authorises `resolve`/`refund` on the
+ * escrow contract. Sharing one secret means a leak of the (more widely
+ * distributed) web-auth key also hands over control of player funds.
+ */
+function assertNoSecretReuse(configService: ConfigService): void {
+  if ((configService.get<string>('NODE_ENV') ?? 'development') !== 'production') {
+    return;
+  }
+
+  const webAuthSecret = configService.get<string>('STELLAR_WEB_AUTH_SECRET');
+  const resolverSecret = configService.get<string>('STELLAR_RESOLVER_SECRET');
+
+  if (webAuthSecret && resolverSecret && webAuthSecret === resolverSecret) {
+    throw new Error(
+      'Refusing to start: STELLAR_WEB_AUTH_SECRET must not equal ' +
+        'STELLAR_RESOLVER_SECRET. Use a separate keypair for SEP-10 web ' +
+        'authentication so a leaked web-auth key cannot resolve wagers.',
+    );
+  }
 }
 
 function resolveResolverPublicKey(configService: ConfigService): string {

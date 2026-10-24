@@ -11,6 +11,7 @@ import { MetricsService } from './metrics/metrics.service';
 import { LoggerService } from './common/services/logger.service';
 import { configureApp } from './app.setup';
 import { RedisIoAdapter } from './realtime/redis-io.adapter';
+import { runProductionSafetyCheck } from './config/production-safety.check';
 
 /**
  * Reads a positive integer of milliseconds from the environment, falling back
@@ -100,13 +101,22 @@ async function bootstrap() {
   app.disable('x-powered-by');
   app.use(helmet(helmetOptions));
 
-  // Swagger UI — served at /api/docs (outside the versioned prefix)
-  const document = buildOpenApiDocument(app);
-  SwaggerModule.setup('api/docs', app, document, {
-    swaggerOptions: {
-      persistAuthorization: true,
-    },
-  });
+  // Swagger is opt-in via SWAGGER_ENABLED and defaults to off in production so
+  // the API surface is not publicly documented unless explicitly intended.
+  const swaggerEnabled =
+    process.env.SWAGGER_ENABLED !== undefined
+      ? process.env.SWAGGER_ENABLED === 'true'
+      : process.env.NODE_ENV !== 'production';
+
+  if (swaggerEnabled) {
+    // Swagger UI — served at /api/docs (outside the versioned prefix)
+    const document = buildOpenApiDocument(app);
+    SwaggerModule.setup('api/docs', app, document, {
+      swaggerOptions: {
+        persistAuthorization: true,
+      },
+    });
+  }
 
   // CORS must be registered before the server starts listening, otherwise the
   // configuration is not applied to the running HTTP adapter. FRONTEND_URL may
@@ -138,6 +148,11 @@ async function bootstrap() {
   httpServer.requestTimeout = requestTimeout;
   httpServer.headersTimeout = headersTimeout;
   httpServer.keepAliveTimeout = keepAliveTimeout;
+
+  // Refuse to start in production when unsafe settings are detected. This runs
+  // before the server starts listening so a misconfigured deployment fails
+  // fast with a message naming every offending setting.
+  runProductionSafetyCheck();
 
   const port = process.env.PORT ?? 3000;
   // All interfaces by default: inside a container, localhost is only the

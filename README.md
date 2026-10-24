@@ -666,7 +666,7 @@ npm run start:debug     # watch mode with the inspector
 npm run build && npm run start:prod
 ```
 
-The API listens on `PORT` (default `3000`). Swagger UI is served at **`/api/docs`**.
+The API listens on `PORT` (default `3000`). Swagger UI is served at **`/api/docs`** when `SWAGGER_ENABLED` is on (the default outside production; off in production unless set explicitly).
 
 ### Run with Docker
 
@@ -709,12 +709,31 @@ All configuration comes from environment variables, loaded from `.env` by `@nest
 | ---------------- | ------------------------ | --------------------------------------------------------------------- |
 | `PORT`           | `3000`                   | HTTP port                                                             |
 | `HOST`           | `0.0.0.0`                | Interface to listen on. All interfaces by default, so the port works from inside a container; `127.0.0.1` for local-only. The bound address is logged at startup |
-| `NODE_ENV`       | –                        | `production` hides validation messages and database error details, and drops the mock notification endpoints |
-| `FRONTEND_URL`   | `http://localhost:3000`  | CORS origin                                                           |
+| `NODE_ENV`       | `development`            | `production` hides validation messages and database error details, drops the mock notification endpoints, and enables the production safety checks below. Set it explicitly in every deployed environment |
+| `FRONTEND_URL`   | `http://localhost:3000`  | CORS origin. In production it must be a real origin, not a default or localhost value |
 | `LOG_LEVEL`      | `info` in production, `debug` otherwise | Winston level: `error`, `warn`, `info`, `http`, `verbose` or `debug`. Nest's `log` is accepted and treated as `info` |
-| `JWT_SECRET`     | **required**             | The app refuses to start without it, and it must be at least 32 characters. Use a long random value |
+| `JWT_SECRET`     | **required**             | The app refuses to start without it, and it must be at least 32 characters in every environment except `test`. Use a long random value |
 | `JWT_EXPIRES_IN` | `15m`                    | Any format accepted by `jsonwebtoken`. Refresh tokens are separate, opaque and valid for 30 days |
+| `SWAGGER_ENABLED` | `false` in production, `true` otherwise | Serves Swagger UI at `/api/docs`. In production it must be set explicitly; leaving it unset fails the boot |
 | `INVITATION_TTL_MINUTES` | `30`             | How long player two has to accept a session invitation before it is abandoned and player one refunded |
+
+**Production safety checks**
+
+When `NODE_ENV=production`, a `ProductionSafetyCheck` runs at bootstrap and refuses to start the app if any of the following is true. The error lists every problem it found, naming the offending setting:
+
+| Check | Fails when |
+| ----- | ---------- |
+| Metrics protection | `/metrics` is not protected (see issue #19) |
+| `FRONTEND_URL` | It is unset, still the default `http://localhost:3000`, or points at localhost |
+| `SWAGGER_ENABLED` | It is not set explicitly (Swagger defaults to off in production) |
+| Key reuse | `STELLAR_WEB_AUTH_SECRET` is the same as `STELLAR_RESOLVER_SECRET` (see issue #26) |
+| Seed admin password | The seeded admin account still uses the default password |
+
+`JWT_SECRET` length is enforced in every environment except `test`, so a staging deployment running with `NODE_ENV=development` is still refused if the secret is too short.
+
+**Node version and dependency hygiene**
+
+The supported runtime is Node.js 20 or 22 (`"engines": { "node": ">=20 <23" }` in `package.json`, mirrored in `.nvmrc`). Use the pinned Node and npm versions when regenerating `package-lock.json`, so that `npm ci` on a fresh clone leaves `git status` clean. Dependabot watches npm, Cargo and GitHub Actions dependencies, and CI runs `npm audit --omit=dev --audit-level=high`, so a high-severity production vulnerability fails the build.
 
 **Database**
 
@@ -757,7 +776,7 @@ Validation is deliberately strict. A mistyped contract ID or a key from the wron
 
 ## API reference
 
-Swagger at `/api/docs` has the request and response detail. In the tables below, `public` means no token is needed, `admin` means the admin role is required, and `participant` means the caller must be one of the session's players or an admin. Every other route needs a bearer token.
+Swagger at `/api/docs` (when `SWAGGER_ENABLED` is on) has the request and response detail. In the tables below, `public` means no token is needed, `admin` means the admin role is required, and `participant` means the caller must be one of the session's players or an admin. Every other route needs a bearer token.
 
 **App and health**
 
