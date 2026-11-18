@@ -206,6 +206,8 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable
         with:
+          # Pinned to a SHA, so the toolchain can no longer come from the ref name.
+          toolchain: stable
           targets: wasm32-unknown-unknown
 
       - name: Cache cargo
