@@ -246,4 +246,14 @@ A contribution is ready to merge when all of the following are true:
 5. Fill in the pull request template. Link the issue with `Closes #<number>`.
 6. Respond to review feedback promptly. The maintainers aim to review PRs within a few days.
 
+### Security checks
+
+Every PR is scanned for malware and supply-chain attacks: hidden or obfuscated code, install scripts, fake font or binary files, VS Code auto-run tasks, lockfiles that point at registries other than `registry.npmjs.org`, known malicious packages, leaked secrets, and CodeQL alerts. A blocking finding cannot be merged around. See [`docs/SECURITY_CHECKS.md`](docs/SECURITY_CHECKS.md) for what each rule means and how to fix a false positive. You can run the same scan locally before pushing:
+
+```bash
+node scripts/security/pr-malware-scan.mjs --repo . --base origin/main --head HEAD
+```
+
+Never commit `.vscode/settings.json` or `.vscode/tasks.json`, never add install or `prepare` scripts without discussing it first, and keep your npm registry set to the default. Changes to CI, dependencies, configs and Docker files need a maintainer's approval (CODEOWNERS). To report suspected malware privately, see [`SECURITY.md`](SECURITY.md).
+
 Thank you for contributing!

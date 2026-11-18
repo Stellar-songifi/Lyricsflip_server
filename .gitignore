@@ -49,10 +49,10 @@ build/Release
 
 # IDE files
 .idea
+# Never commit VS Code settings or tasks: a task set to run on folder open
+# executes code as soon as someone opens the repository.
+# See docs/SECURITY_CHECKS.md.
 .vscode/*
-!.vscode/settings.json
-!.vscode/tasks.json
-!.vscode/launch.json
 !.vscode/extensions.json
 *.suo
 *.ntvs*
