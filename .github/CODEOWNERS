@@ -1,0 +1,66 @@
+# Paths where malware and supply-chain attacks hide. With branch protection's
+# "Require review from Code Owners", a change to any of these cannot be merged
+# without a maintainer's approval. See docs/SECURITY_CHECKS.md.
+#
+# Later rules override earlier ones, so keep the broad rules first.
+
+# --- Editor and environment auto-run hooks (PolinRider entry points)
+/.vscode/                    @simeontech
+/.devcontainer/              @simeontech
+/.husky/                     @simeontech
+
+# --- CI, security tooling and repository settings
+/.github/                    @simeontech
+/scripts/                    @simeontech
+/.gitignore                  @simeontech
+/.gitattributes              @simeontech
+
+# --- Dependencies, install scripts and registry configuration
+/package.json                @simeontech
+/package-lock.json           @simeontech
+/.npmrc                      @simeontech
+/.nvmrc                      @simeontech
+/contracts/Cargo.toml        @simeontech
+/contracts/Cargo.lock        @simeontech
+/contracts/*/Cargo.toml      @simeontech
+
+# --- Build, container and tool configuration (payloads get appended to these)
+/Dockerfile                  @simeontech
+/docker-compose.yml          @simeontech
+/docker-entrypoint.sh        @simeontech
+/.dockerignore               @simeontech
+*.config.js                  @simeontech
+*.config.mjs                 @simeontech
+*.config.cjs                 @simeontech
+*.config.ts                  @simeontech
+/eslint.config.mjs           @simeontech
+/jest.config.js              @simeontech
+/nest-cli.json               @simeontech
+/knip.json                   @simeontech
+/tsconfig*.json              @simeontech
+/typeorm.config.ts           @simeontech
+
+# --- Binary, font, archive and executable files (should never appear here)
+*.woff                       @simeontech
+*.woff2                      @simeontech
+*.eot                        @simeontech
+*.ttf                        @simeontech
+*.otf                        @simeontech
+*.llf                        @simeontech
+*.zip                        @simeontech
+*.tgz                        @simeontech
+*.gz                         @simeontech
+*.bat                        @simeontech
+*.cmd                        @simeontech
+*.ps1                        @simeontech
+*.exe                        @simeontech
+*.dll                        @simeontech
+*.so                         @simeontech
+*.node                       @simeontech
+*.wasm                       @simeontech
+
+# --- Code that moves money or controls access
+/contracts/                  @simeontech
+/src/stellar/                @simeontech
+/src/tokens/                 @simeontech
+/src/auth/                   @simeontech

@@ -1,0 +1,135 @@
+name: Security
+
+# Malware and supply-chain gate for every pull request, plus a weekly full
+# re-scan of the repository, its whole history and every open PR branch.
+#
+# Safety rules for this file (see docs/SECURITY_CHECKS.md):
+# - Triggered by `pull_request`, never `pull_request_target`: fork PRs get a
+#   read-only token and no secrets.
+# - Nothing from the PR is ever executed. The scanner only reads git objects,
+#   dependencies are installed with --ignore-scripts, and the scanner itself is
+#   taken from the BASE branch so a PR cannot weaken the check judging it.
+# - Every third-party action is pinned to a full commit SHA.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+  schedule:
+    - cron: '23 4 * * 1' # Mondays 04:23 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  malware-scan:
+    name: Malware & supply-chain scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out the trusted scanner (base branch)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          path: trusted
+          sparse-checkout: scripts/security
+          persist-credentials: false
+
+      - name: Check out the code under review (full history, no credentials)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: review
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+
+      - name: Pick the scanner
+        run: |
+          if [ -f trusted/scripts/security/pr-malware-scan.mjs ]; then
+            echo "SCANNER_DIR=trusted/scripts/security" >> "$GITHUB_ENV"
+          else
+            # Only the PR that first adds the scanner reaches this branch.
+            echo "::warning::No scanner on the base branch yet; using the PR's copy (bootstrap only)."
+            echo "SCANNER_DIR=review/scripts/security" >> "$GITHUB_ENV"
+          fi
+
+      - name: Scanner self-test
+        run: node --test "$SCANNER_DIR/pr-malware-scan.test.mjs"
+
+      - name: Scan every commit in the pull request
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node "$SCANNER_DIR/pr-malware-scan.mjs" --repo review --base "$BASE_SHA" --head "$HEAD_SHA" --allowlist "$SCANNER_DIR/allowlist.json"
+
+      - name: Full scan (tree, all history, all open PR branches)
+        if: github.event_name != 'pull_request'
+        run: |
+          git -C review fetch --quiet --no-tags origin '+refs/pull/*/head:refs/remotes/pr/*' || echo "::warning::Could not fetch PR refs"
+          node "$SCANNER_DIR/pr-malware-scan.mjs" --repo review --full --allowlist "$SCANNER_DIR/allowlist.json"
+
+  dependency-review:
+    name: Dependency review (known malware & vulnerabilities)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Fails on any dependency change that matches a GitHub advisory,
+      # including advisories classified as malware.
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: moderate
+          fail-on-scopes: runtime, development, unknown
+          comment-summary-in-pr: never
+
+  npm-signatures:
+    name: npm registry signatures & provenance
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+      # --ignore-scripts: no lifecycle script from any package (or from the
+      # PR's own package.json) can run. Registry pinned explicitly so a
+      # committed .npmrc cannot redirect it.
+      - name: Install without running any scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org/
+      - name: Verify every package's registry signature and attestations
+        run: npm audit signatures --registry=https://registry.npmjs.org/
+
+  secret-scan:
+    name: Secret scan (leaked credentials)
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: trufflesecurity/trufflehog@ea68ca03c865c5f324e86e849ced20ed3cf9dbbb # v3.99.8
+        with:
+          base: ${{ github.event.pull_request.base.sha || github.event.before }}
+          head: ${{ github.event.pull_request.head.sha || github.sha }}
+          extra_args: --results=verified,unknown

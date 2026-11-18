@@ -1,0 +1,13 @@
+{
+  "_comment": "Exceptions for scripts/security/pr-malware-scan.mjs. Every entry must be justified in the PR that adds it, and changes require CODEOWNERS review.",
+  "lifecycleScriptValues": ["husky", "husky install"],
+  "installScriptPackages": [
+    "@nestjs/core",
+    "@scarf/scarf",
+    "@swc/core",
+    "bcrypt",
+    "fsevents",
+    "protobufjs"
+  ],
+  "extraMaliciousPackages": []
+}
