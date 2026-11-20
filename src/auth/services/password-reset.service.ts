@@ -4,7 +4,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { EntityManager, IsNull, Repository } from 'typeorm';
 import { createHash, randomBytes } from 'crypto';
 
 import { User } from '../../users/entities/user.entity';
@@ -61,48 +61,44 @@ export class PasswordResetService {
 
   /**
    * Consume a password reset token. Returns the associated user if the token
-   * is valid, unused and unexpired. The token is marked as used so it can
-   * only be redeemed once.
+   * is valid, unused and unexpired. The token is marked as used atomically so
+   * it can only be redeemed once. Pass an `EntityManager` to run inside the
+   * caller's transaction (so a failure later rolls the consumption back).
    */
-  async consume(rawToken: string): Promise<User> {
+  async consume(rawToken: string, manager?: EntityManager): Promise<User> {
+    const invalid = () =>
+      new BadRequestException('Invalid or expired password reset token');
     if (!rawToken || typeof rawToken !== 'string') {
-      throw new BadRequestException('Invalid or expired password reset token');
+      throw invalid();
     }
+
+    const tokenRepo = manager
+      ? manager.getRepository(PasswordResetToken)
+      : this.passwordResetTokenRepository;
+    const userRepo = manager
+      ? manager.getRepository(User)
+      : this.userRepository;
 
     const tokenHash = this.hashToken(rawToken);
+    const token = await tokenRepo.findOne({ where: { tokenHash } });
 
-    const token = await this.passwordResetTokenRepository.findOne({
-      where: { tokenHash },
-      relations: ['user'],
-    });
-
-    if (!token) {
-      throw new BadRequestException('Invalid or expired password reset token');
+    if (!token || token.usedAt || token.expiresAt.getTime() <= Date.now()) {
+      throw invalid();
     }
 
-    if (token.usedAt) {
-      throw new BadRequestException('Invalid or expired password reset token');
+    // Conditional update guards against two concurrent redemptions.
+    const result = await tokenRepo.update(
+      { id: token.id, usedAt: IsNull() },
+      { usedAt: new Date() },
+    );
+    if (!result.affected) {
+      throw invalid();
     }
 
-    if (token.expiresAt.getTime() <= Date.now()) {
-      throw new BadRequestException('Invalid or expired password reset token');
+    const user = await userRepo.findOne({ where: { id: token.userId } });
+    if (!user) {
+      throw invalid();
     }
-
-    token.usedAt = new Date();
-    await this.passwordResetTokenRepository.save(token);
-
-    if (!token.user) {
-      const user = await this.userRepository.findOne({
-        where: { id: token.userId },
-      });
-      if (!user) {
-        throw new BadRequestException(
-          'Invalid or expired password reset token',
-        );
-      }
-      return user;
-    }
-
-    return token.user;
+    return user;
   }
 }

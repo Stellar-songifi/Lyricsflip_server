@@ -1,6 +1,7 @@
 import { INestApplication } from '@nestjs/common';
 import * as request from 'supertest';
 import { DataSource } from 'typeorm';
+import { MailerService } from '../../src/auth/services/mailer.service';
 import { createDbApp, truncateAll } from './db-app';
 
 describe('Auth flow (real Postgres)', () => {
@@ -47,5 +48,36 @@ describe('Auth flow (real Postgres)', () => {
       .expect(200);
     await http().post('/auth/login').send({ email: creds.email, password: creds.password }).expect(401);
     await http().post('/auth/login').send({ email: creds.email, password: newPassword }).expect(200);
+  });
+
+  it('resets a forgotten password, revokes sessions and bumps tokenVersion', async () => {
+    await http().post('/auth/signup').send(creds).expect(201);
+    const login = await http()
+      .post('/auth/login')
+      .send({ email: creds.email, password: creds.password })
+      .expect(200);
+
+    const mailer = app.get(MailerService);
+    const sent = jest.spyOn(mailer, 'sendPasswordResetEmail').mockResolvedValue();
+    await http().post('/auth/forgot-password').send({ email: creds.email }).expect(200);
+    expect(sent).toHaveBeenCalledTimes(1);
+    const resetToken = sent.mock.calls[0][1];
+    sent.mockRestore();
+
+    const [before] = await dataSource.query('SELECT "tokenVersion" FROM "users" WHERE email = $1', [creds.email]);
+
+    const newPassword = 'Res3t!Passw0rd';
+    await http().post('/auth/reset-password').send({ token: resetToken, password: newPassword }).expect(200);
+
+    const [after] = await dataSource.query('SELECT "tokenVersion" FROM "users" WHERE email = $1', [creds.email]);
+    expect(after.tokenVersion).toBe(before.tokenVersion + 1);
+
+    // Old refresh token revoked, old password rejected, new one works.
+    await http().post('/auth/refresh').send({ refreshToken: login.body.refreshToken }).expect(401);
+    await http().post('/auth/login').send({ email: creds.email, password: creds.password }).expect(401);
+    await http().post('/auth/login').send({ email: creds.email, password: newPassword }).expect(200);
+
+    // Token is single-use.
+    await http().post('/auth/reset-password').send({ token: resetToken, password: 'Ano7her!Passw0rd' }).expect(400);
   });
 });

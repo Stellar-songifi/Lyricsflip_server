@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { IsNull, MoreThan, Repository } from 'typeorm';
+import { DataSource, IsNull, MoreThan, Repository } from 'typeorm';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
@@ -60,6 +60,7 @@ export class AuthService {
     private authTokenService: AuthTokenService,
     private emailVerificationService: EmailVerificationService,
     private passwordResetService: PasswordResetService,
+    private dataSource: DataSource,
   ) {}
 
   async signup(signupDto: SignupDto): Promise<AuthResult> {
@@ -330,23 +331,23 @@ export class AuthService {
    * revokes all of the user's refresh tokens, as changePassword does.
    */
   async resetPassword(token: string, password: string): Promise<void> {
-    const userId = await this.passwordResetService.consume(token);
+    const passwordHash = await this.hashPassword(password);
 
-    const user = await this.userRepository.findOne({
-      where: { id: userId },
+    // Token consumption, password change and session revocation commit or
+    // roll back together.
+    await this.dataSource.transaction(async (manager) => {
+      const user = await this.passwordResetService.consume(token, manager);
+
+      await manager.update(User, user.id, {
+        passwordHash,
+        tokenVersion: () => '"tokenVersion" + 1',
+      });
+      await manager.update(
+        RefreshToken,
+        { userId: user.id, revokedAt: IsNull() },
+        { revokedAt: new Date() },
+      );
     });
-    if (!user) {
-      throw new BadRequestException('Invalid or expired reset token');
-    }
-
-    user.passwordHash = await this.hashPassword(password);
-    user.tokenVersion += 1;
-    await this.userRepository.save(user);
-
-    await this.refreshTokenRepository.update(
-      { userId: user.id, revokedAt: IsNull() },
-      { revokedAt: new Date() },
-    );
   }
 
   /** Signs a short-lived access token and issues a new stored refresh token. */
