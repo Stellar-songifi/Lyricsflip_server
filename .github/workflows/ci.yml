@@ -57,6 +57,12 @@ jobs:
       - name: Dead code check (knip)
         run: npx knip
 
+      # Fails when a package is imported but not declared in package.json
+      # (e.g. nodemailer, csv-parse, @types/multer): the image would crash
+      # with MODULE_NOT_FOUND on the first require (#424).
+      - name: Undeclared dependencies (knip unlisted)
+        run: npx --yes knip@5 --include unlisted
+
       - name: Tests with coverage
         run: npm test -- --coverage
 

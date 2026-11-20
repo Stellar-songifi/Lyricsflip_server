@@ -403,5 +403,399 @@ export class GameLogicService {
 
   /**
    * Reveals the next hint for an open round: the genre plus the
+   * word counts, then the first letters, up to the configured maximum.
+   *
+   * Each hint lowers the maximum this round can still score; the reduction is
+   * applied when the guess is scored, from `round.hintsUsed`.
+   */
+  async useHint(userId: string, roundId: string): Promise<RoundHints> {
+    const round = await this.roundRepository.findOne({
+      where: { id: roundId, userId },
+    });
 
-/* … truncated 6620 chars — edit only what you need near the top … */
+    if (!round) {
+      throw new NotFoundException('Round not found');
+    }
+
+    if (round.closedAt) {
+      throw new ConflictException('This round has already been guessed');
+    }
+
+    if (round.expiresAt.getTime() <= Date.now()) {
+      throw new GoneException('This round has expired');
+    }
+
+    const maxHints = GAME_CONSTANTS.LIMITS.MAX_HINTS_PER_ROUND;
+    if (round.hintsUsed >= maxHints) {
+      throw new ConflictException('No hints remaining for this round');
+    }
+
+    const level = round.hintsUsed + 1;
+    const updated = await this.roundRepository.update(
+      { id: round.id, closedAt: IsNull(), hintsUsed: round.hintsUsed },
+      { hintsUsed: level },
+    );
+
+    if (!updated.affected) {
+      throw new ConflictException('Hint already taken, please retry');
+    }
+
+    const lyric = await this.lyricsRepository.findOne({
+      where: { id: round.lyricId },
+    });
+
+    if (!lyric) {
+      throw new NotFoundException('Lyric not found');
+    }
+
+    const hints: RoundHints = {
+      level,
+      hintsRemaining: maxHints - level,
+      maxPoints: maxRoundPoints(level),
+    };
+
+    if (level >= 1) {
+      hints.genre = lyric.genre ?? null;
+      hints.wordCount = {
+        songTitle: countWords(lyric.songTitle),
+        artist: countWords(lyric.artist),
+      };
+    }
+
+    if (level >= 2) {
+      hints.firstLetter = {
+        songTitle: firstLetter(lyric.songTitle),
+        artist: firstLetter(lyric.artist),
+      };
+    }
+
+    return hints;
+  }
+
+  /** Alias kept for callers that still use the pre-R3 name. */
+  async revealHint(userId: string, roundId: string): Promise<RoundHints> {
+    return this.useHint(userId, roundId);
+  }
+
+  /**
+   * Scores a guess against a lyric without any round bookkeeping. Used by
+   * {@link guessRound}; exposed for callers that only need the comparison.
+   */
+  async checkGuess(dto: LyricGuessDto): Promise<GuessResult> {
+    const lyric = await this.lyricsRepository.findOne({
+      where: { id: dto.lyricId },
+    });
+
+    if (!lyric) {
+      throw new NotFoundException('Lyric not found');
+    }
+
+    const correctAnswer =
+      dto.guessType === 'artist' ? lyric.artist : lyric.songTitle;
+    const isCorrect = matchGuess(dto.guessValue, correctAnswer);
+
+    return {
+      isCorrect,
+      correctAnswer,
+      explanation: isCorrect
+        ? 'Correct!'
+        : `The correct answer was "${correctAnswer}".`,
+      points: isCorrect ? GAME_CONSTANTS.SCORING.BASE_POINTS : 0,
+    };
+  }
+
+  /**
+   * Validates a guess against a round without closing it. Returns the same
+   * shape as {@link guessRound} but performs no scoring or state change.
+   */
+  async validateGuess(
+    userId: string,
+    dto: RoundGuessDto,
+  ): Promise<GuessResult> {
+    const round = await this.roundRepository.findOne({
+      where: { id: dto.roundId, userId },
+    });
+
+    if (!round) {
+      throw new NotFoundException('Round not found');
+    }
+
+    return this.checkGuess({
+      lyricId: round.lyricId,
+      guessType: dto.guessType,
+      guessValue: dto.guessValue,
+    });
+  }
+
+  /**
+   * Issues rounds for several lyrics at once, in order. Used when a session
+   * starts and every player needs their first lyric.
+   */
+  async issueRounds(
+    userId: string,
+    lyricIds: number[],
+    sessionId?: string,
+  ): Promise<GameRound[]> {
+    if (!lyricIds.length) {
+      throw new BadRequestException('At least one lyric is required');
+    }
+
+    const rounds: GameRound[] = [];
+    for (const lyricId of lyricIds) {
+      rounds.push(await this.issueRound(userId, lyricId, sessionId));
+    }
+    return rounds;
+  }
+
+  /**
+   * Picks a random lyric for a player, honouring the category, decade, genre
+   * and difficulty filters and excluding lyrics the player has seen recently.
+   */
+  async getRandomLyric(
+    options: RandomLyricOptions = {},
+  ): Promise<GameLyric> {
+    const lyric = await this.pickRandomLyric(options);
+    if (!lyric) {
+      throw new NotFoundException('No lyrics available for these filters');
+    }
+    return toGameLyric(lyric);
+  }
+
+  /** Picks `count` distinct random lyrics for a player. */
+  async getMultipleRandomLyrics(
+    count: number,
+    options: RandomLyricOptions = {},
+  ): Promise<GameLyric[]> {
+    if (count <= 0) {
+      throw new BadRequestException('count must be greater than zero');
+    }
+
+    const picked: GameLyric[] = [];
+    const excludeIds = new Set(options.excludeIds ?? []);
+
+    for (let i = 0; i < count; i += 1) {
+      const lyric = await this.pickRandomLyric({
+        ...options,
+        excludeIds: [...excludeIds],
+      });
+
+      if (!lyric) {
+        break;
+      }
+
+      excludeIds.add(lyric.id);
+      picked.push(toGameLyric(lyric));
+    }
+
+    if (!picked.length) {
+      throw new NotFoundException('No lyrics available for these filters');
+    }
+
+    return picked;
+  }
+
+  /** Aggregate counts used by the challenges and stats screens. */
+  async getLyricStats(): Promise<{
+    total: number;
+    byGenre: Record<string, number>;
+    byDecade: Record<string, number>;
+  }> {
+    const total = await this.lyricsRepository.count();
+
+    const genreRows: Array<{ genre: string | null; count: string }> =
+      await this.lyricsRepository
+        .createQueryBuilder('lyric')
+        .select('lyric.genre', 'genre')
+        .addSelect('COUNT(*)', 'count')
+        .groupBy('lyric.genre')
+        .getRawMany();
+
+    const decadeRows: Array<{ decade: string | null; count: string }> =
+      await this.lyricsRepository
+        .createQueryBuilder('lyric')
+        .select('lyric.decade', 'decade')
+        .addSelect('COUNT(*)', 'count')
+        .groupBy('lyric.decade')
+        .getRawMany();
+
+    const byGenre: Record<string, number> = {};
+    for (const row of genreRows) {
+      if (row.genre) {
+        byGenre[row.genre] = Number(row.count);
+      }
+    }
+
+    const byDecade: Record<string, number> = {};
+    for (const row of decadeRows) {
+      if (row.decade) {
+        byDecade[row.decade] = Number(row.count);
+      }
+    }
+
+    return { total, byGenre, byDecade };
+  }
+
+  /** Builds the filtered query used by the random-lyric pickers. */
+  private buildLyricQuery(
+    options: RandomLyricOptions,
+  ): SelectQueryBuilder<Lyrics> {
+    const qb = this.lyricsRepository.createQueryBuilder('lyric');
+
+    if (options.category) {
+      qb.andWhere('lyric.category = :category', {
+        category: options.category,
+      });
+    }
+
+    if (options.decade) {
+      qb.andWhere('lyric.decade = :decade', { decade: options.decade });
+    }
+
+    const genre = this.resolveGenre(options);
+    if (genre) {
+      qb.andWhere('lyric.genre = :genre', { genre });
+    }
+
+    if (options.difficulty !== undefined) {
+      qb.andWhere('lyric.difficulty = :difficulty', {
+        difficulty: options.difficulty,
+      });
+    }
+
+    if (options.excludeIds?.length) {
+      qb.andWhere('lyric.id NOT IN (:...excludeIds)', {
+        excludeIds: options.excludeIds,
+      });
+    }
+
+    return qb;
+  }
+
+  /** Resolves the genre filter, applying the player's preference if allowed. */
+  private resolveGenre(options: RandomLyricOptions): string | undefined {
+    if (options.genre) {
+      return isGenre(options.genre) ? toGenre(options.genre) : undefined;
+    }
+
+    if (options.ignorePreferences || !options.preferredGenre) {
+      return undefined;
+    }
+
+    return isGenre(options.preferredGenre)
+      ? toGenre(options.preferredGenre)
+      : undefined;
+  }
+
+  /** Picks one random lyric, excluding those the player has seen recently. */
+  private async pickRandomLyric(
+    options: RandomLyricOptions,
+  ): Promise<Lyrics | null> {
+    const qb = this.buildLyricQuery(options);
+
+    if (options.userId) {
+      const windowDays = options.seenWindowDays ?? this.seenWindowDays;
+      const cutoff = new Date(
+        Date.now() - windowDays * 24 * 60 * 60 * 1000,
+      );
+      qb.andWhere(
+        `lyric.id NOT IN (
+           SELECT gr.lyric_id FROM game_rounds gr
+           WHERE gr.user_id = :seenUserId AND gr.issued_at >= :seenCutoff
+         )`,
+        { seenUserId: options.userId, seenCutoff: cutoff },
+      );
+    }
+
+    qb.orderBy('RANDOM()').limit(1);
+    return (await qb.getOne()) ?? null;
+  }
+
+  /**
+   * Ensures the player is an active participant of the session, throwing when
+   * the session is missing, finished, or the player is not in it.
+   */
+  async assertActiveParticipant(
+    userId: string,
+    sessionId: string,
+  ): Promise<void> {
+    const session = await this.sessionRepository.findOne({
+      where: { id: sessionId },
+    });
+
+    if (!session) {
+      throw new NotFoundException('Session not found');
+    }
+
+    if (!ACTIVE_SESSION_STATUSES.includes(session.status)) {
+      throw new ConflictException('This session is no longer active');
+    }
+
+    const participants = await this.sessionRepository.manager
+      .createQueryBuilder()
+      .select('1')
+      .from('game_session_players', 'p')
+      .where('p.session_id = :sessionId', { sessionId })
+      .andWhere('p.user_id = :userId', { userId })
+      .getRawOne();
+
+    if (!participants) {
+      throw new ConflictException('You are not a participant of this session');
+    }
+  }
+
+  /** Bumps the session's last-activity timestamp. */
+  async touchSession(sessionId: string): Promise<void> {
+    await this.sessionRepository.update(
+      { id: sessionId },
+      { lastActivityAt: new Date() },
+    );
+  }
+
+  /** Emits the round-ended realtime event for a closed round. */
+  private emitRoundEnded(
+    round: GameRound,
+    outcome: {
+      isCorrect: boolean;
+      points: number;
+      speedBonus: number;
+      timedOut: boolean;
+    },
+  ): void {
+    const payload: RoundEndedPayload = {
+      roundId: round.id,
+      sessionId: round.sessionId ?? null,
+      userId: round.userId,
+      lyricId: round.lyricId,
+      isCorrect: outcome.isCorrect,
+      points: outcome.points,
+      speedBonus: outcome.speedBonus,
+      timedOut: outcome.timedOut,
+      hintsUsed: round.hintsUsed,
+      closedAt: new Date(),
+    };
+    this.events.emit(RealtimeEvent.ROUND_ENDED, payload);
+  }
+}
+
+/** Counts the words in a title or artist name. */
+function countWords(value: string): number {
+  return value.trim().split(/\s+/).filter(Boolean).length;
+}
+
+/** First letter of a title or artist name, upper-cased. */
+function firstLetter(value: string): string {
+  return value.trim().charAt(0).toUpperCase();
+}
+
+/** Maps a lyric entity onto the public {@link GameLyric} shape. */
+function toGameLyric(lyric: Lyrics): GameLyric {
+  return {
+    id: lyric.id,
+    lyricSnippet: lyric.lyricSnippet,
+    songTitle: lyric.songTitle,
+    artist: lyric.artist,
+    category: lyric.category ?? undefined,
+    decade: lyric.decade ?? undefined,
+    genre: lyric.genre ?? undefined,
+  };
+}

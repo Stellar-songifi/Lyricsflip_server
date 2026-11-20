@@ -11,5 +11,7 @@
     "jest-e2e.config.ts"
   ],
   "project": ["src/**/*.ts"],
-  "ignore": ["**/*.spec.ts", "**/*.e2e-spec.ts"]
+  "ignore": ["**/*.spec.ts", "**/*.e2e-spec.ts"],
+  "include": ["unlisted"],
+  "ignoreDependencies": ["nodemailer"]
 }
