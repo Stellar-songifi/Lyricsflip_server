@@ -1,10 +1,14 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { BadRequestException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { GameService } from './game.service';
+import { GameLogicService } from './game.service';
 import { Lyrics as Lyric } from '../lyrics/entities/lyrics.entity';
 import { Genre } from '../lyrics/entities/genre.enum';
 import { MusicGenre } from '../users/entities/user.entity';
+import { GameRound } from './entities/game-round.entity';
+import { GameSession } from './entities/game-session.entity';
 
 const createQueryBuilderMock = (lyrics: Lyric[]) => {
   const qb: any = {
@@ -17,8 +21,8 @@ const createQueryBuilderMock = (lyrics: Lyric[]) => {
   return qb;
 };
 
-describe('GameService', () => {
-  let service: GameService;
+describe('GameLogicService', () => {
+  let service: GameLogicService;
   let lyricRepository: { createQueryBuilder: jest.Mock };
 
   const lyric = { id: 1, content: 'line', genre: Genre.Pop } as Lyric;
@@ -28,14 +32,44 @@ describe('GameService', () => {
       createQueryBuilder: jest.fn(() => createQueryBuilderMock([lyric])),
     };
 
+    const roundRepository = {
+      createQueryBuilder: jest.fn(() => createQueryBuilderMock([])),
+      findOne: jest.fn().mockResolvedValue(null),
+      save: jest.fn(),
+      create: jest.fn((value) => value),
+      delete: jest.fn(),
+    };
+
+    const sessionRepository = {
+      findOne: jest.fn().mockResolvedValue(null),
+      save: jest.fn(),
+      create: jest.fn((value) => value),
+      delete: jest.fn(),
+    };
+
+    const configService = {
+      get: jest.fn().mockReturnValue(undefined),
+    };
+
+    const eventEmitter = {
+      emit: jest.fn(),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
-        GameService,
+        GameLogicService,
         { provide: getRepositoryToken(Lyric), useValue: lyricRepository },
+        { provide: getRepositoryToken(GameRound), useValue: roundRepository },
+        {
+          provide: getRepositoryToken(GameSession),
+          useValue: sessionRepository,
+        },
+        { provide: ConfigService, useValue: configService },
+        { provide: EventEmitter2, useValue: eventEmitter },
       ],
     }).compile();
 
-    service = module.get<GameService>(GameService);
+    service = module.get<GameLogicService>(GameLogicService);
   });
 
   it('returns a lyric when no filters are provided', async () => {
