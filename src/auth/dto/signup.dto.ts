@@ -5,12 +5,12 @@ import {
   MaxLength,
   Matches,
 } from 'class-validator';
-import { Transform } from 'class-transformer';
 import { ApiProperty } from '@nestjs/swagger';
 import {
   IsUsername,
   USERNAME_RULE,
 } from '../../common/validators/username.validator';
+import { NormalizeEmail } from '../../common/transformers/normalize-email.transformer';
 
 export class SignupDto {
   @ApiProperty({
@@ -22,10 +22,8 @@ export class SignupDto {
   username: string;
 
   @ApiProperty({ description: 'User email address' })
+  @NormalizeEmail()
   @IsEmail()
-  @Transform(({ value }) =>
-    typeof value === 'string' ? value.trim().toLowerCase() : value,
-  )
   email: string;
 
   @ApiProperty({

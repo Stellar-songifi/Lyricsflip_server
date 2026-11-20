@@ -53,6 +53,8 @@ import { EmailToken } from '../auth/entities/email-token.entity';
 import { PasswordResetToken } from '../auth/entities/password-reset-token.entity';
 import { Notification } from '../notifications/entities/notification.entity';
 import { AuditLog } from '../audit/entities/audit-log.entity';
+import { DeleteAccountDto } from './dto/delete-account.dto';
+import { StellarAuthService } from '../auth/stellar-auth.service';
 
 /** Public profiles are cached briefly; they change only after a match. */
 const PUBLIC_PROFILE_CACHE_TTL_MS = 60_000;
@@ -84,6 +86,12 @@ export class UsersService {
   @Optional()
   @Inject(AchievementsService)
   private readonly achievementsService?: AchievementsService;
+
+  // Optional so the constructor stays stable; used to re-authenticate
+  // wallet-only accounts (no password) via a fresh SEP-10 signature.
+  @Optional()
+  @Inject(StellarAuthService)
+  private readonly stellarAuthService?: StellarAuthService;
 
   async findAll(limit: number = 20, offset: number = 0) {
     return this.userRepository.find({
@@ -403,38 +411,73 @@ export class UsersService {
       );
     }
 
+    await this.userRepository.manager.transaction(async (manager) => {
+      // Revoke every refresh token and bump tokenVersion so any access token
+      // already issued stops validating immediately (R2-28).
+      await manager.delete(RefreshToken, { userId: id });
+      user.tokenVersion = (user.tokenVersion ?? 0) + 1;
+
+      user.isActive = false;
+      user.email = `deleted-${user.id}@deleted.lyricsflip.local`;
+      user.username = `deleted_${user.id}`;
+      user.name = null;
+      user.stellarAddress = null;
+      user.stellarAddressVerifiedAt = null;
+
+      await manager.save(user);
+    });
+
     await this.erasePersonalData(id);
+    await this.cacheManager.del(`user:${id}`);
 
-    user.isActive = false;
-    user.email = `deleted-${user.id}@deleted.lyricsflip.local`;
-    user.username = `deleted_${user.id}`;
-    user.name = null;
-    user.stellarAddress = null;
-    user.stellarAddressVerifiedAt = null;
-
-    await this.userRepository.save(user);
     return { message: 'User deactivated successfully' };
   }
 
   /**
-   * Self-service account deletion. Requires the current password so a stolen
-   * access token alone cannot delete the account.
+   * Self-service account deletion. Requires re-authentication so a stolen
+   * access token alone cannot delete the account: either the current password
+   * or, for wallet-only (SEP-10) accounts that have no usable password, a
+   * fresh SEP-10 signature over a challenge.
    */
-  async deleteAccount(userId: string, password: string) {
+  async deleteAccount(userId: string, dto: DeleteAccountDto) {
     const user = await this.userRepository.findOne({
       where: { id: userId },
-      select: ['id', 'password'],
+      select: ['id', 'passwordHash', 'stellarAddress'],
     });
     if (!user) {
       throw new NotFoundException(`User with ID ${userId} not found`);
     }
 
-    const matches =
-      typeof user.password === 'string' &&
-      user.password.length > 0 &&
-      (await bcrypt.compare(password, user.password));
-    if (!matches) {
-      throw new UnauthorizedException('Invalid password');
+    const hasPassword =
+      typeof user.passwordHash === 'string' && user.passwordHash.length > 0;
+
+    if (dto.password) {
+      const matches =
+        hasPassword && (await bcrypt.compare(dto.password, user.passwordHash));
+      if (!matches) {
+        throw new UnauthorizedException('Invalid password');
+      }
+    } else if (dto.challenge && dto.signature) {
+      if (!this.stellarAuthService) {
+        throw new UnauthorizedException(
+          'Signature re-authentication is unavailable',
+        );
+      }
+      if (!user.stellarAddress) {
+        throw new UnauthorizedException('Account has no linked wallet');
+      }
+      const verified = await this.stellarAuthService.verifySignature(
+        user.stellarAddress,
+        dto.challenge,
+        dto.signature,
+      );
+      if (!verified) {
+        throw new UnauthorizedException('Invalid signature');
+      }
+    } else {
+      throw new BadRequestException(
+        'Provide either the current password or a SEP-10 signature',
+      );
     }
 
     return this.remove(userId);

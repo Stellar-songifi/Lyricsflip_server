@@ -10,13 +10,12 @@ import {
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { Logger, NotFoundException, UsePipes, ValidationPipe } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { JwtService } from '@nestjs/jwt';
+import { OnEvent } from '@nestjs/event-emitter';
 import { GameLogicService } from './game.service';
 import { RandomLyricOptionsDto } from './dto/random-lyrics-option.dto';
 import { GuessDto } from './dto/guess.dto';
-import type { SocketUser } from '../auth/auth-context.util';
-import type { JwtPayload } from '../auth/interfaces/jwt-payload.interface';
+import { authenticateSocket } from '../auth/socket-auth.util';
+import { RealtimeEvent } from '../realtime/realtime.events';
 import { WsRateLimiter } from '../common/websocket/ws-rate-limiter';
 import {
   WsConnectionLimiter,
@@ -72,23 +71,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
   private readonly rateLimiter = new WsRateLimiter();
   private readonly connectionLimiter = new WsConnectionLimiter();
 
-  constructor(
-    private readonly gameLogicService: GameLogicService,
-    private readonly jwtService: JwtService,
-    private readonly configService: ConfigService,
-  ) {}
-
-  private extractToken(client: Socket): string | undefined {
-    const authToken = client.handshake.auth?.token;
-    if (typeof authToken === 'string' && authToken) {
-      return authToken.replace(/^Bearer\s+/i, '');
-    }
-    const header = client.handshake.headers?.authorization;
-    if (typeof header === 'string' && /^Bearer\s+/i.test(header)) {
-      return header.replace(/^Bearer\s+/i, '');
-    }
-    return undefined;
-  }
+  constructor(private readonly gameLogicService: GameLogicService) {}
 
   /** Returns false (and disconnects) if the event exceeds its rate limit. */
   private allow(client: Socket, event: string): boolean {
@@ -96,20 +79,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   async handleConnection(client: Socket) {
-    const token = this.extractToken(client);
     let userId: string;
     let user: SocketUser;
     try {
-      if (!token) throw new Error('missing token');
-      const payload = await this.jwtService.verifyAsync<
-        Pick<JwtPayload, 'sub' | 'username' | 'role'>
-      >(token, { secret: this.configService.get<string>('JWT_SECRET') });
-      userId = payload.sub;
-      user = {
-        id: payload.sub,
-        username: payload.username,
-        role: payload.role,
-      };
+      const authenticated = await authenticateSocket(client);
+      userId = authenticated.userId;
+      user = authenticated.user;
     } catch {
       this.logger.warn(`Rejected unauthenticated connection: ${client.id}`);
       client.emit('error', { message: 'Unauthorized' });
@@ -126,6 +101,8 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     client.data.userId = userId;
     // Read by @GetUser, RolesGuard and JwtAuthGuard in handlers (#362).
     client.data.user = user;
+    // Join a per-user room so revocation can target every socket of the user.
+    await client.join(`user:${userId}`);
     this.logger.log(`Client connected: ${client.id} (user ${userId})`);
 
     // Initialize per-socket session, keyed by client.id.
@@ -145,6 +122,35 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.sessions.delete(client.id);
     this.rateLimiter.clear(client.id);
     this.connectionLimiter.release(client.data?.userId, client.id);
+  }
+
+  /**
+   * Disconnects every socket of a user whose token was revoked (password
+   * change, logout-all, deactivation) across all instances via the Redis
+   * adapter.
+   */
+  @OnEvent(RealtimeEvent.USER_SESSIONS_REVOKED)
+  async handleUserSessionsRevoked(payload: { userId: string }) {
+    if (!payload?.userId) return;
+    try {
+      const sockets = await this.server
+        .in(`user:${payload.userId}`)
+        .fetchSockets();
+      for (const socket of sockets) {
+        socket.emit('error', { message: 'Session revoked' });
+        socket.disconnect(true);
+      }
+      if (sockets.length > 0) {
+        this.logger.log(
+          `Disconnected ${sockets.length} revoked socket(s) for user ${payload.userId}`,
+        );
+      }
+    } catch (error) {
+      this.logger.error(
+        `Failed to disconnect revoked sockets for user ${payload.userId}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+    }
   }
 
   @SubscribeMessage('requestLyric')
