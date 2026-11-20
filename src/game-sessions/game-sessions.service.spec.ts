@@ -5,7 +5,6 @@ import {
   ConflictException,
   ForbiddenException,
   Logger,
-  ForbiddenException,
   GoneException,
   NotFoundException,
 } from '@nestjs/common';
@@ -819,5 +818,6 @@ describe('GameSessionsService', () => {
         'session-123',
       );
     });
+  });
   });
 });
