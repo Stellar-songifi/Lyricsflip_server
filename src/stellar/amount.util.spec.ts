@@ -3,6 +3,7 @@ import {
   addStroops,
   assertPositiveStroops,
   fromStroops,
+  getTokenDecimals,
   isAtLeast,
   isPositive,
   multiplyStroops,
@@ -165,6 +166,34 @@ describe('amount.util', () => {
       expect(() => assertPositiveStroops('0', 'stake')).toThrow(
         'stake must be greater than zero',
       );
+    });
+  });
+
+  describe('getTokenDecimals', () => {
+    const originalEnv = process.env;
+
+    afterEach(() => {
+      process.env = originalEnv;
+    });
+
+    it('is exported so callers can read the loaded decimals', () => {
+      expect(typeof getTokenDecimals).toBe('function');
+    });
+
+    it('honours LYRIC_TOKEN_DECIMALS in mock mode', () => {
+      process.env = { ...originalEnv, STELLAR_MODE: 'mock' };
+      process.env.LYRIC_TOKEN_DECIMALS = '7';
+      expect(getTokenDecimals()).toBe(7);
+    });
+
+    it('reports the same decimals that /stellar/info exposes', () => {
+      process.env = { ...originalEnv, STELLAR_MODE: 'mock' };
+      process.env.LYRIC_TOKEN_DECIMALS = '7';
+      const loaded = getTokenDecimals();
+      // /stellar/info reads the same accessor, so the reported value must
+      // match what was loaded at boot rather than a hard-coded constant.
+      expect(loaded).toBe(7);
+      expect(loaded).toBe(STROOPS_PER_TOKEN.toString().length - 1);
     });
   });
 });

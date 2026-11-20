@@ -11,7 +11,6 @@ import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Not, Raw, Repository } from 'typeorm';
 import * as bcrypt from 'bcrypt';
-import { UpdateUserDto } from './dto/update-user.dto';
 import { UpdateUserPreferencesDto } from './dto/update-user-preferences.dto';
 import { User } from './entities/user.entity';
 import { Cache } from 'cache-manager';
@@ -40,7 +39,6 @@ const NON_TERMINAL_WAGER_STATUSES = [
 ];
 import { AdminUpdateUserDto, UpdateProfileDto } from './dto/update-user.dto';
 import { MAX_PAGE_SIZE } from '../common/dto/pagination-query.dto';
-import { cacheConfig } from '../config/cache.config';
 import { Optional } from '@nestjs/common';
 import { PublicUserDto } from './dto/public-user.dto';
 import { AchievementsService } from '../achievements/achievements.service';
@@ -62,6 +60,12 @@ const TOKEN_SYMBOL = 'LYRIC';
 export type LeaderboardPeriod = 'weekly' | 'monthly' | 'all';
 
 const LEADERBOARD_PERIODS: LeaderboardPeriod[] = ['weekly', 'monthly', 'all'];
+
+export interface LeaderboardOptions {
+  limit?: number;
+  offset?: number;
+  period?: LeaderboardPeriod;
+}
 
 @Injectable()
 export class UsersService {
@@ -139,6 +143,13 @@ export class UsersService {
     const profile = PublicUserDto.from(user, record, achievements);
     await this.cacheManager.set(cacheKey, profile, PUBLIC_PROFILE_CACHE_TTL_MS);
     return profile;
+  }
+
+  /**
+   * Alias used by the controller for the public profile lookup.
+   */
+  async getPublicProfile(username: string): Promise<PublicUserDto> {
+    return this.findPublicProfile(username);
   }
 
   /**
@@ -339,7 +350,10 @@ export class UsersService {
     return 'Rookie';
   }
 
-  async update(id: string, updateUserDto: UpdateProfileDto | AdminUpdateUserDto) {
+  async update(
+    id: string,
+    updateUserDto: UpdateProfileDto | AdminUpdateUserDto,
+  ) {
     const user = await this.findOne(id);
 
     // Report taken usernames/emails as 409 rather than a unique-index 500
@@ -603,12 +617,35 @@ export class UsersService {
    * Leaderboard page. Ranks are computed with competition ranking
    * (`RANK() OVER (ORDER BY xp DESC)`) so tied users share the same rank,
    * matching the rank reported by `getMyRank`.
+   *
+   * Accepts either an options object (`{ limit, offset, period }`) or the
+   * legacy positional `(limit, offset, period)` arguments.
    */
   async getLeaderboard(
-    limit: number = 20,
-    offset: number = 0,
-    period: LeaderboardPeriod = 'all',
+    optionsOrLimit: LeaderboardOptions | number = {},
+    offsetArg: number = 0,
+    periodArg: LeaderboardPeriod = 'all',
   ) {
+    let limit: number;
+    let offset: number;
+    let period: LeaderboardPeriod;
+
+    if (typeof optionsOrLimit === 'number') {
+      limit = optionsOrLimit;
+      offset = offsetArg;
+      period = periodArg;
+    } else {
+      limit = optionsOrLimit.limit ?? 20;
+      offset = optionsOrLimit.offset ?? 0;
+      period = optionsOrLimit.period ?? 'all';
+    }
+
+    if (!LEADERBOARD_PERIODS.includes(period)) {
+      throw new BadRequestException(
+        `Invalid leaderboard period: ${period}. Expected one of ${LEADERBOARD_PERIODS.join(', ')}`,
+      );
+    }
+
     const safeLimit = Math.min(Math.max(limit, 1), MAX_PAGE_SIZE);
     const safeOffset = Math.max(offset, 0);
 

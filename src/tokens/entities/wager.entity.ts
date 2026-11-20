@@ -83,6 +83,19 @@ export class Wager {
   @Column({ type: 'bigint' })
   totalPotStroops: string;
 
+  /**
+   * Alias of {@link stakeStroops} for callers written against the older
+   * `stake` field name. Not a separate column: it maps to `stakeStroops` so
+   * the entity stays the single source of truth for the pot amount.
+   */
+  get stake(): string {
+    return this.stakeStroops;
+  }
+
+  set stake(value: string) {
+    this.stakeStroops = value;
+  }
+
   @Column({
     type: 'enum',
     enum: WagerStatus,
