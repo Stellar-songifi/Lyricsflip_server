@@ -8,9 +8,7 @@ import {
   WebSocketServer,
 } from '@nestjs/websockets';
 import { Logger, UseFilters } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { OnEvent } from '@nestjs/event-emitter';
-import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
 import { isUUID } from 'class-validator';
 import { Server, Socket } from 'socket.io';
@@ -18,8 +16,11 @@ import { Repository } from 'typeorm';
 import { GameSession } from '../game-sessions/entities/game-session.entity';
 import { RoomUser } from '../rooms/entities/room-user.entity';
 import { WsExceptionFilter } from '../common/filters/ws-exception.filter';
-import type { SocketUser } from '../auth/auth-context.util';
-import type { JwtPayload } from '../auth/interfaces/jwt-payload.interface';
+import {
+  SocketAuthenticator,
+  USER_SESSIONS_REVOKED_EVENT,
+  UserSessionsRevokedPayload,
+} from '../auth/socket-authenticator';
 import { WsRateLimiter } from '../common/websocket/ws-rate-limiter';
 import {
   WsConnectionLimiter,
@@ -82,41 +83,18 @@ export class RealtimeGateway
   private readonly connectionLimiter = new WsConnectionLimiter();
 
   constructor(
-    private readonly jwtService: JwtService,
-    private readonly configService: ConfigService,
+    private readonly socketAuthenticator: SocketAuthenticator,
     @InjectRepository(GameSession)
     private readonly sessionRepository: Repository<GameSession>,
     @InjectRepository(RoomUser)
     private readonly roomUserRepository: Repository<RoomUser>,
   ) {}
 
-  private extractToken(client: Socket): string | undefined {
-    const authToken = client.handshake.auth?.token;
-    if (typeof authToken === 'string' && authToken) {
-      return authToken.replace(/^Bearer\s+/i, '');
-    }
-    const header = client.handshake.headers?.authorization;
-    if (typeof header === 'string' && /^Bearer\s+/i.test(header)) {
-      return header.replace(/^Bearer\s+/i, '');
-    }
-    return undefined;
-  }
-
   async handleConnection(client: Socket): Promise<void> {
-    const token = this.extractToken(client);
-
     try {
-      if (!token) throw new Error('missing token');
-      const payload = await this.jwtService.verifyAsync<
-        Pick<JwtPayload, 'sub' | 'username' | 'role'>
-      >(token, { secret: this.configService.get<string>('JWT_SECRET') });
-      client.data.userId = payload.sub;
+      const user = await this.socketAuthenticator.authenticateSocket(client);
+      client.data.userId = user.id;
       // Read by @GetUser, RolesGuard and JwtAuthGuard in handlers (#362).
-      const user: SocketUser = {
-        id: payload.sub,
-        username: payload.username,
-        role: payload.role,
-      };
       client.data.user = user;
     } catch {
       this.logger.warn(`Rejected unauthenticated connection: ${client.id}`);
@@ -139,6 +117,37 @@ export class RealtimeGateway
     this.logger.debug(`Realtime client disconnected: ${client.id}`);
     this.rateLimiter.clear(client.id);
     this.connectionLimiter.release(client.data?.userId, client.id);
+  }
+
+  /**
+   * Drops every open socket of a user whose tokens were revoked (password
+   * change, logout-all, deactivation). With the Redis adapter `fetchSockets`
+   * reaches sockets on every instance, not just this one.
+   */
+  @OnEvent(USER_SESSIONS_REVOKED_EVENT)
+  async onUserSessionsRevoked(
+    payload: UserSessionsRevokedPayload,
+  ): Promise<void> {
+    if (!this.server || !payload?.userId) return;
+    const room = realtimeRooms.user(payload.userId);
+    try {
+      const sockets = await this.server.in(room).fetchSockets();
+      for (const socket of sockets) {
+        socket.emit('error', { message: 'Session revoked' });
+      }
+      this.server.in(room).disconnectSockets(true);
+      if (sockets.length > 0) {
+        this.logger.log(
+          `Disconnected ${sockets.length} socket(s) for revoked user ${payload.userId}`,
+        );
+      }
+    } catch (error) {
+      this.logger.error(
+        `Failed to disconnect sockets for user ${payload.userId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
   }
 
   /** Joins a session or room channel, if the caller is a member of it. */

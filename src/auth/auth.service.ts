@@ -330,23 +330,25 @@ export class AuthService {
    * revokes all of the user's refresh tokens, as changePassword does.
    */
   async resetPassword(token: string, password: string): Promise<void> {
-    const userId = await this.passwordResetService.consume(token);
+    // Hash before opening the transaction so the bcrypt work does not hold
+    // a connection open.
+    const passwordHash = await this.hashPassword(password);
 
-    const user = await this.userRepository.findOne({
-      where: { id: userId },
+    await this.userRepository.manager.transaction(async (manager) => {
+      // Consumes the token (conditional UPDATE) inside the transaction, so
+      // the token is only spent if the password change commits.
+      const user = await this.passwordResetService.consume(token, manager);
+
+      user.passwordHash = passwordHash;
+      user.tokenVersion += 1;
+      await manager.save(User, user);
+
+      await manager.update(
+        RefreshToken,
+        { userId: user.id, revokedAt: IsNull() },
+        { revokedAt: new Date() },
+      );
     });
-    if (!user) {
-      throw new BadRequestException('Invalid or expired reset token');
-    }
-
-    user.passwordHash = await this.hashPassword(password);
-    user.tokenVersion += 1;
-    await this.userRepository.save(user);
-
-    await this.refreshTokenRepository.update(
-      { userId: user.id, revokedAt: IsNull() },
-      { revokedAt: new Date() },
-    );
   }
 
   /** Signs a short-lived access token and issues a new stored refresh token. */
