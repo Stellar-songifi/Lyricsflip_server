@@ -44,6 +44,13 @@ export const GAME_CONSTANTS = {
     /** Hint levels: 1 decade, 2 word counts, 3 first letters. */
     MAX_HINTS: 3,
     DAILY_CHALLENGE_SIZE: 10,
+    /**
+     * How many days back a lyric counts as "seen" when picking a random
+     * round, so recently played songs are not repeated.
+     */
+    SEEN_WINDOW_DAYS: 30,
+    /** How long finished game rounds are kept before the retention job prunes them. */
+    ROUND_RETENTION_DAYS: 30,
   },
   VALIDATION: {
     MIN_PARTIAL_MATCH_LENGTH: 3,
