@@ -39,6 +39,8 @@ export interface RandomLyricOptions {
   decade?: string;
   genre?: string;
   excludeIds?: number[];
+  /** Session the round belongs to, when started from a multiplayer game. */
+  sessionId?: string;
   /**
    * When set, lyrics this player has already been served within the last
    * `seenWindowDays` days are excluded from the pool.
@@ -164,6 +166,27 @@ export class GameLogicService {
       this.configService.get<number>('GAME_ROUND_RETENTION_DAYS') ??
       GAME_CONSTANTS.LIMITS.ROUND_RETENTION_DAYS
     );
+  }
+
+  /**
+   * Picks a lyric for this player and opens the round they can guess it in.
+   *
+   * This is the single entry point shared by the HTTP controller and the
+   * `/game` socket gateway, so both surfaces serve identical payloads.
+   */
+  async startRound(
+    userId: string,
+    options: RandomLyricOptions = {},
+  ): Promise<{ round: GameRound; lyric: GameLyric }> {
+    const lyric = await this.getRandomLyric({
+      ...options,
+      userId,
+      seenWindowDays: options.seenWindowDays ?? this.seenWindowDays,
+    });
+
+    const round = await this.issueRound(userId, lyric.id, options.sessionId);
+
+    return { round, lyric };
   }
 
   /**

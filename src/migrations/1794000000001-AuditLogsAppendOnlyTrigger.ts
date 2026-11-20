@@ -1,10 +1,10 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
 
 /** Database-level append-only protection for audit_logs. */
-export class AuditLogsAppendOnlyTrigger1794000000001
+export class AuditLogsAppendOnlyTrigger1794000000005
   implements MigrationInterface
 {
-  name = 'AuditLogsAppendOnlyTrigger1794000000001';
+  name = 'AuditLogsAppendOnlyTrigger1794000000005';
 
   public async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`

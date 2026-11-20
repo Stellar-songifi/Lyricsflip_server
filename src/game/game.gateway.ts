@@ -167,31 +167,33 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
       let round;
       try {
-        round = await this.gameLogicService.issueRound(
-          session.playerId,
-          { ...options, excludeIds },
-        );
+        round = await this.gameLogicService.startRound(session.playerId, {
+          ...options,
+          excludeIds,
+        });
       } catch (error) {
         // The unseen pool is exhausted: reset the seen set and retry so the
         // player can keep playing.
         if (error instanceof NotFoundException && excludeIds.length > 0) {
           session.seenLyricIds.clear();
-          round = await this.gameLogicService.issueRound(
-            session.playerId,
-            { ...options, excludeIds: [] },
-          );
+          round = await this.gameLogicService.startRound(session.playerId, {
+            ...options,
+            excludeIds: [],
+          });
         } else {
           throw error;
         }
       }
 
-      session.currentRoundId = round.roundId;
-      session.seenLyricIds.add(round.lyric.id);
+      session.currentRoundId = round.id;
+      session.seenLyricIds.add(round.lyricId);
 
-      // Send only the lyric snippet (hide answers) plus round timing info.
+      // Emit exactly the HTTP response shape (GameLyricResponse): the lyric
+      // snippet (answers hidden) plus round timing info.
       client.emit('newLyric', {
-        roundId: round.roundId,
+        roundId: round.id,
         issuedAt: round.issuedAt,
+        expiresAt: round.expiresAt,
         answerWindowSeconds: round.answerWindowSeconds,
         id: round.lyric.id,
         lyricSnippet: round.lyric.lyricSnippet,
@@ -224,15 +226,6 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         return;
       }
 
-      // Validate guess
-      const validation = this.gameLogicService.validateGuess(
-        guessDto.guessValue,
-      );
-      if (!validation.isValid) {
-        client.emit('error', { message: validation.reason });
-        return;
-      }
-
       // Guess against the round this socket was issued, once, rather than a
       // client-supplied ID that could be replayed after the answer is shown.
       const roundId = session.currentRoundId;
@@ -242,14 +235,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       }
       session.currentRoundId = undefined;
 
-      const result = await this.gameLogicService.guessRound(
-        session.playerId,
+      // Emits the HTTP response shape (GuessResultResponse).
+      const result = await this.gameLogicService.guessRound(session.playerId, {
         roundId,
-        {
-          guessType: guessDto.guessType,
-          guessValue: guessDto.guessValue,
-        },
-      );
+        guessType: guessDto.guessType,
+        guessValue: guessDto.guessValue,
+      });
 
       client.emit('guessResult', result);
     } catch (error) {
@@ -276,10 +267,10 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         return;
       }
 
-      const hint = await this.gameLogicService.useHint(
-        session.playerId,
+      // Emits the HTTP response shape (RoundHintResponse).
+      const hint = await this.gameLogicService.getHint(session.playerId, {
         roundId,
-      );
+      });
 
       client.emit('hintResult', hint);
     } catch (error) {
