@@ -164,7 +164,7 @@ export class StellarAuthService {
    * from the challenge's manage_data value and is remembered for the challenge
    * lifetime, after which the time bounds reject it anyway.
    */
-  private async consumeChallenge(signedTransaction: string): Promise<void> {
+  async consumeChallenge(signedTransaction: string): Promise<void> {
     const { tx, clientAccountID } = WebAuth.readChallengeTx(
       signedTransaction,
       this.serverAccountId,

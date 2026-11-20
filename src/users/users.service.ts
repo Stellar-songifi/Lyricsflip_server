@@ -27,6 +27,7 @@ import { DailyChallengeAttempt } from '../challenges/entities/daily-challenge-at
 import { Room } from '../rooms/entities/room.entity';
 import { RoomUser } from '../rooms/entities/room-user.entity';
 import { Lyrics } from '../lyrics/entities/lyrics.entity';
+import { StellarAuthService } from '../auth/services/stellar-auth.service';
 import { usernameRuleViolation } from '../common/validators/username.validator';
 
 // Wager states that have not yet reached a final outcome. A user involved in
@@ -76,6 +77,7 @@ export class UsersService {
     private cacheManager: Cache,
     @Inject(TOKEN_SERVICE)
     private readonly tokenService: ITokenService,
+    private readonly stellarAuthService: StellarAuthService,
   ) {}
 
   // Property injection keeps the constructor stable. Optional because the
@@ -411,30 +413,62 @@ export class UsersService {
     user.name = null;
     user.stellarAddress = null;
     user.stellarAddressVerifiedAt = null;
+    // Outstanding access tokens are rejected by JwtStrategy once the version
+    // moves; refresh tokens are deleted by erasePersonalData.
+    user.tokenVersion = (user.tokenVersion ?? 0) + 1;
 
     await this.userRepository.save(user);
     return { message: 'User deactivated successfully' };
   }
 
   /**
-   * Self-service account deletion. Requires the current password so a stolen
-   * access token alone cannot delete the account.
+   * Self-service account deletion. Re-authenticates with the current password,
+   * or, for accounts without one (wallet login), with a fresh SEP-10 signature
+   * from the linked wallet, so a stolen access token alone cannot delete the
+   * account.
    */
-  async deleteAccount(userId: string, password: string) {
+  async deleteAccount(
+    userId: string,
+    credentials: string | { password?: string; transaction?: string },
+  ) {
+    const { password, transaction } =
+      typeof credentials === 'string'
+        ? { password: credentials, transaction: undefined }
+        : credentials;
+
+    // passwordHash is select:false, so it must be requested explicitly.
     const user = await this.userRepository.findOne({
       where: { id: userId },
-      select: ['id', 'password'],
+      select: ['id', 'passwordHash', 'stellarAddress'],
     });
     if (!user) {
       throw new NotFoundException(`User with ID ${userId} not found`);
     }
 
-    const matches =
-      typeof user.password === 'string' &&
-      user.password.length > 0 &&
-      (await bcrypt.compare(password, user.password));
-    if (!matches) {
-      throw new UnauthorizedException('Invalid password');
+    const hasPassword =
+      typeof user.passwordHash === 'string' && user.passwordHash.length > 0;
+
+    if (hasPassword) {
+      const matches =
+        typeof password === 'string' &&
+        password.length > 0 &&
+        (await bcrypt.compare(password, user.passwordHash));
+      if (!matches) {
+        throw new UnauthorizedException('Invalid password');
+      }
+    } else {
+      if (!transaction || !user.stellarAddress) {
+        throw new UnauthorizedException(
+          'This account has no password; sign a fresh Stellar challenge to confirm deletion',
+        );
+      }
+      const signer = this.stellarAuthService.verifyChallenge(transaction);
+      if (signer !== user.stellarAddress) {
+        throw new UnauthorizedException(
+          'The signature does not belong to the wallet linked to this account',
+        );
+      }
+      await this.stellarAuthService.consumeChallenge(transaction);
     }
 
     return this.remove(userId);

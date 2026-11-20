@@ -16,7 +16,7 @@ import { Role } from '../auth/roles/role.enum';
 import { Wager, WagerStatus } from '../tokens/entities/wager.entity';
 import { cacheConfig } from '../config/cache.config';
 import * as bcrypt from 'bcrypt';
-import { TokenRevocationService } from '../auth/token-revocation.service';
+import { StellarAuthService } from '../auth/services/stellar-auth.service';
 import { TOKEN_SERVICE } from '../tokens/interfaces/token.interface';
 
 jest.mock('bcrypt', () => ({
@@ -53,9 +53,9 @@ describe('UsersService', () => {
     getUserBalance: jest.fn().mockResolvedValue('0'),
   };
 
-  const mockTokenRevocationService = {
-    revokeAllForUser: jest.fn(),
-    revokeAllUserTokens: jest.fn(),
+  const mockStellarAuthService = {
+    verifyChallenge: jest.fn(),
+    consumeChallenge: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -75,8 +75,8 @@ describe('UsersService', () => {
           useValue: mockCacheManager,
         },
         {
-          provide: TokenRevocationService,
-          useValue: mockTokenRevocationService,
+          provide: StellarAuthService,
+          useValue: mockStellarAuthService,
         },
         {
           provide: TOKEN_SERVICE,
@@ -175,9 +175,6 @@ describe('UsersService', () => {
       expect(removeSpy).not.toHaveBeenCalled();
       expect(mockUserRepository.save).not.toHaveBeenCalled();
       expect(mockUserRepository.remove).not.toHaveBeenCalled();
-      expect(
-        mockTokenRevocationService.revokeAllForUser,
-      ).not.toHaveBeenCalled();
     });
 
     it('throws NotFoundException when the user does not exist', async () => {
@@ -203,10 +200,49 @@ describe('UsersService', () => {
       expect(mockUserRepository.save).toHaveBeenCalled();
       const saved = mockUserRepository.save.mock.calls[0][0];
       expect(saved.isActive).toBe(false);
-      expect(
-        mockTokenRevocationService.revokeAllForUser,
-      ).toHaveBeenCalledWith('user-123');
+      expect(saved.tokenVersion).toBe(1);
+      expect(mockUserRepository.findOne).toHaveBeenCalledWith(
+        expect.objectContaining({
+          select: expect.arrayContaining(['id', 'passwordHash']),
+        }),
+      );
       expect(result.message).toContain('deactivated');
+    });
+
+    it('re-authenticates a password-less account with a SEP-10 signature', async () => {
+      const walletUser = {
+        ...mockUser,
+        passwordHash: '',
+        stellarAddress: 'GADDR',
+      };
+      mockUserRepository.findOne.mockResolvedValue({ ...walletUser });
+      mockStellarAuthService.verifyChallenge.mockReturnValue('GADDR');
+      mockWagerRepository.findOne.mockResolvedValue(null);
+      mockUserRepository.save.mockImplementation((u) => Promise.resolve(u));
+
+      await service.deleteAccount('user-123', { transaction: 'signed-xdr' });
+
+      expect(mockStellarAuthService.consumeChallenge).toHaveBeenCalledWith(
+        'signed-xdr',
+      );
+      expect(mockUserRepository.save.mock.calls[0][0].isActive).toBe(false);
+    });
+
+    it('rejects a password-less account without a valid wallet signature', async () => {
+      mockUserRepository.findOne.mockResolvedValue({
+        ...mockUser,
+        passwordHash: '',
+        stellarAddress: 'GADDR',
+      });
+      await expect(
+        service.deleteAccount('user-123', { password: 'x' }),
+      ).rejects.toThrow(UnauthorizedException);
+
+      mockStellarAuthService.verifyChallenge.mockReturnValue('GOTHER');
+      await expect(
+        service.deleteAccount('user-123', { transaction: 'xdr' }),
+      ).rejects.toThrow(UnauthorizedException);
+      expect(mockUserRepository.save).not.toHaveBeenCalled();
     });
   });
 

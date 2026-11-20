@@ -93,7 +93,10 @@ export class UsersController {
   @ApiResponse({ status: 401, description: 'Re-authentication failed.' })
   @ApiResponse({ status: 409, description: 'An active wager is in progress.' })
   removeMe(@GetUser() user: User, @Body() deleteAccountDto: DeleteAccountDto) {
-    return this.usersService.deleteAccount(user.id, deleteAccountDto.password);
+    return this.usersService.deleteAccount(user.id, {
+      password: deleteAccountDto.password,
+      transaction: deleteAccountDto.transaction,
+    });
   }
 
   /**

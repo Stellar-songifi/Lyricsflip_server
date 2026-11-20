@@ -153,7 +153,10 @@ describe('UsersController', () => {
         { password: 'secret' },
       );
 
-      expect(usersService.deleteAccount).toHaveBeenCalledWith('1', 'secret');
+      expect(usersService.deleteAccount).toHaveBeenCalledWith('1', {
+        password: 'secret',
+        transaction: undefined,
+      });
       expect(result).toEqual({ message: 'Account deleted' });
     });
 
