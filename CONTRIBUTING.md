@@ -143,7 +143,30 @@ npm run test:e2e
 cd contracts && cargo test
 ```
 
-All 34 unit suites must pass before opening a PR. The CI pipeline runs lint, type-check, unit tests, and a build on every PR. E2E tests and a migration drift check run in a separate job with a real Postgres service container.
+`npm test` must be green before opening a PR — every unit suite has to pass. The CI pipeline runs lint, type-check, unit tests, and a build on every PR. E2E tests and a migration drift check run in a separate job with a real Postgres service container.
+
+---
+
+## Required checks and merge process
+
+`main` is protected. Nothing merges red — the GitHub UI refuses to merge a pull request while any required check is failing or still running.
+
+The following checks are **required** on every PR to `main`:
+
+| Check | What it covers |
+|---|---|
+| `lint-typecheck-test-build` | ESLint, `tsc --noEmit`, unit tests, and the production build |
+| `docker-build` | Builds the Docker image and smoke-starts the app |
+| `e2e` | End-to-end tests against a real Postgres service container |
+| `contract` | Builds and tests the Soroban contract in `contracts/` |
+
+Additional rules enforced by branch protection:
+
+- **Branches must be up to date with `main`** before merging. Rebase or merge `main` into your branch and wait for CI to re-run.
+- **Force pushes to `main` are blocked.** Never push directly to `main`; all changes go through a pull request.
+- **A merge queue is enabled.** PRs are merged through the queue, which re-runs the required checks against the latest `main` plus the queued PRs. This guarantees that two individually green PRs cannot combine into a red `main`.
+- **CODEOWNERS review is required** for anything touching `src/tokens/`, `src/stellar/`, `src/auth/` or `contracts/`. At least one approving review from a maintainer is needed before such a PR can merge.
+=======
 
 ---
 

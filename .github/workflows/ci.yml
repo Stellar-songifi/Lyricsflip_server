@@ -28,6 +28,54 @@ jobs:
       - name: Check migration location
         run: bash scripts/check-migration-location.sh
 
+  # Guards against destructive edits (R3-29): truncation markers, relative
+  # imports that resolve to no file, and removed public API.
+  destructive-edit-guards:
+    name: No truncation markers or unresolved imports
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Fail on truncation / placeholder markers
+        run: node scripts/check-truncation-markers.mjs
+
+      - name: Fail on relative imports that resolve to no file
+        run: node scripts/check-unresolved-imports.mjs
+
+  removed-api:
+    name: Removed public API requires the removes-api label
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Detect removed exported functions, class methods and contract pub fn
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: node scripts/check-removed-api.mjs
+
   lint-typecheck-test-build:
     name: Lint, type-check, tests and build
     runs-on: ubuntu-latest
@@ -49,6 +97,12 @@ jobs:
 
       - name: Lint (check mode)
         run: npm run lint:check
+
+      # Cheap, dependency-free guards so a red run names the offending file.
+      - name: No truncation markers or unresolved imports
+        run: |
+          node scripts/check-truncation-markers.mjs
+          node scripts/check-unresolved-imports.mjs
 
       - name: Type-check
         run: npx tsc --noEmit

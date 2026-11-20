@@ -203,7 +203,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
     return {
       statusCode,
-      message: this.isProduction ? message : error.message,
+      message,
       error: this.getErrorName(statusCode),
       timestamp,
       path,
