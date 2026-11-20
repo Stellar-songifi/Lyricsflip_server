@@ -51,3 +51,22 @@ export function canReceiveToken(
     reason: `Account is missing a trustline for ${assetCode}:${assetIssuer}`,
   };
 }
+
+/**
+ * Pre-flight trustline check used before staking so that a payout can reach
+ * the player. Accepts either a list of balances or an account object that
+ * carries a `balances` array. Delegates to {@link canReceiveToken}.
+ */
+export function checkTrustline(
+  balancesOrAccount: TrustlineLike[] | { balances?: TrustlineLike[] } | null | undefined,
+  assetCode?: string,
+  assetIssuer?: string,
+): TrustlineCheckResult {
+  const balances: TrustlineLike[] = Array.isArray(balancesOrAccount)
+    ? balancesOrAccount
+    : balancesOrAccount && Array.isArray(balancesOrAccount.balances)
+      ? balancesOrAccount.balances
+      : [];
+
+  return canReceiveToken(balances, assetCode, assetIssuer);
+}

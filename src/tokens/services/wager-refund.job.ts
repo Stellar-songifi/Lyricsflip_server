@@ -89,6 +89,22 @@ export class WagerRefundJob {
         return;
       }
 
+      // resolveWagerAsDraw is idempotent: if a concurrent run already moved
+      // this wager out of AWAITING_STAKES, it returns success without a
+      // second on-chain refund. Only mark the session abandoned once the
+      // wager has actually reached a terminal refunded state.
+      const settled = await this.wagerRepository.findOne({
+        where: { id: wager.id },
+      });
+
+      if (settled && settled.status !== WagerStatus.REFUNDED) {
+        this.logger.warn(
+          `Wager ${wager.id} did not reach REFUNDED (status ${settled.status}); ` +
+            `leaving session ${wager.sessionId} untouched.`,
+        );
+        return;
+      }
+
       await this.gameSessionRepository.update(
         { id: wager.sessionId },
         { status: GameSessionStatus.ABANDONED },

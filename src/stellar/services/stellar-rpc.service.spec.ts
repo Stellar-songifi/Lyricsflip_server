@@ -309,6 +309,31 @@ describe('StellarRpcService', () => {
       });
     });
 
+    it('decodes the contract return value when there is one', async () => {
+      jest.spyOn(rpc.Server.prototype, 'getTransaction').mockResolvedValue({
+        status: rpc.Api.GetTransactionStatus.SUCCESS,
+        ledger: 5,
+        returnValue: nativeToScVal(42n, { type: 'i128' }),
+      } as rpc.Api.GetTransactionResponse);
+
+      const result = await service.lookupTransaction('abc');
+
+      expect(result.returnValue).toBe(42n);
+    });
+
+    it('reports an on-chain failure as failed', async () => {
+      jest.spyOn(rpc.Server.prototype, 'getTransaction').mockResolvedValue({
+        status: rpc.Api.GetTransactionStatus.FAILED,
+        ledger: 8,
+        resultXdr: { toXDR: () => 'AAAAAA==' },
+      } as unknown as rpc.Api.GetTransactionResponse);
+
+      const result = await service.lookupTransaction('abc');
+
+      expect(result).toMatchObject({ confirmed: false, ledger: 8 });
+      expect(result.error).toMatch(/Transaction failed on-chain/);
+    });
+
     it('reports a non-success status without throwing', async () => {
       jest.spyOn(rpc.Server.prototype, 'getTransaction').mockResolvedValue({
         status: rpc.Api.GetTransactionStatus.NOT_FOUND,
@@ -446,6 +471,49 @@ describe('StellarRpcService', () => {
     });
   });
 
+  describe('feeCharged', () => {
+    it('returns the fee charged by a successful transaction', async () => {
+      jest.spyOn(rpc.Server.prototype, 'getTransaction').mockResolvedValue({
+        status: rpc.Api.GetTransactionStatus.SUCCESS,
+        ledger: 12,
+        resultXdr: { toXDR: () => 'AAAAAA==' },
+        feeCharged: '1234',
+      } as unknown as rpc.Api.GetTransactionResponse);
+
+      expect(await service.feeCharged('abc')).toBe('1234');
+    });
+
+    it('returns null when the fee is not reported', async () => {
+      jest.spyOn(rpc.Server.prototype, 'getTransaction').mockResolvedValue({
+        status: rpc.Api.GetTransactionStatus.SUCCESS,
+        ledger: 12,
+      } as rpc.Api.GetTransactionResponse);
+
+      expect(await service.feeCharged('abc')).toBeNull();
+    });
+
+    it('returns null rather than throwing when the lookup fails', async () => {
+      jest
+        .spyOn(rpc.Server.prototype, 'getTransaction')
+        .mockRejectedValue(new Error('502 bad gateway'));
+
+      expect(await service.feeCharged('abc')).toBeNull();
+    });
+  });
+
+  describe('sleep', () => {
+    it('resolves after the requested delay', async () => {
+      jest.useFakeTimers();
+      try {
+        const pending = (service as any).sleep(1000);
+        jest.advanceTimersByTime(1000);
+        await expect(pending).resolves.toBeUndefined();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+  });
+
   describe('OpenTelemetry manual spans', () => {
     it('records transaction_hash and attempt_count attributes on submit', async () => {
       const mockSpan = {
@@ -508,6 +576,35 @@ describe('StellarRpcService', () => {
       expect(mockSpan.setAttribute).toHaveBeenCalledWith(
         'attempt_count',
         expect.any(Number),
+      );
+      expect(mockSpan.end).toHaveBeenCalled();
+
+      getTracerSpy.mockRestore();
+    });
+
+    it('records transaction_hash attributes on lookupTransaction', async () => {
+      const mockSpan = {
+        setAttribute: jest.fn(),
+        setAttributes: jest.fn(),
+        setStatus: jest.fn(),
+        recordException: jest.fn(),
+        end: jest.fn(),
+      };
+      const api = require('@opentelemetry/api');
+      const getTracerSpy = jest.spyOn(api.trace, 'getTracer').mockReturnValue({
+        startSpan: jest.fn().mockReturnValue(mockSpan),
+      } as any);
+
+      jest.spyOn(rpc.Server.prototype, 'getTransaction').mockResolvedValue({
+        status: rpc.Api.GetTransactionStatus.SUCCESS,
+        ledger: 100,
+      } as rpc.Api.GetTransactionResponse);
+
+      await service.lookupTransaction('lookup-tx-hash');
+
+      expect(mockSpan.setAttribute).toHaveBeenCalledWith(
+        'transaction_hash',
+        'lookup-tx-hash',
       );
       expect(mockSpan.end).toHaveBeenCalled();
 

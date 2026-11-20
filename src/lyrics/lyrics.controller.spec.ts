@@ -2,8 +2,8 @@ import { Reflector } from '@nestjs/core';
 import { Test } from '@nestjs/testing';
 import { LyricsController } from './lyrics.controller';
 import { LyricsService } from './lyrics.service';
-import { CreateLyricsDto } from './dto/create-lyrics.dto';
-import { UpdateLyricsDto } from './dto/update-lyrics.dto';
+import { CreateLyricDto } from './dto/create-lyric.dto';
+import { UpdateLyricDto } from './dto/update-lyric.dto';
 import { Genre, Lyrics } from './entities/lyrics.entity';
 import type { User } from '../users/entities/user.entity';
 import { Role } from '../auth/roles/role.enum';
@@ -130,8 +130,8 @@ describe('LyricsController', () => {
             )) as unknown[];
 
       expect(paramTypes()).toEqual([LyricsService]);
-      expect(paramTypes('create')[0]).toBe(CreateLyricsDto);
-      expect(paramTypes('update')[1]).toBe(UpdateLyricsDto);
+      expect(paramTypes('create')[0]).toBe(CreateLyricDto);
+      expect(paramTypes('update')[1]).toBe(UpdateLyricDto);
     });
   });
 });

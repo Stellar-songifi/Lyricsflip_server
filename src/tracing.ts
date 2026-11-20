@@ -163,3 +163,39 @@ export async function runAsJobSpan<T>(
     span.end();
   }
 }
+
+/**
+ * Re-export of the OpenTelemetry `Span` type. Falls back to a structural
+ * interface when `@opentelemetry/api` is unavailable so that consumers can
+ * still type their spans without a hard dependency at compile time.
+ */
+export type Span = {
+  setAttribute: (key: string, value: unknown) => Span;
+  setAttributes: (attributes: Record<string, unknown>) => Span;
+  setStatus: (status: { code: number; message?: string }) => Span;
+  recordException: (exception: Error | unknown) => void;
+  end: () => void;
+  spanContext: () => { traceId: string; spanId: string; traceFlags: number };
+};
+
+/**
+ * Re-export of the OpenTelemetry `SpanStatusCode` enum. Provides a graceful
+ * fallback with the same numeric values as the upstream enum so callers can
+ * use `SpanStatusCode.OK` / `SpanStatusCode.ERROR` without importing the
+ * package directly.
+ */
+export const SpanStatusCode = (() => {
+  try {
+    const api = require('@opentelemetry/api');
+    if (api && api.SpanStatusCode) {
+      return api.SpanStatusCode;
+    }
+  } catch {
+    // Fall through to the local fallback below.
+  }
+  return {
+    UNSET: 0,
+    OK: 1,
+    ERROR: 2,
+  } as const;
+})();
