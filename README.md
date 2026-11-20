@@ -403,13 +403,21 @@ Each correct guess is meant to be worth 10 XP (`calculateXpGain`). **This is not
 
 - `POST /auth/signup { username (3–20 chars, letters/numbers/underscore), email, password (8–72 chars, upper+lower+digit) }`: the password is hashed with bcrypt (12 rounds), email and username are lowercased/trimmed, and the response is `{ accessToken, refreshToken, user }`.
 - `POST /auth/login { email, password }`: updates `lastLoginAt` and returns `{ accessToken, refreshToken, user }`.
+- `POST /auth/stellar/login { transaction }`: logs in with a linked wallet and returns the same `{ accessToken, refreshToken, user }` shape as the password flow.
 - `POST /auth/refresh { refreshToken }`: exchanges a valid refresh token for a new `{ accessToken, refreshToken }` pair. The presented refresh token is revoked as part of the rotation.
 - `POST /auth/logout { refreshToken }`: revokes a single refresh token.
 - `POST /auth/change-password { currentPassword, newPassword }` (authenticated): changes the password, bumps the user's `tokenVersion` (invalidating every outstanding access token) and revokes all of the user's refresh tokens.
 
+Every signup, login and wallet login records the session's user agent, the client IP (truncated) and an optional `deviceName`, so the new device shows up in `GET /auth/sessions`.
+
 Access tokens are HS256 JWTs signed with `JWT_SECRET`, valid for `JWT_EXPIRES_IN` (default `15m`). The payload is `{ sub: userId, email, username, role, tokenVersion }`; `JwtStrategy` rejects a token whose `tokenVersion` no longer matches the user's. Send the token as `Authorization: Bearer <token>`.
 
 Refresh tokens are opaque random values returned once and stored server-side only as a SHA-256 hash (`refresh_tokens` table), each valid for 30 days unless revoked sooner by `/auth/logout`, a refresh (rotation revokes the token that was presented), or a password change.
+
+Rotation is **atomic**: the presented token is revoked with a conditional `UPDATE … WHERE revoked_at IS NULL`, and a new pair is issued only if that update affected a row. Two parallel refreshes with the same token therefore produce exactly one new pair. Each refresh token also carries a `familyId`. If a token that has already been rotated is presented again, the whole family is revoked, the user's `tokenVersion` is bumped (signing out every session) and a security audit event is written.
+
+Password-like fields never reach the audit log: `AuditInterceptor` runs the recursive, pattern-based `redact()` from `src/common/utils/redact.util.ts`, which case-insensitively matches keys such as `password`, `currentPassword`, `newPassword`, `token`, `secret`, `xdr`/`transaction`, `authorization` and `seed` at any depth and replaces their values with `***REDACTED***`. A migration scrubs those fields from any `audit_logs.payload` rows written before the fix.
+=======
 
 ### Stellar wallets (SEP-10)
 
@@ -429,7 +437,7 @@ sequenceDiagram
         S-->>C: { stellarAddress, verifiedAt }
     else log in with the wallet alone
         C->>S: POST /auth/stellar/login { transaction }
-        S-->>C: { accessToken, user }   (same JWT as the password flow)
+        S-->>C: { accessToken, refreshToken, user }   (same tokens as the password flow)
     end
 ```
 
@@ -791,10 +799,10 @@ Swagger at `/api/docs` (when `SWAGGER_ENABLED` is on) has the request and respon
 
 | Method & path                   | Access | Body                                   | Returns                            |
 | ------------------------------- | ------ | -------------------------------------- | ---------------------------------- |
-| `POST /auth/signup`             | public | `{ username, email, password }`        | `{ accessToken, user }`            |
-| `POST /auth/login`              | public | `{ email, password }`                  | `{ accessToken, user }`            |
+| `POST /auth/signup`             | public | `{ username, email, password }`        | `{ accessToken, refreshToken, user }` |
+| `POST /auth/login`              | public | `{ email, password }`                  | `{ accessToken, refreshToken, user }` |
 | `POST /auth/stellar/challenge`  | public | `{ account: "G..." }`                  | `{ transaction, network_passphrase, server_account_id }` |
-| `POST /auth/stellar/login`      | public | `{ transaction }` (signed)             | `{ accessToken, user }`            |
+| `POST /auth/stellar/login`      | public | `{ transaction }` (signed)             | `{ accessToken, refreshToken, user }` |
 | `POST /auth/stellar/link`       | auth   | `{ transaction }` (signed)             | `{ stellarAddress, verifiedAt }`   |
 | `GET /auth/stellar/wallet`      | auth   | –                                      | `{ stellarAddress, verifiedAt }`   |
 | `DELETE /auth/stellar/wallet`   | auth   | –                                      | `{ message }`                      |
@@ -935,7 +943,7 @@ Writes update the per-ID entry. Broader invalidation (`clearCache`) is currently
 
 ## Logging and errors
 
-- `LoggingInterceptor` logs every request and response, with method, URL, status and duration. Top-level `password`, `token`, `secret`, `key` and `authorization` fields are redacted.
+- `LoggingInterceptor` logs every request and response, with method, URL, status and duration. Top-level `password`, `token`, `secret`, `key` and `authorization` fields are redacted. `AuditInterceptor` uses the stricter recursive `redact()` described in [Audit logging](#audit-logging).
 - `AllExceptionsFilter` gives errors the shape shown in [Request lifecycle](#request-lifecycle) and logs them with context.
 - TypeORM logs queries and errors, and warns about queries slower than 250 ms.
 - `src/common/services/logger.service.ts` provides a Winston logger with daily-rotating files, but it is not yet registered as the app logger (issue #114).
@@ -956,13 +964,14 @@ All date columns are `timestamptz` and connections pin `timezone=UTC`.
 
 ## Audit logging
 
-Admin and settlement actions leave a durable row in `audit_logs` (actor, action, target type/ID, a sanitized request payload, IP and timestamp), so disputes over a deletion or a settlement can be resolved against a record instead of guesswork.
+Admin and settlement actions leave a durable row in `audit_logs` (actor, action, target type/ID, a sanitized request payload, IP and timestamp), so disputes over a deletion or a settlement can be resolved against a record instead of guesswork. The payload is sanitized with the recursive, pattern-based `redact()` (`src/common/utils/redact.util.ts`): any key matching `/pass(word)?/`, `/token/`, `/secret/`, `/xdr|transaction/`, `/authorization/` or `/seed/`, case-insensitively and at any depth, is stored as `***REDACTED***`. That includes `currentPassword` and `newPassword` on `POST /auth/change-password`.
 
 A handler opts in with `@Audited({ action, targetType })`, on a controller that also has `@UseInterceptors(AuditInterceptor)`; `AuditInterceptor` writes the row after the handler succeeds (never on a failed request) and never blocks or fails the response if the write itself fails. Currently applied to:
 
 - `DELETE /admin/users/:id`, `DELETE /admin/lyrics/:id`
 - `PUT /game-sessions/:id/complete-wagered`, `POST /game-sessions/:id/wager/reconcile`
 - `POST /auth/stellar/link`, `DELETE /auth/stellar/wallet`
+- `POST /auth/change-password` (both password fields are redacted in the stored payload)
 
 `GET /admin/audit-logs` (admin-only) lists rows with `actorId`, `action`, `targetType`, `targetId`, `limit` and `offset` filters. There is no write or delete endpoint - the table is append-only from the API's perspective; only direct database access can alter a row.
 
@@ -1054,3 +1063,12 @@ Do not run stellar mode with real value until the P0 issues are closed.
 
 <!-- handsoff-issue-336 -->
 - #336: [R2-81] Friends and direct challenges (first-round #94, never implemented)
+
+<!-- handsoff-issue-456 -->
+- #456: [R3-34] Plaintext passwords are written to `audit_logs` again
+
+<!-- handsoff-issue-458 -->
+- #458: [R3-36] Login and signup never return a refresh token, so `/auth/refresh` cannot be reached
+
+<!-- handsoff-issue-459 -->
+- #459: [R3-37] Refresh-token rotation can be raced, and token reuse goes undetected
