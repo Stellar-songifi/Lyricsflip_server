@@ -23,6 +23,14 @@ Closes #<!-- issue number -->
   - [ ] No documentation updates required (explain why below):
     <!-- Rationale if this PR does not modify routes, env vars, or behavior -->
 
+## Scope
+
+<!-- Each issue lists the files it is expected to touch. List any files this PR changes that are NOT in that list, and explain why. Write "None" if the PR stays within scope. -->
+
+Files outside the issue's list and why:
+
+- ...
+
 ## Checklist
 
 - [ ] All unit tests pass (`npm test`)
@@ -34,6 +42,8 @@ Closes #<!-- issue number -->
 - [ ] Relevant documentation (README, `docs/`, inline comments) is updated
 - [ ] No secrets, credentials, private keys, or `.env` files are committed
 - [ ] All acceptance criteria listed on the linked issue are met
+- [ ] No public method was removed (or the removal is justified above and documented)
+- [ ] **Verified on main at `<sha>`**: <!-- commit hash on main that satisfies the linked issue -->
 
 ## How to test
 

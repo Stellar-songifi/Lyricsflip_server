@@ -52,8 +52,10 @@ jobs:
 
       - name: Type-check
         run: npx tsc --noEmit
-      - name: Dead code report (knip, report only)
-        run: npx --yes knip@5 --include files,exports || true
+
+      # Blocking: an unused file or export fails the PR (#452).
+      - name: Dead code check (knip)
+        run: npx knip
 
       - name: Tests with coverage
         run: npm test -- --coverage
@@ -65,6 +67,65 @@ jobs:
       # crashes `node dist/main` (#355).
       - name: Start the compiled build (smoke test)
         run: bash scripts/smoke-start.sh
+
+  # Advisory only (#455): warns when a PR changes many lines in a file its
+  # linked issue does not name. Never fails the build.
+  scope-warning:
+    name: PR scope warning
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    env:
+      # Files outside the issue's list may change up to this many lines.
+      SCOPE_MAX_LINES: '40'
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      PR_BODY: ${{ github.event.pull_request.body }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Warn on out-of-scope changes
+        run: |
+          set -euo pipefail
+          issue=$(printf '%s' "$PR_BODY" | grep -oiE '(closes|fixes|resolves|refs?)[[:space:]]+#[0-9]+' | grep -oE '[0-9]+' | head -n1 || true)
+          if [ -z "${issue:-}" ]; then
+            echo "No linked issue found in the PR body; skipping scope check."
+            exit 0
+          fi
+          echo "Linked issue: #$issue"
+
+          body=$(gh api "repos/$REPO/issues/$issue" --jq '.body // ""')
+          # The issue lists its files as backticked paths under a "Files:" line.
+          allowed=$(printf '%s\n' "$body" | grep -iE '^\s*\*?\*?Files' | grep -oE '`[^`]+`' | tr -d '`' | sort -u || true)
+          echo "Files named by the issue:"
+          printf '%s\n' "$allowed"
+
+          git diff --numstat "$BASE_SHA" "$HEAD_SHA" > numstat.txt
+          warned=0
+          while IFS=$'\t' read -r added deleted file; do
+            [ -n "${file:-}" ] || continue
+            [ "$file" = "numstat.txt" ] && continue
+            if printf '%s\n' "$allowed" | grep -qxF "$file"; then
+              continue
+            fi
+            changed=$(( ${added:-0} + ${deleted:-0} ))
+            if [ "$changed" -gt "$SCOPE_MAX_LINES" ]; then
+              echo "::warning file=$file::Changes $changed lines in $file, which issue #$issue does not list. Explain this in the PR."
+              warned=1
+            fi
+          done < numstat.txt
+          if [ "$warned" -eq 0 ]; then
+            echo "All out-of-scope changes are within $SCOPE_MAX_LINES lines."
+          fi
 
   docker-build:
     name: Docker image builds and migrates an empty database

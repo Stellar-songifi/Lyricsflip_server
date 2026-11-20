@@ -13,11 +13,14 @@ Thank you for your interest in contributing! This guide covers everything you ne
   - [Mock mode (default)](#mock-mode-default)
   - [Stellar mode (testnet)](#stellar-mode-testnet)
 - [Testing](#testing)
+- [Git hooks (husky + lint-staged)](#git-hooks-husky--lint-staged)
 - [Commit conventions](#commit-conventions)
 - [Branch naming](#branch-naming)
 - [Migration rules](#migration-rules)
 - [Definition of done](#definition-of-done)
 - [Opening a pull request](#opening-a-pull-request)
+- [Staying inside your issue's scope](#staying-inside-your-issues-scope)
+- [Closing an issue](#closing-an-issue)
 
 ---
 
@@ -147,6 +150,36 @@ All 34 unit suites must pass before opening a PR. The CI pipeline runs lint, typ
 
 ---
 
+## Git hooks (husky + lint-staged)
+
+`npm install` installs [husky](https://typicode.github.io/husky/) hooks automatically (via the `prepare` script). They catch problems before they reach CI:
+
+| Hook | What runs | Why |
+|---|---|---|
+| `pre-commit` | `lint-staged` → `eslint --fix` and `prettier --check` on staged `.ts` files | Refuses a commit that does not parse or does not match formatting |
+| `pre-push` | `tsc --noEmit -p tsconfig.json` | Refuses a push that does not type-check |
+
+If a hook fails, fix the reported file and stage it again. Do not work around a failing hook by disabling it.
+
+### Bypassing a hook in an emergency
+
+Sometimes you need to commit or push while a hook is broken (for example, a hook itself is failing on an unrelated file). You can skip the hooks:
+
+```bash
+# Skip pre-commit and commit-msg hooks for a single commit
+git commit --no-verify -m "fix(auth): ..."
+
+# Skip the pre-push hook for a single push
+git push --no-verify
+
+# Or disable husky entirely for one command
+HUSKY=0 git commit -m "fix(auth): ..."
+```
+
+**CI is still the backstop.** Skipping a hook only skips the local check — the same lint, type-check, and test jobs run on every PR and will fail there. If you bypass a hook, mention it in the PR description so reviewers know to look closely.
+
+---
+
 ## Commit conventions
 
 This project uses [Conventional Commits](https://www.conventionalcommits.org/). Every commit message must follow this format:
@@ -234,6 +267,8 @@ A contribution is ready to merge when all of the following are true:
 - [ ] "Docs updated?" checkbox in the pull request template is completed.
 - [ ] No secrets, credentials, or `.env` files are committed.
 - [ ] All acceptance criteria listed on the linked issue are met.
+- [ ] Every changed file is listed in the **Files** section of the linked issue, or its inclusion is justified in the PR template.
+- [ ] No public method, route, or exported symbol was removed without being called out in the PR description.
 
 ---
 
@@ -245,6 +280,30 @@ A contribution is ready to merge when all of the following are true:
 4. Open a PR against `main` on the upstream repository (`Stellar-songifi/Lyricsflip_server`).
 5. Fill in the pull request template. Link the issue with `Closes #<number>`.
 6. Respond to review feedback promptly. The maintainers aim to review PRs within a few days.
+
+---
+
+## Staying inside your issue's scope
+
+Every issue lists the files it expects to touch under **Files**. A pull request must stay inside that list.
+
+- If you need to change a file that is **not** in the issue's list, add it to the **"Files outside the issue's list and why"** section of the pull request template and explain the reason. A CI job warns when a PR changes more than a handful of lines in a file its linked issue does not name.
+- Do not remove or rename a public method, route, or exported symbol as a side effect of an unrelated change. The PR template has a checkbox confirming this; if you must remove one, say so explicitly in the description.
+- If the scope of the issue is genuinely too small, comment on the issue first and get agreement before expanding it.
+
+Keeping PRs scoped makes review faster and prevents one issue's fix from silently undoing another's.
+
+---
+
+## Closing an issue
+
+When you close an issue, leave evidence that it is actually fixed on `main`:
+
+- Add a comment with the commit SHA that fixed it, or link the PR that did.
+- Tick the **"Verified on main at `<sha>`"** checkbox in the issue's acceptance criteria, replacing `<sha>` with the commit you verified against.
+- If the fix was later undone, reopen the issue and link the follow-up issue that supersedes it.
+
+An issue is only done when someone can point at the commit on `main` that makes its acceptance criteria true.
 
 ### Security checks
 
