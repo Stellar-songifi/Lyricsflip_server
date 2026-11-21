@@ -797,9 +797,10 @@ export class UsersService {
     const safeOffset = Math.max(offset, 0);
 
     const rows = await this.userRepository.query(
-      `SELECT id, username, xp, level, level_title AS "levelTitle",
+      `SELECT id, username, xp, level, "levelTitle",
               RANK() OVER (ORDER BY xp DESC) AS rank
          FROM users
+        WHERE "isActive" = true
         ORDER BY xp DESC, id ASC
         LIMIT $1 OFFSET $2`,
       [safeLimit, safeOffset],
