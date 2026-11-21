@@ -52,7 +52,7 @@ import { PasswordResetToken } from '../auth/entities/password-reset-token.entity
 import { Notification } from '../notifications/entities/notification.entity';
 import { AuditLog } from '../audit/entities/audit-log.entity';
 import { DeleteAccountDto } from './dto/delete-account.dto';
-import { StellarAuthService } from '../auth/stellar-auth.service';
+import { StellarAuthService } from '../auth/services/stellar-auth.service';
 
 /** Public profiles are cached briefly; they change only after a match. */
 const PUBLIC_PROFILE_CACHE_TTL_MS = 60_000;
@@ -379,7 +379,6 @@ export class UsersService {
       if (!user) {
         throw new NotFoundException(`User with ID ${id} not found`);
       }
-    const user = await this.findOne(id);
 
       const before = { role: user.role, isActive: user.isActive };
       const { username } = updateUserDto;
