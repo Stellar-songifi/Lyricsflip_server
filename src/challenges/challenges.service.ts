@@ -2,7 +2,6 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
-  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -66,8 +65,6 @@ export interface DailyLeaderboardEntry {
 
 @Injectable()
 export class ChallengesService {
-  private readonly logger = new Logger(ChallengesService.name);
-
   /** The current day's lyric ids, so the day's set is read from the DB once. */
   private cached?: { date: string; lyricIds: number[] };
 
@@ -140,9 +137,7 @@ export class ChallengesService {
    * completion check are computed from the still-active ids only. The lyric is
    * simply excluded from today's playable set; tomorrow's draw is unaffected.
    */
-  private async getActiveDailyLyricIds(
-    lyricIds: number[],
-  ): Promise<number[]> {
+  private async getActiveDailyLyricIds(lyricIds: number[]): Promise<number[]> {
     if (lyricIds.length === 0) return [];
 
     const active = await this.lyricsRepository.find({
@@ -197,6 +192,33 @@ export class ChallengesService {
     };
   }
 
+  async getShare(userId: string): Promise<string> {
+    const date = utcDay();
+    const lyricIds = await this.getDailyLyricIds(date);
+    const [attempts, firstDay] = await Promise.all([
+      this.attemptRepository.find({ where: { userId, challengeDate: date } }),
+      this.challengeRepository.findOne({
+        where: {},
+        order: { date: 'ASC' },
+        select: { date: true },
+      }),
+    ]);
+    const dayNumber =
+      1 + (Date.parse(date) - Date.parse(firstDay?.date ?? date)) / 86_400_000;
+    const byLyric = new Map(
+      attempts.map((attempt) => [attempt.lyricId, attempt]),
+    );
+    const score = attempts.reduce((sum, attempt) => sum + attempt.points, 0);
+    const grid = lyricIds.map((id) => {
+      const attempt = byLyric.get(id);
+      if (!attempt) return '⬜';
+      return attempt.isCorrect ? '🟩' : '🟥';
+    });
+
+    return `Lyricsflip Daily #${dayNumber} · ${score} pts
+${grid.join('')}`;
+  }
+
   /**
    * Scores the caller's single attempt at one of today's lyrics.
    *
@@ -215,31 +237,64 @@ export class ChallengesService {
       );
     }
 
-    const validation = this.gameService.validateGuess(dto.guessValue);
-    if (!validation.isValid) {
-      throw new BadRequestException(validation.reason);
+    const guessValue = dto.guessValue.trim();
+    if (
+      guessValue.length < GAME_CONSTANTS.LIMITS.MIN_GUESS_LENGTH ||
+      guessValue.length > GAME_CONSTANTS.LIMITS.MAX_GUESS_LENGTH
+    ) {
+      throw new BadRequestException('Invalid guess length');
     }
 
     const result = await this.gameService.checkGuess({
       lyricId: dto.lyricId,
       guessType: dto.guessType,
-      guessValue: dto.guessValue,
+      guessValue,
     });
 
     // Enforce the same answer window as solo play: a guess submitted after the
     // window has elapsed scores 0 regardless of correctness.
     const withinWindow = this.isWithinAnswerWindow(dto);
-    const points = withinWindow ? result.points ?? 0 : 0;
+    const points = withinWindow ? (result.points ?? 0) : 0;
 
+    let bestDailyStreak: number | undefined;
     try {
-      await this.attemptRepository.insert({
-        userId,
-        challengeDate: date,
-        lyricId: dto.lyricId,
-        guessType: dto.guessType,
-        isCorrect: result.isCorrect,
-        points,
-      });
+      bestDailyStreak = await this.attemptRepository.manager.transaction(
+        async (manager) => {
+          const updated = await manager
+            .createQueryBuilder()
+            .update(User)
+            .set({
+              lastDailyAttemptDate: date,
+              dailyStreak: () =>
+                'CASE WHEN "lastDailyAttemptDate" = CAST(:date AS date) - 1 THEN "dailyStreak" + 1 ELSE 1 END',
+              bestDailyStreak: () =>
+                'GREATEST("bestDailyStreak", CASE WHEN "lastDailyAttemptDate" = CAST(:date AS date) - 1 THEN "dailyStreak" + 1 ELSE 1 END)',
+            })
+            .where('id = :userId', { userId })
+            .andWhere(
+              '("lastDailyAttemptDate" IS NULL OR "lastDailyAttemptDate" < CAST(:date AS date))',
+              { date },
+            )
+            .returning(['bestDailyStreak'])
+            .execute();
+
+          if (date !== utcDay()) {
+            throw new ConflictException('The daily challenge has changed');
+          }
+
+          await manager.insert(DailyChallengeAttempt, {
+            userId,
+            challengeDate: date,
+            lyricId: dto.lyricId,
+            guessType: dto.guessType,
+            isCorrect: result.isCorrect,
+            points,
+          });
+
+          return (updated.raw as { bestDailyStreak: number }[])[0]
+            ?.bestDailyStreak;
+        },
+      );
     } catch (error) {
       if ((error as { code?: string }).code === UNIQUE_VIOLATION) {
         throw new ConflictException(
@@ -247,6 +302,10 @@ export class ChallengesService {
         );
       }
       throw error;
+    }
+
+    if (bestDailyStreak !== undefined && bestDailyStreak >= 7) {
+      this.events.emit('user.daily_streak', { userId, bestDailyStreak });
     }
 
     if (result.isCorrect && withinWindow) {
@@ -294,7 +353,7 @@ export class ChallengesService {
     if (Number.isNaN(issuedMs)) return true;
 
     const elapsed = Date.now() - issuedMs;
-    return elapsed <= GAME_CONSTANTS.LIMITS.ANSWER_WINDOW_MS;
+    return elapsed <= GAME_CONSTANTS.LIMITS.ROUND_ANSWER_WINDOW_SECONDS * 1_000;
   }
 
   /** Today's (or another day's) ranking by points, then correct answers. */
@@ -342,12 +401,21 @@ export class ChallengesService {
     const points = attempts.reduce((sum, attempt) => sum + attempt.points, 0);
     const correct = attempts.filter((attempt) => attempt.isCorrect).length;
 
-    const payload: ChallengeCompletedNotificationPayload = {
+    const payload = {
       userId,
       challengeDate: date,
       points,
       correct,
       total: attempts.length,
+      challengeName: `Daily Challenge (${date})`,
+      streakCount: correct,
+      timestamp: new Date(),
+      message: `Daily Challenge complete: ${correct}/${attempts.length} correct, ${points} pts`,
+    } satisfies ChallengeCompletedNotificationPayload & {
+      challengeDate: string;
+      points: number;
+      correct: number;
+      total: number;
     };
 
     this.events.emit('user.completed_challenge', payload);

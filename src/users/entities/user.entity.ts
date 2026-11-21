@@ -1,4 +1,4 @@
-import { Exclude, Expose } from 'class-transformer';
+import { Exclude, Expose, Transform } from 'class-transformer';
 import {
   Entity,
   PrimaryGeneratedColumn,
@@ -11,6 +11,7 @@ import {
 import { GameSession } from '../../game-sessions/entities/game-session.entity';
 import { Role } from '../../auth/roles/role.enum';
 import { PRIVATE_USER_GROUPS } from '../user-serialization';
+import { currentDailyStreak } from '../../challenges/daily-seed.util';
 
 export enum UserLevel {
   GOSSIP_ROOKIE = 'Gossip Rookie',
@@ -95,6 +96,21 @@ export class User {
 
   @Column({ default: 0 })
   xp: number; // total experience points
+
+  @Transform(
+    ({ obj }: { obj: User }) =>
+      currentDailyStreak(obj.dailyStreak, obj.lastDailyAttemptDate),
+    { toPlainOnly: true },
+  )
+  @Column({ type: 'int', default: 0 })
+  dailyStreak: number;
+
+  @Column({ type: 'int', default: 0 })
+  bestDailyStreak: number;
+
+  @Exclude()
+  @Column({ type: 'date', nullable: true })
+  lastDailyAttemptDate: string | null;
 
   @Column({ default: 1 })
   level: number; // numeric level (1 = Rookie, etc.)
@@ -218,6 +234,6 @@ export class User {
   preferredDecade?: MusicDecade;
 
   @Exclude()
-  @OneToMany(() => GameSession, gameSession => gameSession.player)
+  @OneToMany(() => GameSession, (gameSession) => gameSession.player)
   gameSessions: GameSession[];
 }

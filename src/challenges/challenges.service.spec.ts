@@ -2,6 +2,10 @@ import { ConflictException, NotFoundException } from '@nestjs/common';
 import { ChallengesService } from './challenges.service';
 import { GuessType } from '../game/dto/guess.dto';
 
+// The daily challenge uses the mock game scorer below.
+jest.mock('../game/game.service', () => ({ GameLogicService: class {} }));
+jest.mock('../xp-level/xp-level.service', () => ({ XpLevelService: class {} }));
+
 describe('ChallengesService', () => {
   const day = '2026-09-26';
   const lyricIds = [4, 8, 15];
@@ -34,13 +38,28 @@ describe('ChallengesService', () => {
       attempts.push(row);
     }),
   };
+  const updatePlayer = {
+    update: jest.fn().mockReturnThis(),
+    set: jest.fn().mockReturnThis(),
+    where: jest.fn().mockReturnThis(),
+    andWhere: jest.fn().mockReturnThis(),
+    returning: jest.fn().mockReturnThis(),
+    execute: jest.fn(async () => ({ raw: [] })),
+  };
+  const transactionalAttempts = {
+    ...attemptRepo,
+    manager: {
+      transaction: async (run: (manager: unknown) => Promise<unknown>) =>
+        run({
+          createQueryBuilder: () => updatePlayer,
+          insert: (_entity: unknown, row: unknown) => attemptRepo.insert(row),
+        }),
+    },
+  };
   const lyricsRepo = {
-    find: jest.fn(async () =>
-      activeLyricIds.map((id) => ({ id })),
-    ),
+    find: jest.fn(async () => activeLyricIds.map((id) => ({ id }))),
   };
   const game = {
-    validateGuess: jest.fn(() => ({ isValid: true })),
     checkGuess: jest.fn(async () => ({
       isCorrect: true,
       correctAnswer: 'Artist',
@@ -54,7 +73,7 @@ describe('ChallengesService', () => {
   const service = () =>
     new ChallengesService(
       challengeRepo as any,
-      attemptRepo as any,
+      transactionalAttempts as any,
       lyricsRepo as any,
       game as any,
       xp as any,
@@ -99,6 +118,17 @@ describe('ChallengesService', () => {
       ConflictException,
     );
     expect(xp.handleCorrectGuess).toHaveBeenCalledTimes(1);
+  });
+
+  it('shares only the day number, score and outcome squares in lyric order', async () => {
+    stored = { date: '2026-09-24', lyricIds };
+    attempts = [
+      { lyricId: 15, isCorrect: false, points: 0, guessValue: 'Wrong artist' },
+      { lyricId: 4, isCorrect: true, points: 100, correctAnswer: 'Artist' },
+    ];
+    await expect(service().getShare(userId)).resolves.toBe(
+      'Lyricsflip Daily #3 · 100 pts\n🟩⬜🟥',
+    );
   });
 
   it("rejects a lyric that is not in today's set", async () => {
