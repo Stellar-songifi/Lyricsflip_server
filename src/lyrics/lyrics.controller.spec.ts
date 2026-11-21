@@ -64,22 +64,22 @@ describe('LyricsController', () => {
     });
 
     it('from GET /lyrics', async () => {
-      const [result] = await controller.findAll(player);
+      const [result] = await controller.findAll(player, {});
       expectNoAnswer(result);
     });
 
     it('from GET /lyrics/random', async () => {
-      const [result] = await controller.getRandomLyrics(player);
+      const [result] = await controller.getRandomLyrics(player, {});
       expectNoAnswer(result);
     });
 
     it('from GET /lyrics/genre/:genre', async () => {
-      const [result] = await controller.getLyricsByGenre('Pop', player);
+      const [result] = await controller.getLyricsByGenre('Pop', player, {});
       expectNoAnswer(result);
     });
 
     it('from GET /lyrics/decade/:decade', async () => {
-      const [result] = await controller.getLyricsByDecade('2010', player);
+      const [result] = await controller.getLyricsByDecade('2010', player, {});
       expectNoAnswer(result);
     });
 
@@ -87,6 +87,38 @@ describe('LyricsController', () => {
       const roles = new Reflector().get<Role[]>(
         ROLES_KEY,
         LyricsController.prototype.getLyricsByArtist,
+      );
+      expect(roles).toEqual([Role.Admin]);
+    });
+
+    it('because GET /lyrics is admin only', () => {
+      const roles = new Reflector().get<Role[]>(
+        ROLES_KEY,
+        LyricsController.prototype.findAll,
+      );
+      expect(roles).toEqual([Role.Admin]);
+    });
+
+    it('because GET /lyrics/random is admin only', () => {
+      const roles = new Reflector().get<Role[]>(
+        ROLES_KEY,
+        LyricsController.prototype.getRandomLyrics,
+      );
+      expect(roles).toEqual([Role.Admin]);
+    });
+
+    it('because GET /lyrics/genre/:genre is admin only', () => {
+      const roles = new Reflector().get<Role[]>(
+        ROLES_KEY,
+        LyricsController.prototype.getLyricsByGenre,
+      );
+      expect(roles).toEqual([Role.Admin]);
+    });
+
+    it('because GET /lyrics/decade/:decade is admin only', () => {
+      const roles = new Reflector().get<Role[]>(
+        ROLES_KEY,
+        LyricsController.prototype.getLyricsByDecade,
       );
       expect(roles).toEqual([Role.Admin]);
     });

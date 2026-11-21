@@ -186,3 +186,6 @@ export class CreateLyricDto {
   @Max(5)
   difficulty?: number;
 }
+
+/** Alias kept for backward compatibility with specs and service imports. */
+export { CreateLyricDto as CreateLyricsDto };
