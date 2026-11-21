@@ -1081,3 +1081,6 @@ Do not run stellar mode with real value until the P0 issues are closed.
 
 <!-- handsoff-issue-534 -->
 - #534: [R3-112] Seasons, with seasonal leaderboards and rewards
+
+<!-- handsoff-issue-535 -->
+- #535: [R3-113] Multi-round rooms with a host-controlled round loop
