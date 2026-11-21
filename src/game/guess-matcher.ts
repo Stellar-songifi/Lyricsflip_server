@@ -30,4 +30,4 @@ export function matchGuess(
 // Keep the constants import referenced for downstream consumers that relied
 // on this module for scoring thresholds.
 export const MIN_PARTIAL_MATCH_LENGTH =
-  GAME_CONSTANTS.MATCHING.MIN_PARTIAL_MATCH_LENGTH;
+  GAME_CONSTANTS.VALIDATION.MIN_PARTIAL_MATCH_LENGTH;

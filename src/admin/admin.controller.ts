@@ -35,9 +35,10 @@ import {
   GrantMockBalanceMode,
 } from './dto/grant-mock-balance.dto';
 import { AdminLyricQueryDto, AdminUserQueryDto } from './dto/admin-query.dto';
-import { GetUser } from '../auth/decorators/get-user.decorator';
-import { AdminReportQueryDto } from './dto/admin-report-query.dto';
-import { ResolveReportDto } from './dto/resolve-report.dto';
+import {
+  AdminPlayerReportQueryDto,
+  ResolvePlayerReportDto,
+} from '../moderation/player-report.dto';
 import { GetUser } from '../auth/decorators/user.decorator';
 import { User } from '../users/entities/user.entity';
 
@@ -48,6 +49,21 @@ import { User } from '../users/entities/user.entity';
 @ApiBearerAuth('JWT-auth')
 export class AdminController {
   constructor(private readonly adminService: AdminService) {}
+
+  @Get('reports')
+  findAllReports(@Query() query: AdminPlayerReportQueryDto) {
+    return this.adminService.findAllReports(query);
+  }
+
+  @Post('reports/:id/resolve')
+  @Audited({ action: 'admin.player-report.resolve', targetType: 'player-report' })
+  resolveReport(
+    @Param('id', ParseUUIDPipe) id: string,
+    @GetUser() admin: User,
+    @Body() dto: ResolvePlayerReportDto,
+  ) {
+    return this.adminService.resolveReport(id, admin.id, dto);
+  }
 
   // --- User Management ---
   @Get('users')

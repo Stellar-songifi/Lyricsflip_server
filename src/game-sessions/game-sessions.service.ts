@@ -36,6 +36,7 @@ import type { WagerResult } from '../tokens/services/wager.service';
 import type { UnsignedTransaction } from '../stellar/services/stellar-rpc.service';
 import { sanitizeForDisplay } from '../common/utils/sanitize.util';
 import { JobLockService } from '../jobs/job-lock.service';
+import { assertPlayersCanInteract } from '../moderation/player-blocks';
 
 /**
  * A created session, plus the wager handshake when there is one.
@@ -114,6 +115,14 @@ export class GameSessionsService {
       if (player.id === playerTwoId) {
         throw new BadRequestException('Cannot play against yourself');
       }
+    }
+
+    if (playerTwoId) {
+      await assertPlayersCanInteract(
+        this.userRepository.manager,
+        player.id,
+        playerTwoId,
+      );
     }
 
     // Validate wagered game requirements
@@ -264,6 +273,15 @@ export class GameSessionsService {
       throw new GoneException('This invitation has expired');
     }
 
+    if (!gameSession.player) {
+      throw new ForbiddenException('This interaction is unavailable');
+    }
+    await assertPlayersCanInteract(
+      this.userRepository.manager,
+      gameSession.player.id,
+      user.id,
+    );
+
     if (!this.isWagered(gameSession)) {
       gameSession.status = GameSessionStatus.IN_PROGRESS;
       return this.gameSessionRepository.save(gameSession);
@@ -320,6 +338,7 @@ export class GameSessionsService {
   ): Promise<GameSession> {
     const gameSession = await this.gameSessionRepository.findOne({
       where: { id: sessionId },
+      relations: { player: true },
     });
 
     if (!gameSession) {
@@ -411,6 +430,13 @@ export class GameSessionsService {
 
   async remove(id: string, user: User): Promise<void> {
     await this.findOne(id, user);
+    const [tournamentMatch] = await this.gameSessionRepository.query<unknown[]>(
+      'SELECT 1 FROM tournament_matches WHERE "sessionId" = $1 AND "finishedAt" IS NULL',
+      [id],
+    );
+    if (tournamentMatch) {
+      throw new ConflictException('An active tournament session cannot be deleted');
+    }
 
     // Deleting the session would orphan a pot that still holds stakes.
     const wager = await this.wagerService.getWagerBySessionId(id);

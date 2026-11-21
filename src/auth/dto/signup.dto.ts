@@ -1,11 +1,12 @@
 import {
   IsEmail,
+  IsOptional,
   IsString,
   MinLength,
   MaxLength,
   Matches,
 } from 'class-validator';
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsUsername,
   USERNAME_RULE,
@@ -41,4 +42,12 @@ export class SignupDto {
       'Password must contain at least one uppercase letter, one lowercase letter and one number',
   })
   password: string;
+
+  @ApiPropertyOptional({
+    description: 'Referral code shared by an existing player',
+  })
+  @IsOptional()
+  @IsString()
+  @Matches(/^[a-fA-F0-9]{16}$/)
+  referralCode?: string;
 }

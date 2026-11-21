@@ -1,6 +1,10 @@
+import { CreatePlayerReportDto } from '../moderation/player-report.dto';
 import {
   Controller,
   Get,
+  Post,
+  HttpCode,
+  HttpStatus,
   Body,
   Patch,
   Param,
@@ -46,6 +50,12 @@ export class UsersController {
   @ApiResponse({ status: 403, description: 'Not an admin.' })
   findAll(@Query() { limit, offset }: PaginationQueryDto) {
     return this.usersService.findAll(limit, offset);
+  }
+
+  @Get('me/referrals')
+  @ApiOperation({ summary: 'Get your referral code and signup count' })
+  getMyReferrals(@GetUser() user: User) {
+    return this.usersService.getReferrals(user.id);
   }
 
   /**
@@ -231,6 +241,29 @@ export class UsersController {
   @ApiResponse({ status: 403, description: 'Not an admin.' })
   async findOne(@Param('id', ParseUUIDPipe) id: string): Promise<User> {
     return this.usersService.findOne(id);
+  }
+
+  @Post(':id/report')
+  @UseInterceptors(AuditInterceptor)
+  @Audited({ action: 'user.player.report', targetType: 'user' })
+  reportPlayer(
+    @GetUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() report: CreatePlayerReportDto,
+  ) {
+    return this.usersService.reportPlayer(user.id, id, report);
+  }
+
+  @Post(':id/block')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  block(@GetUser() user: User, @Param('id', ParseUUIDPipe) id: string) {
+    return this.usersService.blockPlayer(user.id, id);
+  }
+
+  @Delete(':id/block')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  unblock(@GetUser() user: User, @Param('id', ParseUUIDPipe) id: string) {
+    return this.usersService.unblockPlayer(user.id, id);
   }
 
   @Patch(':id')

@@ -7,6 +7,8 @@ import {
   UpdateDateColumn,
   Index,
   OneToMany,
+  ManyToOne,
+  JoinColumn,
 } from 'typeorm';
 import { GameSession } from '../../game-sessions/entities/game-session.entity';
 import { Role } from '../../auth/roles/role.enum';
@@ -82,6 +84,29 @@ export class User {
 
   @Column({ unique: true })
   username: string;
+
+  @Exclude()
+  @Index('IDX_users_referral_code', { unique: true })
+  @Column({
+    type: 'varchar',
+    length: 16,
+    select: false,
+    default: () => 'generate_referral_code()',
+  })
+  referralCode: string;
+
+  @Exclude()
+  @Index('IDX_users_referred_by')
+  @Column({ type: 'uuid', nullable: true, select: false })
+  referredBy: string | null;
+
+  @Exclude()
+  @ManyToOne(() => User, { onDelete: 'SET NULL' })
+  @JoinColumn({
+    name: 'referredBy',
+    foreignKeyConstraintName: 'FK_users_referrer',
+  })
+  referrer?: User | null;
 
   @Expose({ groups: PRIVATE_USER_GROUPS })
   @Column({ type: 'varchar', length: 255, nullable: true })
@@ -218,6 +243,6 @@ export class User {
   preferredDecade?: MusicDecade;
 
   @Exclude()
-  @OneToMany(() => GameSession, gameSession => gameSession.player)
+  @OneToMany(() => GameSession, (gameSession) => gameSession.player)
   gameSessions: GameSession[];
 }
