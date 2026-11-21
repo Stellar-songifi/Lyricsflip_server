@@ -163,6 +163,7 @@ export class GameSessionsService {
 
     const gameSession = this.gameSessionRepository.create({
       ...sessionFields,
+      hasWager: mode === GameMode.WAGERED || Boolean(hasWager),
       player,
       wagerStroops: stake ?? null,
       status:
