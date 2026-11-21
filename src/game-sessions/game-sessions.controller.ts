@@ -19,6 +19,7 @@ import { ConfirmStakeDto } from './dto/confirm-stake.dto';
 import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
 import { TopScoresQueryDto } from './dto/top-scores-query.dto';
 import { CompleteWageredGameDto } from './dto/complete-wagered-game.dto';
+import { RematchDto } from './dto/rematch.dto';
 import { Roles } from '../auth/roles/roles.decorator';
 import { Role } from '../auth/roles/role.enum';
 import { GetUser } from '../auth/decorators/user.decorator';
@@ -185,6 +186,32 @@ export class GameSessionsController {
     return this.gameSessionsService.decline(id, user);
   }
 
+  @Post(':id/rematch')
+  @ApiOperation({
+    summary: 'Offer a rematch against the same opponent',
+    description:
+      'Either player of a finished session can offer a rematch. A new session ' +
+      'is created with the same opponent, mode and stake, and the opponent ' +
+      'accepts it with a single POST :id/accept. Pass `seriesLength` (3 or 5) ' +
+      'to start a best-of-N series; the series ends as soon as one player has ' +
+      'won the majority of games. A wagered series is settled once, when the ' +
+      'series is decided.',
+  })
+  @ApiParam({ name: 'id', description: 'Game session ID' })
+  @ApiResponse({ status: 201, description: 'Rematch session created.' })
+  @ApiResponse({
+    status: 400,
+    description: 'The session is not finished, or the series is already decided.',
+  })
+  @ApiResponse({ status: 403, description: 'Not a player in this session.' })
+  rematch(
+    @Param('id') id: string,
+    @Body() dto: RematchDto,
+    @GetUser() user: User,
+  ) {
+    return this.gameSessionsService.rematch(id, user, dto);
+  }
+
   @Post(':id/stake')
   @ApiOperation({
     summary: "Submit a stake transaction signed in the player's wallet",
@@ -218,36 +245,6 @@ export class GameSessionsController {
       'old one, so only the fresh transaction is accepted by POST :id/stake.',
   })
   @ApiParam({ name: 'id', description: 'Game session ID' })
-  @ApiResponse({ status: 200, description: 'New unsigned stake transaction.' })
-  @ApiResponse({
-    status: 400,
-    description: 'Not a player in this wager, already staked, or not awaiting stakes.',
-  })
-  @HttpCode(HttpStatus.OK)
-  async requestFreshStakeTransaction(
-    @Param('id') id: string,
-    @GetUser() user: User,
-  ) {
-    return this.gameSessionsService.requestFreshStakeTransaction(id, user.id);
-  }
+  @ApiResponse({ status: 200, description: 'New unsigned stake transaction
 
-  @Roles(Role.Admin)
-  @Post(':id/wager/reconcile')
-  @Audited({ action: 'settlement.wager.reconcile', targetType: 'game-session' })
-  @ApiOperation({
-    summary: 'Reconcile a pending wager settlement (Admin only)',
-    description:
-      'Retries settlement for a wager left in SETTLING by a previous ' +
-      'complete-wagered call, and marks the session COMPLETED once the pot ' +
-      'has been paid out.',
-  })
-  @ApiParam({ name: 'id', description: 'Game session ID' })
-  @ApiResponse({ status: 200, description: 'Wager reconciled.' })
-  @HttpCode(HttpStatus.OK)
-  async reconcileWager(
-    @Param('id') id: string,
-    @GetUser() user: User,
-  ) {
-    return this.gameSessionsService.reconcileWager(id, user);
-  }
-}
+/* … truncated 1070 chars — edit only what you need near the top … */
