@@ -246,7 +246,11 @@ export class UsersService {
     try {
       const stroops = await this.tokenService.getUserBalance(userId);
       return {
-        balance: { stroops, display: fromStroops(stroops), symbol: TOKEN_SYMBOL },
+        balance: {
+          stroops,
+          display: fromStroops(stroops),
+          symbol: TOKEN_SYMBOL,
+        },
       };
     } catch (error) {
       this.logger.warn(
@@ -347,21 +351,95 @@ export class UsersService {
     return 'Rookie';
   }
 
-  async update(id: string, updateUserDto: UpdateProfileDto | AdminUpdateUserDto) {
-    const user = await this.findOne(id);
+  async update(
+    id: string,
+    updateUserDto: UpdateProfileDto | AdminUpdateUserDto,
+  ) {
+    return this.userRepository.manager.transaction(async (manager) => {
+      const repository = manager.getRepository(User);
+      const user = await repository.findOne({
+        where: { id },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!user) {
+        throw new NotFoundException(`User with ID ${id} not found`);
+      }
 
-    // Report taken usernames/emails as 409 rather than a unique-index 500
-    const { username } = updateUserDto;
-    const email = 'email' in updateUserDto ? updateUserDto.email : undefined;
-    if (username && username !== user.username) {
-      await this.assertUnused({ username }, id, 'Username already exists');
-    }
-    if (email && email !== user.email) {
-      await this.assertUnused({ email }, id, 'Email already exists');
-    }
+      const before = { role: user.role, isActive: user.isActive };
+      const { username } = updateUserDto;
+      const email = 'email' in updateUserDto ? updateUserDto.email : undefined;
+      if (username && username !== user.username) {
+        await this.assertUnusedWithRepository(
+          repository,
+          { username },
+          id,
+          'Username already exists',
+        );
+      }
+      if (email && email !== user.email) {
+        await this.assertUnusedWithRepository(
+          repository,
+          { email },
+          id,
+          'Email already exists',
+        );
+      }
 
-    Object.assign(user, updateUserDto);
-    return this.userRepository.save(user);
+      const nextRole =
+        'role' in updateUserDto && updateUserDto.role !== undefined
+          ? updateUserDto.role
+          : user.role;
+      const nextIsActive =
+        'isActive' in updateUserDto && updateUserDto.isActive !== undefined
+          ? updateUserDto.isActive
+          : user.isActive;
+
+      if (
+        before.role === Role.Admin &&
+        before.isActive &&
+        (nextRole !== Role.Admin || !nextIsActive)
+      ) {
+        const activeAdminCount = await repository.count({
+          where: { role: Role.Admin, isActive: true },
+        });
+        if (activeAdminCount <= 1) {
+          throw new ConflictException(
+            'The last active admin cannot be demoted or deactivated',
+          );
+        }
+      }
+
+      Object.assign(user, updateUserDto);
+      const saved = await repository.save(user);
+      const after = { role: saved.role, isActive: saved.isActive };
+      Object.defineProperty(saved, 'auditContext', {
+        value: { before, after },
+        enumerable: false,
+      });
+      await this.cacheManager.del(`user:${id}`);
+      return saved;
+    });
+  }
+
+  private async assertUnusedWithRepository(
+    repository: Repository<User>,
+    where: { username: string } | { email: string },
+    ownId: string,
+    message: string,
+  ): Promise<void> {
+    const [column, value] =
+      'username' in where
+        ? ['username', where.username]
+        : ['email', where.email];
+    const taken = await repository.exists({
+      where: {
+        [column]: Raw((alias) => `LOWER(${alias}) = LOWER(:value)`, { value }),
+        id: Not(ownId),
+      },
+    });
+    if (taken) {
+      throw new ConflictException(message);
+    }
   }
 
   /**
@@ -397,8 +475,6 @@ export class UsersService {
    * every row that references the user id is preserved.
    */
   async remove(id: string) {
-    const user = await this.findOne(id);
-
     const activeWager = await this.wagerRepository.findOne({
       where: [
         { playerAId: id, status: In(NON_TERMINAL_WAGER_STATUSES) },
@@ -411,26 +487,56 @@ export class UsersService {
       );
     }
 
-    await this.userRepository.manager.transaction(async (manager) => {
-      // Revoke every refresh token and bump tokenVersion so any access token
-      // already issued stops validating immediately (R2-28).
-      await manager.delete(RefreshToken, { userId: id });
-      user.tokenVersion = (user.tokenVersion ?? 0) + 1;
+    const auditResult = await this.userRepository.manager.transaction(
+      async (manager) => {
+        const repository = manager.getRepository(User);
+        const user = await repository.findOne({
+          where: { id },
+          lock: { mode: 'pessimistic_write' },
+        });
+        if (!user) {
+          throw new NotFoundException(`User with ID ${id} not found`);
+        }
 
-      user.isActive = false;
-      user.email = `deleted-${user.id}@deleted.lyricsflip.local`;
-      user.username = `deleted_${user.id}`;
-      user.name = null;
-      user.stellarAddress = null;
-      user.stellarAddressVerifiedAt = null;
+        const before = { role: user.role, isActive: user.isActive };
+        if (before.role === Role.Admin && before.isActive) {
+          const activeAdminCount = await repository.count({
+            where: { role: Role.Admin, isActive: true },
+          });
+          if (activeAdminCount <= 1) {
+            throw new ConflictException(
+              'The last active admin cannot be deleted',
+            );
+          }
+        }
 
-      await manager.save(user);
-    });
+        // Revoke every refresh token and bump tokenVersion so any access token
+        // already issued stops validating immediately (R2-28).
+        await manager.delete(RefreshToken, { userId: id });
+        user.tokenVersion = (user.tokenVersion ?? 0) + 1;
+
+        user.isActive = false;
+        user.email = `deleted-${user.id}@deleted.lyricsflip.local`;
+        user.username = `deleted_${user.id}`;
+        user.name = null;
+        user.stellarAddress = null;
+        user.stellarAddressVerifiedAt = null;
+
+        const saved = await manager.save(user);
+        const after = { role: saved.role, isActive: saved.isActive };
+        return { before, after };
+      },
+    );
 
     await this.erasePersonalData(id);
     await this.cacheManager.del(`user:${id}`);
 
-    return { message: 'User deactivated successfully' };
+    const result = { message: 'User deactivated successfully' };
+    Object.defineProperty(result, 'auditContext', {
+      value: auditResult,
+      enumerable: false,
+    });
+    return result;
   }
 
   /**

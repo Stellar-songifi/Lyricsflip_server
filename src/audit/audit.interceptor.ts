@@ -9,7 +9,10 @@ import { Request } from 'express';
 import { Observable } from 'rxjs';
 import { tap } from 'rxjs/operators';
 import { AuditService } from './audit.service';
-import { AUDIT_ACTION_KEY, AuditedOptions } from './decorators/audited.decorator';
+import {
+  AUDIT_ACTION_KEY,
+  AuditedOptions,
+} from './decorators/audited.decorator';
 
 /** The parts of a call the audit row records. An Express request fits. */
 interface AuditSource {
@@ -20,7 +23,13 @@ interface AuditSource {
   ip?: string;
 }
 
-const SENSITIVE_FIELDS = ['password', 'token', 'secret', 'transaction', 'authorization'];
+const SENSITIVE_FIELDS = [
+  'password',
+  'token',
+  'secret',
+  'transaction',
+  'authorization',
+];
 
 /**
  * Writes an `audit_logs` row after a handler marked `@Audited(...)`
@@ -39,10 +48,9 @@ export class AuditInterceptor implements NestInterceptor {
   ) {}
 
   intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
-    const options = this.reflector.getAllAndOverride<AuditedOptions | undefined>(
-      AUDIT_ACTION_KEY,
-      [context.getHandler(), context.getClass()],
-    );
+    const options = this.reflector.getAllAndOverride<
+      AuditedOptions | undefined
+    >(AUDIT_ACTION_KEY, [context.getHandler(), context.getClass()]);
 
     if (!options) {
       return next.handle();
@@ -104,6 +112,11 @@ export class AuditInterceptor implements NestInterceptor {
     const targetId =
       request.params?.[targetParam] ?? this.extractIdFromResult(result) ?? null;
 
+    const auditContext =
+      result && typeof result === 'object'
+        ? (result as { auditContext?: unknown }).auditContext
+        : undefined;
+
     await this.auditService.record({
       actorId: user?.id ?? 'system',
       action: options.action,
@@ -114,6 +127,9 @@ export class AuditInterceptor implements NestInterceptor {
         params: request.params,
         query: request.query,
         body: this.sanitize(request.body),
+        ...(auditContext && typeof auditContext === 'object'
+          ? (auditContext as Record<string, unknown>)
+          : {}),
       },
     });
   }
@@ -121,7 +137,9 @@ export class AuditInterceptor implements NestInterceptor {
   private extractIdFromResult(result: unknown): string | null {
     if (result && typeof result === 'object' && 'id' in result) {
       const id = (result as { id?: unknown }).id;
-      return typeof id === 'string' || typeof id === 'number' ? String(id) : null;
+      return typeof id === 'string' || typeof id === 'number'
+        ? String(id)
+        : null;
     }
     return null;
   }
@@ -131,7 +149,9 @@ export class AuditInterceptor implements NestInterceptor {
       return body;
     }
 
-    const sanitized: Record<string, unknown> = { ...(body as Record<string, unknown>) };
+    const sanitized: Record<string, unknown> = {
+      ...(body as Record<string, unknown>),
+    };
     for (const field of SENSITIVE_FIELDS) {
       if (field in sanitized) {
         sanitized[field] = '***REDACTED***';
