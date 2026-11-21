@@ -60,7 +60,37 @@ export class AuthController {
   @Throttle(authThrottle)
   @Post('login')
   @ApiOperation({ summary: 'Login a user' })
-  @ApiResponse({ status: 200, description: 'User logged in successfully.' })
+  @ApiResponse({
+    status: 200,
+    description: 'User logged in successfully.',
+    schema: {
+      type: 'object',
+      required: ['accessToken', 'refreshToken', 'user'],
+      properties: {
+        accessToken: { type: 'string' },
+        refreshToken: { type: 'string' },
+        user: {
+          type: 'object',
+          required: [
+            'id',
+            'username',
+            'xp',
+            'level',
+            'levelTitle',
+            'createdAt',
+          ],
+          properties: {
+            id: { type: 'string', format: 'uuid' },
+            username: { type: 'string' },
+            xp: { type: 'integer' },
+            level: { type: 'integer' },
+            levelTitle: { type: 'string' },
+            createdAt: { type: 'string', format: 'date-time' },
+          },
+        },
+      },
+    },
+  })
   @HttpCode(HttpStatus.OK)
   async login(@Body(ValidationPipe) loginDto: LoginDto) {
     return this.authService.login(loginDto);
