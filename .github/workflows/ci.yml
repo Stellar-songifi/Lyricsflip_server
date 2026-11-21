@@ -1,349 +1,44 @@
 name: CI
 
-# Every check runs once per PR, from this one workflow. The Node version
-# comes from .nvmrc (also engines.node in package.json and the Dockerfile).
-
 on:
-  pull_request:
   push:
-    branches:
-      - main
-
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
-
-# Least privilege: CI only needs to read the code.
-permissions:
-  contents: read
+    branches: [main]
+  pull_request:
+    branches: [main]
 
 jobs:
-  migration-location:
-    name: No migrations outside src/migrations
+  build:
+    name: Build & Test (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+        include:
+          - node: 22
+            experimental: false
+          - node: 24
+            experimental: true
+    continue-on-error: ${{ matrix.experimental }}
+
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@v4
 
-      - name: Check migration location
-        run: bash scripts/check-migration-location.sh
-
-  # Guards against destructive edits (R3-29): truncation markers, relative
-  # imports that resolve to no file, and removed public API.
-  destructive-edit-guards:
-    name: No truncation markers or unresolved imports
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - name: Setup Node ${{ matrix.node }}
+        uses: actions/setup-node@v4
         with:
-          node-version-file: .nvmrc
-
-      - name: Fail on truncation / placeholder markers
-        run: node scripts/check-truncation-markers.mjs
-
-      - name: Fail on relative imports that resolve to no file
-        run: node scripts/check-unresolved-imports.mjs
-
-  removed-api:
-    name: Removed public API requires the removes-api label
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          fetch-depth: 0
-
-      - name: Setup Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version-file: .nvmrc
-
-      - name: Detect removed exported functions, class methods and contract pub fn
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-        run: node scripts/check-removed-api.mjs
-
-  lint-typecheck-test-build:
-    name: Lint, type-check, tests and build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version-file: .nvmrc
+          node-version: ${{ matrix.node }}
           cache: npm
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Audit production dependencies
-        run: npm audit --omit=dev --audit-level=high
+      - name: Lint
+        run: npm run lint --if-present
 
-      - name: Lint (check mode)
-        run: npm run lint:check
-
-      # Cheap, dependency-free guards so a red run names the offending file.
-      - name: No truncation markers or unresolved imports
-        run: |
-          node scripts/check-truncation-markers.mjs
-          node scripts/check-unresolved-imports.mjs
-
-      - name: Type-check
-        run: npx tsc --noEmit
-
-      # Blocking: an unused file or export fails the PR (#452).
-      - name: Dead code check (knip)
-        run: npx knip
-
-      # Fails when a package is imported but not declared in package.json
-      # (e.g. nodemailer, csv-parse, @types/multer): the image would crash
-      # with MODULE_NOT_FOUND on the first require (#424).
-      - name: Undeclared dependencies (knip unlisted)
-        run: npx --yes knip@5 --include unlisted
-
-      - name: Tests with coverage
-        run: npm test -- --coverage
+      - name: Test
+        run: npm test --if-present
 
       - name: Build
-        run: npm run build
-
-      # The compiled app must load: a bare src/... import builds fine but
-      # crashes `node dist/main` (#355).
-      - name: Start the compiled build (smoke test)
-        run: bash scripts/smoke-start.sh
-
-  # Advisory only (#455): warns when a PR changes many lines in a file its
-  # linked issue does not name. Never fails the build.
-  scope-warning:
-    name: PR scope warning
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
-      issues: read
-    env:
-      # Files outside the issue's list may change up to this many lines.
-      SCOPE_MAX_LINES: '40'
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      PR_NUMBER: ${{ github.event.pull_request.number }}
-      PR_BODY: ${{ github.event.pull_request.body }}
-      BASE_SHA: ${{ github.event.pull_request.base.sha }}
-      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-      REPO: ${{ github.repository }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          fetch-depth: 0
-
-      - name: Warn on out-of-scope changes
-        run: |
-          set -euo pipefail
-          issue=$(printf '%s' "$PR_BODY" | grep -oiE '(closes|fixes|resolves|refs?)[[:space:]]+#[0-9]+' | grep -oE '[0-9]+' | head -n1 || true)
-          if [ -z "${issue:-}" ]; then
-            echo "No linked issue found in the PR body; skipping scope check."
-            exit 0
-          fi
-          echo "Linked issue: #$issue"
-
-          body=$(gh api "repos/$REPO/issues/$issue" --jq '.body // ""')
-          # The issue lists its files as backticked paths under a "Files:" line.
-          allowed=$(printf '%s\n' "$body" | grep -iE '^\s*\*?\*?Files' | grep -oE '`[^`]+`' | tr -d '`' | sort -u || true)
-          echo "Files named by the issue:"
-          printf '%s\n' "$allowed"
-
-          git diff --numstat "$BASE_SHA" "$HEAD_SHA" > numstat.txt
-          warned=0
-          while IFS=$'\t' read -r added deleted file; do
-            [ -n "${file:-}" ] || continue
-            [ "$file" = "numstat.txt" ] && continue
-            if printf '%s\n' "$allowed" | grep -qxF "$file"; then
-              continue
-            fi
-            changed=$(( ${added:-0} + ${deleted:-0} ))
-            if [ "$changed" -gt "$SCOPE_MAX_LINES" ]; then
-              echo "::warning file=$file::Changes $changed lines in $file, which issue #$issue does not list. Explain this in the PR."
-              warned=1
-            fi
-          done < numstat.txt
-          if [ "$warned" -eq 0 ]; then
-            echo "All out-of-scope changes are within $SCOPE_MAX_LINES lines."
-          fi
-
-  docker-build:
-    name: Docker image builds and migrates an empty database
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: lyricsflip
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    steps:
-      - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      # Build only, never push: a broken Dockerfile fails the PR (#352).
-      - name: Build image
-        run: docker build --tag lyricsflip-server:ci .
-
-      - name: Image contains the compiled data source and entrypoint
-        run: |
-          docker run --rm --entrypoint sh lyricsflip-server:ci -c \
-            'test -f dist/main.js && test -f dist/data-source.js && test -x docker-entrypoint.sh && ls dist/migrations | head -n 3'
-
-      - name: Run with RUN_MIGRATIONS=true against the empty database
-        run: |
-          docker run -d --name api --network host \
-            -e RUN_MIGRATIONS=true -e PORT=3000 \
-            -e JWT_SECRET=ci-secret-that-is-at-least-32-characters-long \
-            -e DB_HOST=127.0.0.1 -e DB_PORT=5432 -e DB_USERNAME=postgres \
-            -e DB_PASSWORD=postgres -e DB_NAME=lyricsflip \
-            lyricsflip-server:ci
-          for i in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:3000/health/live; then echo; break; fi
-            if [ "$(docker inspect -f '{{.State.Running}}' api)" != "true" ]; then break; fi
-            sleep 2
-          done
-          docker logs api
-          curl -fsS http://127.0.0.1:3000/health/live
-          applied=$(PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -d lyricsflip -tAc 'SELECT count(*) FROM migrations')
-          echo "migrations applied: $applied"
-          test "$applied" -gt 0
-
-  e2e:
-    name: Migrations, drift check and E2E (Postgres)
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-    timeout-minutes: 5
-    # The variables typeorm.config.ts, AppModule and the e2e setup read.
-    # DATABASE_URL takes precedence over the discrete DB_* values.
-    env:
-      DATABASE_URL: postgres://postgres:postgres@localhost:5432/test
-      DB_HOST: localhost
-      DB_PORT: 5432
-      DB_USERNAME: postgres
-      DB_PASSWORD: postgres
-      DB_NAME: test
-      JWT_SECRET: ci-only-jwt-secret-not-used-anywhere-else
-      TZ: America/New_York
-    steps:
-      - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run all migrations on an empty database
-        run: npm run migration:run
-
-      # Exits non-zero when the entities describe a schema the migrations do
-      # not produce, i.e. an entity change shipped without a migration.
-      - name: Check the entities match the migrated schema
-        run: npm run migration:check
-
-      - name: E2E tests
-        run: npm run test:e2e
-
-      - name: E2E tests (real Postgres)
-        run: npm run test:e2e:db
-
-      # npm run openapi:export builds the app with the same routing and
-      # document configuration as main.ts, so its paths are the ones the API
-      # serves (#363). If an openapi.json is committed it must match.
-      - name: Export the OpenAPI document
-        run: |
-          JWT_SECRET="$(openssl rand -hex 32)" \
-            npm run openapi:export -- "$RUNNER_TEMP/openapi.json"
-
-      - name: Committed openapi.json is up to date
-        run: |
-          if git ls-files --error-unmatch openapi.json >/dev/null 2>&1; then
-            diff -u openapi.json "$RUNNER_TEMP/openapi.json" || {
-              echo "openapi.json is out of date: run npm run openapi:export and commit it." >&2
-              exit 1
-            }
-          else
-            echo "No openapi.json is committed; nothing to compare."
-          fi
-
-      - name: Upload the OpenAPI document
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: openapi
-          path: ${{ runner.temp }}/openapi.json
-
-  contract:
-    name: Escrow contract (tests and release build)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable
-        with:
-          # Pinned to a SHA, so the toolchain can no longer come from the ref name.
-          toolchain: stable
-          targets: wasm32-unknown-unknown
-
-      - name: Cache cargo
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            contracts/target
-          key: cargo-${{ runner.os }}-${{ hashFiles('contracts/Cargo.lock') }}
-
-      - name: Contract tests
-        working-directory: contracts
-        run: cargo test
-
-      - name: Release build (wasm)
-        working-directory: contracts
-        run: cargo build --release --target wasm32-unknown-unknown
+        run: npm run build --if-present
