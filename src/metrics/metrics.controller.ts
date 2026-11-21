@@ -1,3 +1,4 @@
+import { runtimeEnv } from '../config/runtime-env';
 import {
   Controller,
   Get,
@@ -37,7 +38,7 @@ export class MetricsController {
   @Get()
   async getMetrics(@Req() req: Request, @Res() res: Response): Promise<void> {
     // --- IP allowlist ---
-    const allowlist = process.env.METRICS_IP_ALLOWLIST;
+    const allowlist = runtimeEnv().METRICS_IP_ALLOWLIST;
     if (allowlist) {
       const allowed = allowlist.split(',').map((ip) => ip.trim());
       const forwarded = req.headers['x-forwarded-for'] as string | undefined;
@@ -51,7 +52,7 @@ export class MetricsController {
     }
 
     // --- Basic auth ---
-    const expectedCredentials = process.env.METRICS_BASIC_AUTH;
+    const expectedCredentials = runtimeEnv().METRICS_BASIC_AUTH;
     if (expectedCredentials) {
       const authHeader = req.headers['authorization'];
       if (!authHeader?.startsWith('Basic ')) {

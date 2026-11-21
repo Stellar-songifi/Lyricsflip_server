@@ -1,3 +1,4 @@
+import { runtimeEnv } from '../../config/runtime-env';
 import {
   ArgumentsHost,
   Catch,
@@ -41,7 +42,7 @@ import { WsExceptionFilter } from './ws-exception.filter';
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
   private readonly logger = new Logger(AllExceptionsFilter.name);
-  private readonly isProduction = process.env.NODE_ENV === 'production';
+  private readonly isProduction = runtimeEnv().NODE_ENV === 'production';
 
   private readonly wsFilter = new WsExceptionFilter();
 

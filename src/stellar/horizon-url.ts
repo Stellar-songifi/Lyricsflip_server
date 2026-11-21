@@ -1,3 +1,6 @@
+import { runtimeEnv } from '../config/runtime-env';
 export function getHorizonUrl(): string {
-  return process.env.STELLAR_HORIZON_URL || "https://horizon-testnet.stellar.org";
+  return (
+    runtimeEnv().STELLAR_HORIZON_URL || 'https://horizon-testnet.stellar.org'
+  );
 }

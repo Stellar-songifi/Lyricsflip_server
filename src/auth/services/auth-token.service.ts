@@ -1,3 +1,4 @@
+import { runtimeEnv } from '../../config/runtime-env';
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { User } from '../../users/entities/user.entity';
@@ -31,7 +32,7 @@ export interface RefreshTokenContext {
 @Injectable()
 export class AuthTokenService {
   private readonly refreshExpiresIn =
-    process.env.JWT_REFRESH_EXPIRES_IN ?? '7d';
+    runtimeEnv().JWT_REFRESH_EXPIRES_IN ?? '7d';
 
   constructor(private readonly jwtService: JwtService) {}
 

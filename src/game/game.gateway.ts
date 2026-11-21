@@ -17,10 +17,7 @@ import { GuessDto } from './dto/guess.dto';
 import { authenticateSocket } from '../auth/socket-auth.util';
 import { RealtimeEvent } from '../realtime/realtime.events';
 import { WsRateLimiter } from '../common/websocket/ws-rate-limiter';
-import {
-  WsConnectionLimiter,
-  WS_MAX_HTTP_BUFFER_SIZE,
-} from '../common/websocket/ws-connection-limiter';
+import { WsConnectionLimiter } from '../common/websocket/ws-connection-limiter';
 
 interface GameSession {
   playerId: string;
@@ -46,19 +43,7 @@ interface GameSession {
   }),
 )
 @WebSocketGateway({
-  cors: {
-    // Same allow-list as the HTTP API (FRONTEND_URL), evaluated per request.
-    origin: (
-      origin: string | undefined,
-      callback: (err: Error | null, allow?: boolean) => void,
-    ) => {
-      const allowed = process.env.FRONTEND_URL || 'http://localhost:3000';
-      callback(null, !origin || origin === allowed);
-    },
-    credentials: true,
-  },
   namespace: '/game',
-  maxHttpBufferSize: WS_MAX_HTTP_BUFFER_SIZE,
 })
 export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()

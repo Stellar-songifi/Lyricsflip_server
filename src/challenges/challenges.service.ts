@@ -1,7 +1,9 @@
+import { ConfigService } from '@nestjs/config';
 import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Optional,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
@@ -27,9 +29,7 @@ const LEADERBOARD_SIZE = 50;
  * from the public lyric ids alone. Falls back to a per-process random value
  * when unset, which still prevents offline prediction.
  */
-const DAILY_CHALLENGE_SALT =
-  process.env.DAILY_CHALLENGE_SALT ??
-  `fallback-${Math.random().toString(36).slice(2)}`;
+const FALLBACK_SALT = `fallback-${Math.random().toString(36).slice(2)}`;
 
 export interface DailyLyric {
   id: number;
@@ -81,6 +81,7 @@ export class ChallengesService {
     private readonly gameService: GameLogicService,
     private readonly xpService: XpLevelService,
     private readonly events: EventEmitter2,
+    @Optional() private readonly config?: ConfigService,
   ) {}
 
   /**
@@ -109,7 +110,7 @@ export class ChallengesService {
       const lyricIds = pickDeterministic(
         pool.map((lyric) => lyric.id),
         GAME_CONSTANTS.LIMITS.DAILY_CHALLENGE_SIZE,
-        `${date}:${DAILY_CHALLENGE_SALT}`,
+        `${date}:${this.config?.get<string>('DAILY_CHALLENGE_SALT') ?? FALLBACK_SALT}`,
       );
 
       // A concurrent request may have stored the day's set first; ignore the

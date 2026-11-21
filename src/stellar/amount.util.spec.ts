@@ -1,3 +1,4 @@
+import { runtimeEnv } from '../config/runtime-env';
 import { BadRequestException } from '@nestjs/common';
 import {
   addStroops,
@@ -170,10 +171,10 @@ describe('amount.util', () => {
   });
 
   describe('getTokenDecimals', () => {
-    const originalEnv = process.env;
+    const originalEnv = runtimeEnv();
 
     afterEach(() => {
-      process.env = originalEnv;
+      jest.replaceProperty(process, 'env', originalEnv);
     });
 
     it('is exported so callers can read the loaded decimals', () => {
@@ -181,14 +182,14 @@ describe('amount.util', () => {
     });
 
     it('honours LYRIC_TOKEN_DECIMALS in mock mode', () => {
-      process.env = { ...originalEnv, STELLAR_MODE: 'mock' };
-      process.env.LYRIC_TOKEN_DECIMALS = '7';
+      jest.replaceProperty(process, 'env', { ...originalEnv, STELLAR_MODE: 'mock' });
+      runtimeEnv().LYRIC_TOKEN_DECIMALS = '7';
       expect(getTokenDecimals()).toBe(7);
     });
 
     it('reports the same decimals that /stellar/info exposes', () => {
-      process.env = { ...originalEnv, STELLAR_MODE: 'mock' };
-      process.env.LYRIC_TOKEN_DECIMALS = '7';
+      jest.replaceProperty(process, 'env', { ...originalEnv, STELLAR_MODE: 'mock' });
+      runtimeEnv().LYRIC_TOKEN_DECIMALS = '7';
       const loaded = getTokenDecimals();
       // /stellar/info reads the same accessor, so the reported value must
       // match what was loaded at boot rather than a hard-coded constant.
