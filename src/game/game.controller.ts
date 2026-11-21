@@ -274,7 +274,7 @@ export class GameController {
   @ApiResponse({
     status: 200,
     description: 'Aggregate lyric statistics.',
-    type: Object,
+    type: GameStatsResponse,
   })
   @Get('stats')
   async getLyricStats(
@@ -282,6 +282,16 @@ export class GameController {
     options // Every field is optional already. Partial<> erases the class at runtime,
     // which silently disables validation, so the DTO is used directly.
     : RandomLyricOptionsDto,
-  ):
+  ): Promise<GameStatsResponse> {
+    this.logger.log(
+      `Getting lyric stats with options: ${JSON.stringify(options)}`,
+    );
 
-/* … truncated 414 chars — edit only what you need near the top … */
+    try {
+      return await this.gameLogicService.getLyricStats(options);
+    } catch (error) {
+      this.logger.error('Error fetching lyric stats', error.stack);
+      throw error;
+    }
+  }
+}

@@ -1,17 +1,28 @@
 /**
- * Keys that should never appear in logs, matched case-insensitively as a
- * substring so `newPassword`, `accessToken` and `refreshToken` are caught
- * along with the exact field names.
+ * Key patterns that should never appear in logs. Each pattern is tested
+ * case-insensitively against the key name, so `newPassword`, `currentPassword`,
+ * `accessToken`, `refreshToken`, `seed`, `signedXdr`, etc. are all caught.
  */
-const SENSITIVE_KEY_PATTERN =
-  /pass|token|secret|key|authorization|transaction|seed/i;
+const SENSITIVE_KEY_PATTERNS: readonly RegExp[] = [
+  /pass(word)?/i,
+  /token/i,
+  /secret/i,
+  /xdr|transaction/i,
+  /authorization/i,
+  /seed/i,
+];
 
 const REDACTED = '***REDACTED***';
 
+function isSensitiveKey(key: string): boolean {
+  return SENSITIVE_KEY_PATTERNS.some((pattern) => pattern.test(key));
+}
+
 /**
  * Recursively walks an object/array and redacts the value of any key whose
- * name matches SENSITIVE_KEY_PATTERN, at any nesting depth. Used by
- * ErrorInterceptor and LoggingInterceptor so redaction is implemented once.
+ * name matches one of SENSITIVE_KEY_PATTERNS, at any nesting depth. Used by
+ * AuditInterceptor, ErrorInterceptor and LoggingInterceptor so redaction is
+ * implemented once.
  */
 export function redact(value: unknown, seen = new WeakSet<object>()): any {
   if (value === null || value === undefined) {
@@ -34,7 +45,7 @@ export function redact(value: unknown, seen = new WeakSet<object>()): any {
 
     const result: Record<string, unknown> = {};
     for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
-      if (SENSITIVE_KEY_PATTERN.test(key)) {
+      if (isSensitiveKey(key)) {
         result[key] = REDACTED;
       } else {
         result[key] = redact(val, seen);

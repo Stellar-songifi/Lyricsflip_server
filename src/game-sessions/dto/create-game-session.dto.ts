@@ -84,9 +84,8 @@ export class CreateGameSessionDto {
       'Amount each player stakes, as a decimal LYRIC string ("10", "2.5"). ' +
       'Sent as a string rather than a number so that fractional stakes cannot ' +
       'be mangled by floating-point rounding on the way in. Only honoured when ' +
-      'mode is "wagered"; the server derives hasWager from the mode.',
-      'be mangled by floating-point rounding on the way in. Must be within the ' +
-      `configured stake range (${WAGER_MIN_STAKE}–${WAGER_MAX_STAKE} LYRIC).`,
+      'mode is "wagered"; the server derives hasWager from the mode. Must be ' +
+      `within the configured stake range (${WAGER_MIN_STAKE}–${WAGER_MAX_STAKE} LYRIC).`,
     required: false,
     example: '10',
     type: String,

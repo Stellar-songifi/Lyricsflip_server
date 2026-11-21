@@ -63,6 +63,9 @@ export class PasswordResetService {
    * Consume a password reset token. Returns the associated user if the token
    * is valid, unused and unexpired. The token is marked as used so it can
    * only be redeemed once.
+   *
+   * The token is consumed with a single conditional UPDATE so that
+   * concurrent requests cannot both redeem the same token.
    */
   async consume(rawToken: string): Promise<User> {
     if (!rawToken || typeof rawToken !== 'string') {
@@ -73,36 +76,33 @@ export class PasswordResetService {
 
     const token = await this.passwordResetTokenRepository.findOne({
       where: { tokenHash },
-      relations: ['user'],
     });
 
     if (!token) {
       throw new BadRequestException('Invalid or expired password reset token');
     }
 
-    if (token.usedAt) {
+    const result = await this.passwordResetTokenRepository
+      .createQueryBuilder()
+      .update(PasswordResetToken)
+      .set({ usedAt: new Date() })
+      .where('tokenHash = :tokenHash', { tokenHash })
+      .andWhere('usedAt IS NULL')
+      .andWhere('expiresAt > :now', { now: new Date() })
+      .execute();
+
+    if (!result.affected) {
       throw new BadRequestException('Invalid or expired password reset token');
     }
 
-    if (token.expiresAt.getTime() <= Date.now()) {
+    const user = await this.userRepository.findOne({
+      where: { id: token.userId },
+    });
+
+    if (!user) {
       throw new BadRequestException('Invalid or expired password reset token');
     }
 
-    token.usedAt = new Date();
-    await this.passwordResetTokenRepository.save(token);
-
-    if (!token.user) {
-      const user = await this.userRepository.findOne({
-        where: { id: token.userId },
-      });
-      if (!user) {
-        throw new BadRequestException(
-          'Invalid or expired password reset token',
-        );
-      }
-      return user;
-    }
-
-    return token.user;
+    return user;
   }
 }
