@@ -36,6 +36,7 @@ import type { WagerResult } from '../tokens/services/wager.service';
 import type { UnsignedTransaction } from '../stellar/services/stellar-rpc.service';
 import { sanitizeForDisplay } from '../common/utils/sanitize.util';
 import { JobLockService } from '../jobs/job-lock.service';
+import { assertEmailVerified } from '../auth/verified-email.util';
 
 /**
  * A created session, plus the wager handshake when there is one.
@@ -133,6 +134,8 @@ export class GameSessionsService {
           'Player Two ID is required for wagered games',
         );
       }
+
+      assertEmailVerified(player, 'create a wager');
 
       // Check if both players have sufficient tokens
       const [playerOneBalance, playerTwoBalance] = await Promise.all([
