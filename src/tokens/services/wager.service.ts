@@ -718,10 +718,14 @@ export class WagerService {
     });
   }
 
-  async getUserWagers(
+  async getUserWagers(userId: string): Promise<Wager[]> {
+    return this.findUserWagers(userId);
+  }
+
+  async findUserWagers(
     userId: string,
-    limit = 10,
-    offset = 0,
+    limit?: number,
+    offset?: number,
   ): Promise<Wager[]> {
     return this.wagerRepository.find(
       this.historyOptions(userId, limit, offset),
@@ -740,7 +744,7 @@ export class WagerService {
     return toPaginated(data, total, limit, offset);
   }
 
-  private historyOptions(userId: string, limit: number, offset: number) {
+  private historyOptions(userId: string, limit?: number, offset?: number) {
     return {
       where: [{ playerAId: userId }, { playerBId: userId }],
       relations: { playerA: true, playerB: true },

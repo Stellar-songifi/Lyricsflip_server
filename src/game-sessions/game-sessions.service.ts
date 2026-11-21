@@ -675,6 +675,6 @@ export class GameSessionsService {
     limit: number = 10,
     offset: number = 0,
   ): Promise<Wager[]> {
-    return this.wagerService.getUserWagers(userId, limit, offset);
+    return this.wagerService.findUserWagers(userId, limit, offset);
   }
 }
