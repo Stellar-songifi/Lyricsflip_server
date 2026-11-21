@@ -282,23 +282,24 @@ export class AdminService {
   }
 
   async findAllLyricsLegacy(query: PaginationQueryDto, status?: string) {
-    const page = query.page ?? 1;
     const limit = query.limit ?? 20;
+    const offset = query.offset ?? 0;
     const qb = this.userRepository.manager
       .createQueryBuilder()
       .select('lyric')
       .from('lyrics', 'lyric')
-      .skip((page - 1) * limit)
+      .skip(offset)
       .take(limit);
     if (status) {
       qb.where('lyric.status = :status', { status });
     }
     const [items, total] = await qb.getManyAndCount();
-    return { items, total, page, limit };
+    return toPaginated(items, total, limit, offset);
   }
 
   /** Looks up a lyric by artist (and optional title) for admin tooling. */
   findByArtist(artist: string, songTitle?: string) {
     return this.lyricsService.findByArtist(artist, songTitle);
   }
+}
 }

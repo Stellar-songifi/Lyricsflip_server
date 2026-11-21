@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Keypair, Transaction } from '@stellar/stellar-sdk';
 import { IKeyStore } from '../interfaces/key-store.interface';
+import { TransactionSigner } from './transaction-signer';
 
 /**
  * Key store that signs remotely instead of holding a Stellar secret seed in
@@ -64,20 +65,12 @@ export interface RemoteSigner {
 }
 
 /**
- * Abstraction over anything that can sign a Stellar transaction on behalf of
- * the resolver. Call sites (`EscrowContractService`, `StellarRpcService`)
- * take a `TransactionSigner` so the same code works with an in-process
- * `Keypair` (`KeypairSigner`) or a remote KMS/Vault key (`RemoteSigner`).
+ * `TransactionSigner` backed by an in-process `Keypair` (env key store).
+ *
+ * The canonical `TransactionSigner` interface lives in `./transaction-signer`;
+ * this class is re-exported from here for backwards compatibility with
+ * existing imports.
  */
-export interface TransactionSigner {
-  /** The signer's Stellar (ed25519) public key, base32 `G...` address. */
-  publicKey(): string;
-
-  /** Attaches this signer's signature to `tx`, mutating it in place. */
-  sign(tx: Transaction): Promise<void>;
-}
-
-/** `TransactionSigner` backed by an in-process `Keypair` (env key store). */
 export class KeypairSigner implements TransactionSigner {
   constructor(private readonly keypair: Keypair) {}
 
@@ -96,18 +89,28 @@ export class KeypairSigner implements TransactionSigner {
  * attach the returned signature to the transaction ourselves.
  */
 export class RemoteTransactionSigner implements TransactionSigner {
+  private readonly resolverPublicKey: string;
+
   constructor(
     private readonly remote: RemoteSigner,
-    private readonly publicKey: string,
-  ) {}
+    publicKey: string,
+  ) {
+    this.resolverPublicKey = publicKey;
+  }
 
   publicKey(): string {
-    return this.publicKey;
+    return this.resolverPublicKey;
   }
 
   async sign(tx: Transaction): Promise<void> {
     const signature = await this.remote.sign(tx.hash());
-    tx.addSignature(this.publicKey, signature.toString('base64'));
+    // Normalise to a Buffer at the boundary: remote providers may hand back
+    // a Uint8Array (or a Buffer from a different realm), and
+    // `addSignature` expects a base64 string derived from a Buffer.
+    const signatureBuffer = Buffer.isBuffer(signature)
+      ? signature
+      : Buffer.from(signature);
+    tx.addSignature(this.resolverPublicKey, signatureBuffer.toString('base64'));
   }
 }
 
@@ -182,7 +185,10 @@ export class KmsKeyStore implements IKeyStore {
    * so the same call site works unchanged with any `IKeyStore` backend.
    */
   async signHash(hash: Buffer): Promise<Buffer> {
-    return this.signer.sign(hash);
+    const signature = await this.signer.sign(hash);
+    // Remote providers may return a Uint8Array; normalise to Buffer so call
+    // sites can rely on Buffer-only APIs (e.g. `.toString('base64')`).
+    return Buffer.isBuffer(signature) ? signature : Buffer.from(signature);
   }
 
   async getPlayerSigner(): Promise<Keypair | null> {

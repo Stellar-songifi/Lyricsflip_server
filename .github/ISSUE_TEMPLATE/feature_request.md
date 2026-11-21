@@ -25,6 +25,7 @@ What observable, testable outcomes would confirm this feature is complete?
 
 - [ ] ...
 - [ ] ...
+- [ ] Verified on main at `<sha>` (replace `<sha>` with the commit on `main` that verifies this change)
 
 ## Additional context
 

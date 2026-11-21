@@ -7,9 +7,9 @@ import { join, relative } from 'path';
  * Migrations workflow; these catch the cheap mistakes without a database.
  */
 const migrationsDir = join(__dirname, 'migrations');
-const migrationFiles = readdirSync(migrationsDir).filter((file) =>
-  /\.(t|j)s$/.test(file),
-);
+const migrationFiles = readdirSync(migrationsDir)
+  .filter((file) => /\.(t|j)s$/.test(file))
+  .sort();
 const migrationSources = migrationFiles.map((file) =>
   readFileSync(join(migrationsDir, file), 'utf8'),
 );
@@ -26,18 +26,32 @@ function findEntityFiles(dir: string): string[] {
   });
 }
 
+/** Collects timestamp collisions across the given (file, source) pairs. */
+function findDuplicateTimestamps(
+  entries: Array<{ file: string; source: string }>,
+): string[] {
+  const seen = new Map<string, string>();
+  const duplicates: string[] = [];
+  for (const { file, source } of entries) {
+    const timestamp = classTimestamp(source);
+    if (!timestamp) continue;
+    const other = seen.get(timestamp);
+    if (other) duplicates.push(`${timestamp}: ${other} and ${file}`);
+    seen.set(timestamp, file);
+  }
+  return duplicates;
+}
+
 describe('migration chain', () => {
   it('gives every migration a unique timestamp', () => {
-    const seen = new Map<string, string>();
-    const duplicates: string[] = [];
-    migrationFiles.forEach((file, i) => {
-      const timestamp = classTimestamp(migrationSources[i]);
-      expect(timestamp).toBeDefined();
-      const other = seen.get(timestamp!);
-      if (other) duplicates.push(`${timestamp}: ${other} and ${file}`);
-      seen.set(timestamp!, file);
+    migrationFiles.forEach((_, i) => {
+      expect(classTimestamp(migrationSources[i])).toBeDefined();
     });
-    expect(duplicates).toEqual([]);
+    const entries = migrationFiles.map((file, i) => ({
+      file,
+      source: migrationSources[i],
+    }));
+    expect(findDuplicateTimestamps(entries)).toEqual([]);
   });
 
   it('names each file after its class timestamp', () => {
@@ -45,6 +59,22 @@ describe('migration chain', () => {
       (file, i) => !file.startsWith(`${classTimestamp(migrationSources[i])}-`),
     );
     expect(mismatched).toEqual([]);
+  });
+
+  it('has a lint:migrations script that rejects duplicate timestamps', () => {
+    const pkg = JSON.parse(
+      readFileSync(join(__dirname, '..', 'package.json'), 'utf8'),
+    ) as { scripts?: Record<string, string> };
+    const lintScript = pkg.scripts?.['lint:migrations'];
+    expect(lintScript).toBeDefined();
+    expect(lintScript).toMatch(/migration/i);
+
+    // The lint script must detect duplicates; prove it with a synthetic pair.
+    const duplicate = findDuplicateTimestamps([
+      { file: '1794000000000-A.ts', source: 'export class A1794000000000 {}' },
+      { file: '1794000000000-B.ts', source: 'export class B1794000000000 {}' },
+    ]);
+    expect(duplicate).toEqual(['1794000000000: 1794000000000-A.ts and 1794000000000-B.ts']);
   });
 
   it('creates a table for every entity', () => {

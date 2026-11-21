@@ -72,7 +72,10 @@ export class GameSessionsController {
   @ApiResponse({ status: 200, description: 'Top scores.' })
   @ApiResponse({ status: 400, description: 'Invalid pagination values.' })
   getTopScores(@Query() query: TopScoresQueryDto) {
-    return this.gameSessionsService.getTopScores(query);
+    return this.gameSessionsService.getTopScores(query.limit, query.offset, {
+      mode: query.mode,
+      category: query.category,
+    });
   }
 
   @Get('my-recent')
@@ -153,7 +156,6 @@ export class GameSessionsController {
       id,
       body.playerOneScore,
       body.playerTwoScore,
-      user,
     );
   }
 

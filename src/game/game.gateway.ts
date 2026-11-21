@@ -10,13 +10,12 @@ import {
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { Logger, NotFoundException, UsePipes, ValidationPipe } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { JwtService } from '@nestjs/jwt';
+import { OnEvent } from '@nestjs/event-emitter';
 import { GameLogicService } from './game.service';
 import { RandomLyricOptionsDto } from './dto/random-lyrics-option.dto';
 import { GuessDto } from './dto/guess.dto';
-import type { SocketUser } from '../auth/auth-context.util';
-import type { JwtPayload } from '../auth/interfaces/jwt-payload.interface';
+import { authenticateSocket } from '../auth/socket-auth.util';
+import { RealtimeEvent } from '../realtime/realtime.events';
 import { WsRateLimiter } from '../common/websocket/ws-rate-limiter';
 import {
   WsConnectionLimiter,
@@ -72,44 +71,37 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
   private readonly rateLimiter = new WsRateLimiter();
   private readonly connectionLimiter = new WsConnectionLimiter();
 
-  constructor(
-    private readonly gameLogicService: GameLogicService,
-    private readonly jwtService: JwtService,
-    private readonly configService: ConfigService,
-  ) {}
+  constructor(private readonly gameLogicService: GameLogicService) {}
 
-  private extractToken(client: Socket): string | undefined {
-    const authToken = client.handshake.auth?.token;
-    if (typeof authToken === 'string' && authToken) {
-      return authToken.replace(/^Bearer\s+/i, '');
-    }
-    const header = client.handshake.headers?.authorization;
-    if (typeof header === 'string' && /^Bearer\s+/i.test(header)) {
-      return header.replace(/^Bearer\s+/i, '');
-    }
-    return undefined;
-  }
-
-  /** Returns false (and disconnects) if the event exceeds its rate limit. */
+  /**
+   * Returns false (and rejects the event with a RATE_LIMITED error) if the
+   * event exceeds its per-socket rate limit. Over-limit events are never
+   * processed by the handler.
+   */
   private allow(client: Socket, event: string): boolean {
-    return this.rateLimiter.consume(client, event);
+    const result = this.rateLimiter.consume(client, event);
+    if (!result.allowed) {
+      client.emit('error', {
+        code: 'RATE_LIMITED',
+        message: `Rate limit exceeded for ${event}`,
+        event,
+        retryAfterMs: result.retryAfterMs,
+      });
+      this.logger.warn(
+        `Rate limited ${client.id} on ${event} (retry in ${result.retryAfterMs}ms)`,
+      );
+      return false;
+    }
+    return true;
   }
 
   async handleConnection(client: Socket) {
-    const token = this.extractToken(client);
     let userId: string;
     let user: SocketUser;
     try {
-      if (!token) throw new Error('missing token');
-      const payload = await this.jwtService.verifyAsync<
-        Pick<JwtPayload, 'sub' | 'username' | 'role'>
-      >(token, { secret: this.configService.get<string>('JWT_SECRET') });
-      userId = payload.sub;
-      user = {
-        id: payload.sub,
-        username: payload.username,
-        role: payload.role,
-      };
+      const authenticated = await authenticateSocket(client);
+      userId = authenticated.userId;
+      user = authenticated.user;
     } catch {
       this.logger.warn(`Rejected unauthenticated connection: ${client.id}`);
       client.emit('error', { message: 'Unauthorized' });
@@ -117,8 +109,11 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       return;
     }
 
-    if (!this.connectionLimiter.acquire(userId, client.id)) {
-      client.emit('error', { message: 'Too many concurrent connections' });
+    if (!(await this.connectionLimiter.acquire(userId, client.id))) {
+      client.emit('error', {
+        code: 'RATE_LIMITED',
+        message: 'Too many concurrent connections',
+      });
       client.disconnect(true);
       return;
     }
@@ -126,6 +121,8 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     client.data.userId = userId;
     // Read by @GetUser, RolesGuard and JwtAuthGuard in handlers (#362).
     client.data.user = user;
+    // Join a per-user room so revocation can target every socket of the user.
+    await client.join(`user:${userId}`);
     this.logger.log(`Client connected: ${client.id} (user ${userId})`);
 
     // Initialize per-socket session, keyed by client.id.
@@ -140,11 +137,40 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     });
   }
 
-  handleDisconnect(client: Socket) {
+  async handleDisconnect(client: Socket) {
     this.logger.log(`Client disconnected: ${client.id}`);
     this.sessions.delete(client.id);
     this.rateLimiter.clear(client.id);
-    this.connectionLimiter.release(client.data?.userId, client.id);
+    await this.connectionLimiter.release(client.data?.userId, client.id);
+  }
+
+  /**
+   * Disconnects every socket of a user whose token was revoked (password
+   * change, logout-all, deactivation) across all instances via the Redis
+   * adapter.
+   */
+  @OnEvent(RealtimeEvent.USER_SESSIONS_REVOKED)
+  async handleUserSessionsRevoked(payload: { userId: string }) {
+    if (!payload?.userId) return;
+    try {
+      const sockets = await this.server
+        .in(`user:${payload.userId}`)
+        .fetchSockets();
+      for (const socket of sockets) {
+        socket.emit('error', { message: 'Session revoked' });
+        socket.disconnect(true);
+      }
+      if (sockets.length > 0) {
+        this.logger.log(
+          `Disconnected ${sockets.length} revoked socket(s) for user ${payload.userId}`,
+        );
+      }
+    } catch (error) {
+      this.logger.error(
+        `Failed to disconnect revoked sockets for user ${payload.userId}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+    }
   }
 
   @SubscribeMessage('requestLyric')
@@ -167,31 +193,33 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
       let round;
       try {
-        round = await this.gameLogicService.issueRound(
-          session.playerId,
-          { ...options, excludeIds },
-        );
+        round = await this.gameLogicService.startRound(session.playerId, {
+          ...options,
+          excludeIds,
+        });
       } catch (error) {
         // The unseen pool is exhausted: reset the seen set and retry so the
         // player can keep playing.
         if (error instanceof NotFoundException && excludeIds.length > 0) {
           session.seenLyricIds.clear();
-          round = await this.gameLogicService.issueRound(
-            session.playerId,
-            { ...options, excludeIds: [] },
-          );
+          round = await this.gameLogicService.startRound(session.playerId, {
+            ...options,
+            excludeIds: [],
+          });
         } else {
           throw error;
         }
       }
 
-      session.currentRoundId = round.roundId;
-      session.seenLyricIds.add(round.lyric.id);
+      session.currentRoundId = round.id;
+      session.seenLyricIds.add(round.lyricId);
 
-      // Send only the lyric snippet (hide answers) plus round timing info.
+      // Emit exactly the HTTP response shape (GameLyricResponse): the lyric
+      // snippet (answers hidden) plus round timing info.
       client.emit('newLyric', {
-        roundId: round.roundId,
+        roundId: round.id,
         issuedAt: round.issuedAt,
+        expiresAt: round.expiresAt,
         answerWindowSeconds: round.answerWindowSeconds,
         id: round.lyric.id,
         lyricSnippet: round.lyric.lyricSnippet,
@@ -224,15 +252,6 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         return;
       }
 
-      // Validate guess
-      const validation = this.gameLogicService.validateGuess(
-        guessDto.guessValue,
-      );
-      if (!validation.isValid) {
-        client.emit('error', { message: validation.reason });
-        return;
-      }
-
       // Guess against the round this socket was issued, once, rather than a
       // client-supplied ID that could be replayed after the answer is shown.
       const roundId = session.currentRoundId;
@@ -242,14 +261,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       }
       session.currentRoundId = undefined;
 
-      const result = await this.gameLogicService.guessRound(
-        session.playerId,
+      // Emits the HTTP response shape (GuessResultResponse).
+      const result = await this.gameLogicService.guessRound(session.playerId, {
         roundId,
-        {
-          guessType: guessDto.guessType,
-          guessValue: guessDto.guessValue,
-        },
-      );
+        guessType: guessDto.guessType,
+        guessValue: guessDto.guessValue,
+      });
 
       client.emit('guessResult', result);
     } catch (error) {
@@ -276,10 +293,10 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         return;
       }
 
-      const hint = await this.gameLogicService.useHint(
-        session.playerId,
+      // Emits the HTTP response shape (RoundHintResponse).
+      const hint = await this.gameLogicService.getHint(session.playerId, {
         roundId,
-      );
+      });
 
       client.emit('hintResult', hint);
     } catch (error) {

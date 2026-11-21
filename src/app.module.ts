@@ -28,6 +28,7 @@ import { XpModule } from './xp-level/xp.module';
 import { AuditModule } from './audit/audit.module';
 import { MetricsModule } from './metrics/metrics.module';
 import { AchievementsModule } from './achievements/achievements.module';
+import { JobsModule } from './jobs/jobs.module';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { ThrottlerModule } from '@nestjs/throttler';
@@ -113,6 +114,7 @@ import { buildDataSourceOptions } from './config/database.config';
     AuditModule,
     MetricsModule,
     AchievementsModule,
+    JobsModule,
   ],
   controllers: [AppController],
   providers: [

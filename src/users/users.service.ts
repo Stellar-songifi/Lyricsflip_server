@@ -11,7 +11,6 @@ import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Not, Raw, Repository } from 'typeorm';
 import * as bcrypt from 'bcrypt';
-import { UpdateUserDto } from './dto/update-user.dto';
 import { UpdateUserPreferencesDto } from './dto/update-user-preferences.dto';
 import { User } from './entities/user.entity';
 import { Cache } from 'cache-manager';
@@ -40,7 +39,6 @@ const NON_TERMINAL_WAGER_STATUSES = [
 ];
 import { AdminUpdateUserDto, UpdateProfileDto } from './dto/update-user.dto';
 import { MAX_PAGE_SIZE } from '../common/dto/pagination-query.dto';
-import { cacheConfig } from '../config/cache.config';
 import { Optional } from '@nestjs/common';
 import { PublicUserDto } from './dto/public-user.dto';
 import { AchievementsService } from '../achievements/achievements.service';
@@ -53,6 +51,8 @@ import { EmailToken } from '../auth/entities/email-token.entity';
 import { PasswordResetToken } from '../auth/entities/password-reset-token.entity';
 import { Notification } from '../notifications/entities/notification.entity';
 import { AuditLog } from '../audit/entities/audit-log.entity';
+import { DeleteAccountDto } from './dto/delete-account.dto';
+import { StellarAuthService } from '../auth/stellar-auth.service';
 
 /** Public profiles are cached briefly; they change only after a match. */
 const PUBLIC_PROFILE_CACHE_TTL_MS = 60_000;
@@ -62,6 +62,12 @@ const TOKEN_SYMBOL = 'LYRIC';
 export type LeaderboardPeriod = 'weekly' | 'monthly' | 'all';
 
 const LEADERBOARD_PERIODS: LeaderboardPeriod[] = ['weekly', 'monthly', 'all'];
+
+export interface LeaderboardOptions {
+  limit?: number;
+  offset?: number;
+  period?: LeaderboardPeriod;
+}
 
 @Injectable()
 export class UsersService {
@@ -84,6 +90,12 @@ export class UsersService {
   @Optional()
   @Inject(AchievementsService)
   private readonly achievementsService?: AchievementsService;
+
+  // Optional so the constructor stays stable; used to re-authenticate
+  // wallet-only accounts (no password) via a fresh SEP-10 signature.
+  @Optional()
+  @Inject(StellarAuthService)
+  private readonly stellarAuthService?: StellarAuthService;
 
   async findAll(limit: number = 20, offset: number = 0) {
     return this.userRepository.find({
@@ -139,6 +151,13 @@ export class UsersService {
     const profile = PublicUserDto.from(user, record, achievements);
     await this.cacheManager.set(cacheKey, profile, PUBLIC_PROFILE_CACHE_TTL_MS);
     return profile;
+  }
+
+  /**
+   * Alias used by the controller for the public profile lookup.
+   */
+  async getPublicProfile(username: string): Promise<PublicUserDto> {
+    return this.findPublicProfile(username);
   }
 
   /**
@@ -339,7 +358,10 @@ export class UsersService {
     return 'Rookie';
   }
 
-  async update(id: string, updateUserDto: UpdateProfileDto | AdminUpdateUserDto) {
+  async update(
+    id: string,
+    updateUserDto: UpdateProfileDto | AdminUpdateUserDto,
+  ) {
     const user = await this.findOne(id);
 
     // Report taken usernames/emails as 409 rather than a unique-index 500
@@ -403,38 +425,73 @@ export class UsersService {
       );
     }
 
+    await this.userRepository.manager.transaction(async (manager) => {
+      // Revoke every refresh token and bump tokenVersion so any access token
+      // already issued stops validating immediately (R2-28).
+      await manager.delete(RefreshToken, { userId: id });
+      user.tokenVersion = (user.tokenVersion ?? 0) + 1;
+
+      user.isActive = false;
+      user.email = `deleted-${user.id}@deleted.lyricsflip.local`;
+      user.username = `deleted_${user.id}`;
+      user.name = null;
+      user.stellarAddress = null;
+      user.stellarAddressVerifiedAt = null;
+
+      await manager.save(user);
+    });
+
     await this.erasePersonalData(id);
+    await this.cacheManager.del(`user:${id}`);
 
-    user.isActive = false;
-    user.email = `deleted-${user.id}@deleted.lyricsflip.local`;
-    user.username = `deleted_${user.id}`;
-    user.name = null;
-    user.stellarAddress = null;
-    user.stellarAddressVerifiedAt = null;
-
-    await this.userRepository.save(user);
     return { message: 'User deactivated successfully' };
   }
 
   /**
-   * Self-service account deletion. Requires the current password so a stolen
-   * access token alone cannot delete the account.
+   * Self-service account deletion. Requires re-authentication so a stolen
+   * access token alone cannot delete the account: either the current password
+   * or, for wallet-only (SEP-10) accounts that have no usable password, a
+   * fresh SEP-10 signature over a challenge.
    */
-  async deleteAccount(userId: string, password: string) {
+  async deleteAccount(userId: string, dto: DeleteAccountDto) {
     const user = await this.userRepository.findOne({
       where: { id: userId },
-      select: ['id', 'password'],
+      select: ['id', 'passwordHash', 'stellarAddress'],
     });
     if (!user) {
       throw new NotFoundException(`User with ID ${userId} not found`);
     }
 
-    const matches =
-      typeof user.password === 'string' &&
-      user.password.length > 0 &&
-      (await bcrypt.compare(password, user.password));
-    if (!matches) {
-      throw new UnauthorizedException('Invalid password');
+    const hasPassword =
+      typeof user.passwordHash === 'string' && user.passwordHash.length > 0;
+
+    if (dto.password) {
+      const matches =
+        hasPassword && (await bcrypt.compare(dto.password, user.passwordHash));
+      if (!matches) {
+        throw new UnauthorizedException('Invalid password');
+      }
+    } else if (dto.challenge && dto.signature) {
+      if (!this.stellarAuthService) {
+        throw new UnauthorizedException(
+          'Signature re-authentication is unavailable',
+        );
+      }
+      if (!user.stellarAddress) {
+        throw new UnauthorizedException('Account has no linked wallet');
+      }
+      const verified = await this.stellarAuthService.verifySignature(
+        user.stellarAddress,
+        dto.challenge,
+        dto.signature,
+      );
+      if (!verified) {
+        throw new UnauthorizedException('Invalid signature');
+      }
+    } else {
+      throw new BadRequestException(
+        'Provide either the current password or a SEP-10 signature',
+      );
     }
 
     return this.remove(userId);
@@ -603,12 +660,35 @@ export class UsersService {
    * Leaderboard page. Ranks are computed with competition ranking
    * (`RANK() OVER (ORDER BY xp DESC)`) so tied users share the same rank,
    * matching the rank reported by `getMyRank`.
+   *
+   * Accepts either an options object (`{ limit, offset, period }`) or the
+   * legacy positional `(limit, offset, period)` arguments.
    */
   async getLeaderboard(
-    limit: number = 20,
-    offset: number = 0,
-    period: LeaderboardPeriod = 'all',
+    optionsOrLimit: LeaderboardOptions | number = {},
+    offsetArg: number = 0,
+    periodArg: LeaderboardPeriod = 'all',
   ) {
+    let limit: number;
+    let offset: number;
+    let period: LeaderboardPeriod;
+
+    if (typeof optionsOrLimit === 'number') {
+      limit = optionsOrLimit;
+      offset = offsetArg;
+      period = periodArg;
+    } else {
+      limit = optionsOrLimit.limit ?? 20;
+      offset = optionsOrLimit.offset ?? 0;
+      period = optionsOrLimit.period ?? 'all';
+    }
+
+    if (!LEADERBOARD_PERIODS.includes(period)) {
+      throw new BadRequestException(
+        `Invalid leaderboard period: ${period}. Expected one of ${LEADERBOARD_PERIODS.join(', ')}`,
+      );
+    }
+
     const safeLimit = Math.min(Math.max(limit, 1), MAX_PAGE_SIZE);
     const safeOffset = Math.max(offset, 0);
 

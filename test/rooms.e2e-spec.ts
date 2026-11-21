@@ -14,6 +14,7 @@ import { RoomUser } from '../src/rooms/entities/room-user.entity';
 import { Genre, Lyrics } from '../src/lyrics/entities/lyrics.entity';
 import { JwtAuthGuard } from '../src/auth/guards/jwt-auth.guard';
 import { GuessType } from '../src/game/dto/guess.dto';
+import { JobLockService } from '../src/tokens/services/job-lock.service';
 
 describe('Rooms (e2e)', () => {
   let app: INestApplication<App>;
@@ -38,29 +39,43 @@ describe('Rooms (e2e)', () => {
   const room = {
     id: '0b8e7c6d-5a4f-4e3d-9c2b-1a0f9e8d7c6b',
     name: 'Room',
+    code: 'ABC123',
+    hostId: user.id,
+    maxPlayers: 4,
     lyric,
     lyricId: lyric.id,
     isClosed: false,
+    isStarted: false,
+    finishedAt: null as Date | null,
     createdAt: new Date(),
     expiresAt: new Date(Date.now() + 60 * 60 * 1000),
   } as Room;
 
   // In-memory stand-ins for the two tables the rooms flow touches.
+  let rooms: Room[];
   let roomUsers: RoomUser[];
 
   const roomRepository = {
-    findOne: jest.fn(({ where }: { where: { id: string } }) =>
-      Promise.resolve(
-        where.id === room.id
+    findOne: jest.fn(({ where }: { where: { id?: string; code?: string } }) => {
+      const found = rooms.find(
+        (r) => (where.id && r.id === where.id) || (where.code && r.code === where.code),
+      );
+      return Promise.resolve(
+        found
           ? {
-              ...room,
+              ...found,
               roomUsers: roomUsers.map((ru) =>
                 ru.userId === user.id ? { ...ru, user } : ru,
               ),
             }
           : null,
-      ),
-    ),
+      );
+    }),
+    create: jest.fn((data: Partial<Room>) => ({ ...room, ...data }) as Room),
+    save: jest.fn((saved: Room) => {
+      rooms = [...rooms.filter((r) => r.id !== saved.id), saved];
+      return Promise.resolve(saved);
+    }),
   };
 
   const roomUserRepository = {
@@ -85,6 +100,10 @@ describe('Rooms (e2e)', () => {
     }),
   };
 
+  const jobLockService = {
+    withLock: jest.fn((_key: string, fn: () => Promise<unknown>) => fn()),
+  };
+
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({
       controllers: [RoomsController],
@@ -93,6 +112,7 @@ describe('Rooms (e2e)', () => {
         { provide: getRepositoryToken(Room), useValue: roomRepository },
         { provide: getRepositoryToken(RoomUser), useValue: roomUserRepository },
         { provide: getRepositoryToken(Lyrics), useValue: {} },
+        { provide: JobLockService, useValue: jobLockService },
       ],
     })
       .overrideGuard(JwtAuthGuard)
@@ -120,8 +140,58 @@ describe('Rooms (e2e)', () => {
   });
 
   beforeEach(() => {
+    rooms = [{ ...room }];
     roomUsers = [];
     jest.clearAllMocks();
+  });
+
+  it('creates a room and returns its join code', async () => {
+    const res = await request(app.getHttpServer())
+      .post('/rooms')
+      .send({ name: 'Room', maxPlayers: 4 })
+      .expect(201);
+
+    expect(roomRepository.save).toHaveBeenCalled();
+    expect(res.body).toMatchObject({ name: 'Room', maxPlayers: 4 });
+    expect(res.body.code).toEqual(expect.any(String));
+  });
+
+  it('joins a room by code', async () => {
+    const res = await request(app.getHttpServer())
+      .post('/rooms/join')
+      .send({ code: room.code })
+      .expect(201);
+
+    expect(res.body).toMatchObject({ roomId: room.id, userId: user.id });
+  });
+
+  it('lets the host start the room', async () => {
+    await request(app.getHttpServer())
+      .post(`/rooms/${room.id}/join`)
+      .expect(201);
+
+    const res = await request(app.getHttpServer())
+      .post(`/rooms/${room.id}/start`)
+      .expect(201);
+
+    expect(res.body).toMatchObject({ id: room.id, isStarted: true });
+  });
+
+  it('returns results once the room is finished', async () => {
+    await request(app.getHttpServer())
+      .post(`/rooms/${room.id}/join`)
+      .expect(201);
+
+    const res = await request(app.getHttpServer())
+      .get(`/rooms/${room.id}/results`)
+      .expect(200);
+
+    expect(res.body).toMatchObject({ roomId: room.id });
+    expect(res.body.players).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: user.id, username: 'player' }),
+      ]),
+    );
   });
 
   it('joins a room as the authenticated user id', async () => {

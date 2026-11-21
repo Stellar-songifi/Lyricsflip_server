@@ -31,3 +31,27 @@ export class PaginationQueryDto {
   @Min(0)
   offset?: number;
 }
+
+/** Envelope returned by every list endpoint. */
+export interface PaginatedResult<T> {
+  items: T[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+/**
+ * Wrap a page of results in the shared pagination envelope.
+ *
+ * `limit` and `offset` are the effective values used for the query (after
+ * any endpoint-specific default has been applied), so clients can rely on
+ * them to compute the next page.
+ */
+export function toPaginated<T>(
+  items: T[],
+  total: number,
+  limit: number,
+  offset: number,
+): PaginatedResult<T> {
+  return { items, total, limit, offset };
+}

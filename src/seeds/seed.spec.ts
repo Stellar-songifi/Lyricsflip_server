@@ -1,7 +1,7 @@
 import { DataSource, Repository } from 'typeorm';
 import { User } from '../users/entities/user.entity';
 import { Lyrics } from '../lyrics/entities/lyrics.entity';
-import { Role } from '../common/enums/role.enum';
+import { Role } from '../auth/roles/role.enum';
 
 // Seed data coverage: categories, aliases, and sample players are exercised by
 // the upsert test above. Sample players are development-only and are refused
@@ -92,6 +92,7 @@ describe('Seed Script', () => {
         genre: expect.any(String),
         artist: expect.any(String),
         songTitle: expect.any(String),
+        source: 'seed',
       }),
     );
 
@@ -118,7 +119,8 @@ describe('Seed Script', () => {
       artist: 'Existing Artist',
       songTitle: 'Existing Song',
       content: 'old',
-      aliases: [],
+      artistAliases: [],
+      titleAliases: [],
       category: null,
     });
 
@@ -128,8 +130,10 @@ describe('Seed Script', () => {
     expect(mockLyricsRepo.save).toHaveBeenCalledWith(
       expect.objectContaining({
         id: 'existing-lyrics',
-        aliases: expect.any(Array),
+        artistAliases: expect.any(Array),
+        titleAliases: expect.any(Array),
         category: expect.any(String),
+        source: 'seed',
       }),
     );
   });

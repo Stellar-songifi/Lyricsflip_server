@@ -69,20 +69,21 @@ export class GameController {
     );
 
     try {
-      const lyric = await this.gameLogicService.getRandomLyric({
-        ...options,
-        // Pass the player's preferences so the service can use them as
-        // fallback filters when no explicit genre/decade was supplied (#176).
-        // Only forward the preferred genre when it is a valid lyric genre;
-        // otherwise the fallback would throw a 400 for stored preferences
-        // that are not part of the lyric `Genre` enum (#310).
-        preferredGenre: this.toLyricGenre(user.preferredGenre),
-        preferredDecade: user.preferredDecade ?? undefined,
-      });
-      const round = await this.gameLogicService.issueRound(
+      // Pick a lyric and issue the round in one step so the HTTP controller
+      // and the socket gateway share a single code path (#444).
+      const { lyric, round } = await this.gameLogicService.startRound(
         user.id,
-        lyric.id,
-        sessionId,
+        {
+          ...options,
+          sessionId,
+          // Pass the player's preferences so the service can use them as
+          // fallback filters when no explicit genre/decade was supplied (#176).
+          // Only forward the preferred genre when it is a valid lyric genre;
+          // otherwise the fallback would throw a 400 for stored preferences
+          // that are not part of the lyric `Genre` enum (#310).
+          preferredGenre: this.toLyricGenre(user.preferredGenre),
+          preferredDecade: user.preferredDecade ?? undefined,
+        },
       );
 
       // Return only the fields needed for the game (hide correct answers)
@@ -273,7 +274,7 @@ export class GameController {
   @ApiResponse({
     status: 200,
     description: 'Aggregate lyric statistics.',
-    type: Object,
+    type: GameStatsResponse,
   })
   @Get('stats')
   async getLyricStats(
@@ -281,6 +282,16 @@ export class GameController {
     options // Every field is optional already. Partial<> erases the class at runtime,
     // which silently disables validation, so the DTO is used directly.
     : RandomLyricOptionsDto,
-  ):
+  ): Promise<GameStatsResponse> {
+    this.logger.log(
+      `Getting lyric stats with options: ${JSON.stringify(options)}`,
+    );
 
-/* … truncated 414 chars — edit only what you need near the top … */
+    try {
+      return await this.gameLogicService.getLyricStats(options);
+    } catch (error) {
+      this.logger.error('Error fetching lyric stats', error.stack);
+      throw error;
+    }
+  }
+}
