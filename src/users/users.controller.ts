@@ -193,15 +193,11 @@ export class UsersController {
     description: 'Invalid pagination, sort, order, period or genre.',
   })
   getLeaderboard(@Query() query: LeaderboardQueryDto, @GetUser() user?: User) {
-    return this.usersService.getLeaderboard({
-      limit: query.limit ?? 10,
-      offset: query.offset ?? 0,
-      sort: query.sort ?? 'xp',
-      order: query.order ?? 'DESC',
-      period: query.period ?? 'all',
-      genre: query.genre,
-      currentUserId: user?.id,
-    });
+    return this.usersService.getLeaderboard(
+      query.limit ?? 10,
+      query.offset ?? 0,
+      query.period ?? 'all',
+    );
   }
 
   /**
@@ -225,7 +221,7 @@ export class UsersController {
   findPublicByUsername(
     @Param('username') username: string,
   ): Promise<PublicUserDto> {
-    return this.usersService.findPublicProfile(username);
+    return this.usersService.getPublicProfile(username);
   }
 
   @Get(':id')

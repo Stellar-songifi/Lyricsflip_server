@@ -22,7 +22,7 @@ describe('StellarController', () => {
       ...overrides,
     } as StellarConfig;
 
-    rpc = { isHealthy: jest.fn() };
+    rpc = { isHealthy: jest.fn().mockResolvedValue(true) };
 
     controller = new StellarController(
       config,
@@ -95,10 +95,23 @@ describe('StellarController', () => {
         rpcHealthy: true,
         message: 'Soroban RPC reachable',
       });
+      expect(rpc.isHealthy).toHaveBeenCalledTimes(1);
     });
 
     it('reports an unreachable RPC endpoint without throwing', async () => {
       rpc.isHealthy.mockResolvedValue(false);
+
+      await expect(controller.getHealth()).resolves.toEqual({
+        settlementMode: 'stellar',
+        network: 'testnet',
+        rpcHealthy: false,
+        message: 'Soroban RPC unreachable',
+      });
+      expect(rpc.isHealthy).toHaveBeenCalledTimes(1);
+    });
+
+    it('reports an unreachable RPC endpoint when the probe rejects', async () => {
+      rpc.isHealthy.mockRejectedValue(new Error('rpc down'));
 
       await expect(controller.getHealth()).resolves.toEqual({
         settlementMode: 'stellar',

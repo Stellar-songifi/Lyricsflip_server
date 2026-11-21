@@ -1,4 +1,4 @@
-import { Controller, Get, Inject } from '@nestjs/common';
+import { Controller, Get, Inject, VERSION_NEUTRAL } from '@nestjs/common';
 import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { Public } from '../auth/decorators/public.decorator';
 import { STELLAR_CONFIG, TOKEN_DECIMALS } from './stellar.constants';
@@ -58,7 +58,12 @@ export class StellarController {
       };
     }
 
-    const healthy = await this.rpc.isHealthy();
+    let healthy: boolean;
+    try {
+      healthy = await this.rpc.isHealthy();
+    } catch {
+      healthy = false;
+    }
 
     return {
       settlementMode: this.config.settlementMode,

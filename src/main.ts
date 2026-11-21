@@ -45,6 +45,18 @@ function readTimeoutMs(name: string, fallback: number): number {
 const DEFAULT_BODY_LIMIT = '100kb';
 
 async function bootstrap() {
+  // Refuse to start in production when unsafe settings are detected. This runs
+  // before the Nest app is created so a misconfigured deployment fails fast
+  // with a single error naming every offending setting.
+  if (process.env.NODE_ENV === 'production') {
+    const problems = runProductionSafetyCheck(process.env);
+    if (problems.length > 0) {
+      throw new Error(
+        `Refusing to start in production due to unsafe configuration:\n- ${problems.join('\n- ')}`,
+      );
+    }
+  }
+
   // Instantiate the Winston logger before the app so bootstrap messages
   // also go through it.
   const winstonLogger = new LoggerService();
@@ -148,11 +160,6 @@ async function bootstrap() {
   httpServer.requestTimeout = requestTimeout;
   httpServer.headersTimeout = headersTimeout;
   httpServer.keepAliveTimeout = keepAliveTimeout;
-
-  // Refuse to start in production when unsafe settings are detected. This runs
-  // before the server starts listening so a misconfigured deployment fails
-  // fast with a message naming every offending setting.
-  runProductionSafetyCheck();
 
   const port = process.env.PORT ?? 3000;
   // All interfaces by default: inside a container, localhost is only the

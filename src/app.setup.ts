@@ -7,6 +7,15 @@ import { Reflector } from '@nestjs/core';
 import { json, urlencoded } from 'express';
 
 /**
+ * Global route prefix.
+ *
+ * URI versioning is enabled in app.openapi.ts, so Nest appends the version
+ * segment after this prefix. Keeping the prefix at `api` (not `api/v1`)
+ * yields `/api/v1/...` and avoids a duplicated `/api/v1/v1/...` segment.
+ */
+export const API_GLOBAL_PREFIX = 'api';
+
+/**
  * Global request validation and response serialization.
  *
  * Shared by main.ts and the e2e tests so tests exercise the same pipeline

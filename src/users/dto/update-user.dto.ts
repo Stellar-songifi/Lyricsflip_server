@@ -51,3 +51,10 @@ export class AdminUpdateUserDto extends UpdateProfileDto {
   @IsBoolean()
   isActive?: boolean;
 }
+
+/**
+ * Backwards-compatible alias for the admin update payload.
+ * `users.service.ts` imports `UpdateUserDto`; keep it exported so the
+ * service type-checks while the split DTOs remain the canonical names.
+ */
+export class UpdateUserDto extends AdminUpdateUserDto {}

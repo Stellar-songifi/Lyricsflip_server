@@ -42,7 +42,9 @@ USER app
 
 EXPOSE 3000
 
-# Liveness probe: /health/live is outside the api/v1 prefix (see main.ts).
+# Liveness probe: the health controller is VERSION_NEUTRAL and sits outside
+# the api/v1 prefix, so the unversioned path is /health/live (see
+# src/app.openapi.ts and main.ts).
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:' + (process.env.PORT || 3000) + '/health/live').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
 

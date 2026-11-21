@@ -8,7 +8,7 @@ import { GrantMockBalanceMode } from './dto/grant-mock-balance.dto';
 import { MockTokenService } from '../tokens/services/mock-token.service';
 import { UsersService } from '../users/users.service';
 import { LyricsService } from '../lyrics/lyrics.service';
-import { CreateLyricsDto } from '../lyrics/dto/create-lyrics.dto';
+import { CreateLyricDto } from '../lyrics/dto/create-lyric.dto';
 import { validate } from 'class-validator';
 import { plainToInstance } from 'class-transformer';
 import { AdminLyricQueryDto, AdminUserQueryDto } from './dto/admin-query.dto';
@@ -144,10 +144,10 @@ export class AdminService {
     };
 
     const seen = new Map<string, number>();
-    const valid: Array<{ line: number; dto: CreateLyricsDto }> = [];
+    const valid: Array<{ line: number; dto: CreateLyricDto }> = [];
 
     for (const { line, data } of rawRows) {
-      const dto = plainToInstance(CreateLyricsDto, data);
+      const dto = plainToInstance(CreateLyricDto, data);
       const validationErrors = await validate(dto, {
         whitelist: true,
         forbidNonWhitelisted: false,
@@ -190,8 +190,8 @@ export class AdminService {
       valid.map(({ dto }) => ({ artist: dto.artist, songTitle: dto.songTitle })),
     );
 
-    const toCreate: Array<{ line: number; dto: CreateLyricsDto }> = [];
-    const toUpdate: Array<{ line: number; dto: CreateLyricsDto }> = [];
+    const toCreate: Array<{ line: number; dto: CreateLyricDto }> = [];
+    const toUpdate: Array<{ line: number; dto: CreateLyricDto }> = [];
 
     for (const entry of valid) {
       const key = `${entry.dto.artist}\u0000${entry.dto.songTitle}`;
@@ -282,18 +282,24 @@ export class AdminService {
   }
 
   async findAllLyricsLegacy(query: PaginationQueryDto, status?: string) {
-    const page = query.page ?? 1;
     const limit = query.limit ?? 20;
+    const offset = query.offset ?? 0;
     const qb = this.userRepository.manager
       .createQueryBuilder()
       .select('lyric')
       .from('lyrics', 'lyric')
-      .skip((page - 1) * limit)
+      .skip(offset)
       .take(limit);
     if (status) {
       qb.where('lyric.status = :status', { status });
     }
     const [items, total] = await qb.getManyAndCount();
-    return { items, total, page, limit };
+    return toPaginated(items, total, limit, offset);
   }
+
+  /** Looks up a lyric by artist (and optional title) for admin tooling. */
+  findByArtist(artist: string, songTitle?: string) {
+    return this.lyricsService.findByArtist(artist, songTitle);
+  }
+}
 }

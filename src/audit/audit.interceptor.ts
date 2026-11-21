@@ -13,6 +13,8 @@ import {
   AUDIT_ACTION_KEY,
   AuditedOptions,
 } from './decorators/audited.decorator';
+import { AUDIT_ACTION_KEY, AuditedOptions } from './decorators/audited.decorator';
+import { redact } from '../common/utils/redact.util';
 
 /** The parts of a call the audit row records. An Express request fits. */
 interface AuditSource {
@@ -123,7 +125,9 @@ export class AuditInterceptor implements NestInterceptor {
       targetType: options.targetType ?? null,
       targetId,
       ip: request.ip ?? null,
-      payload: {
+      // Recursively redact password-like fields (e.g. `currentPassword`,
+      // `newPassword`) so plaintext credentials never reach `audit_logs`.
+      payload: redact({
         params: request.params,
         query: request.query,
         body: this.sanitize(request.body),
@@ -131,6 +135,8 @@ export class AuditInterceptor implements NestInterceptor {
           ? (auditContext as Record<string, unknown>)
           : {}),
       },
+        body: request.body,
+      }) as Record<string, unknown>,
     });
   }
 

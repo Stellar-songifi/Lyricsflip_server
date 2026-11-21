@@ -1,10 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { DataSource, LessThan, Repository } from 'typeorm';
+import { LessThan, Repository } from 'typeorm';
 import { Counter, Gauge } from 'prom-client';
 import { Wager, WagerStatus } from '../entities/wager.entity';
 import { WagerService } from './wager.service';
+import { JobLockService } from '../../jobs/job-lock.service';
 
 /** Runs an asynchronous task inside a fresh OpenTelemetry root span linked to the target wager. */
 export async function runWithRootSpan<T>(
@@ -38,13 +39,11 @@ export async function runWithRootSpan<T>(
   }
 }
 
-/** Arbitrary constant key for the Postgres advisory lock guarding the sweep. */
-export const WAGER_RECONCILE_LOCK_KEY = 7_139_001;
-
 /**
  * Reconciles wagers stuck in `SETTLING` against the chain without an operator.
  *
- * A Postgres advisory lock ensures only one instance sweeps at a time. Failed
+ * A Postgres advisory lock (via `JobLockService`) ensures only one instance
+ * sweeps at a time. Failed
  * attempts back off exponentially, and after `WAGER_RECONCILE_MAX_ATTEMPTS`
  * the wager is moved to `FAILED` and an error is logged as the alert.
  *
@@ -75,7 +74,7 @@ export class WagerReconcileJob {
     @InjectRepository(Wager)
     private readonly wagerRepository: Repository<Wager>,
     private readonly wagerService: WagerService,
-    private readonly dataSource: DataSource,
+    private readonly jobLockService: JobLockService,
   ) {}
 
   private envInt(name: string, fallback: number): number {
@@ -85,30 +84,12 @@ export class WagerReconcileJob {
 
   @Cron(CronExpression.EVERY_MINUTE)
   async sweep(): Promise<void> {
-    const runner = this.dataSource.createQueryRunner();
-    await runner.connect();
-
     try {
-      const rows: Array<{ locked: boolean }> = await runner.query(
-        'SELECT pg_try_advisory_lock($1) AS locked',
-        [WAGER_RECONCILE_LOCK_KEY],
+      await this.jobLockService.runExclusive('wager-reconcile', () =>
+        this.reconcileStuckWagers(),
       );
-
-      if (!rows[0]?.locked) {
-        return; // another instance is sweeping
-      }
-
-      try {
-        await this.reconcileStuckWagers();
-      } finally {
-        await runner.query('SELECT pg_advisory_unlock($1)', [
-          WAGER_RECONCILE_LOCK_KEY,
-        ]);
-      }
     } catch (error) {
       this.logger.error('Wager reconciliation sweep failed', (error as Error).stack);
-    } finally {
-      await runner.release();
     }
   }
 
@@ -142,7 +123,7 @@ export class WagerReconcileJob {
         async () => {
           try {
             const result = await this.wagerService.reconcileWager(wager.sessionId);
-            if (result.success) {
+            if (result?.success) {
               this.attempts.delete(wager.id);
               this.logger.log(`Wager ${wager.id} reconciled: ${result.message}`);
               return;

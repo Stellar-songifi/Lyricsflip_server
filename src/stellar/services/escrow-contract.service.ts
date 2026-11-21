@@ -19,7 +19,7 @@ import {
   SubmitResult,
   UnsignedTransaction,
 } from './stellar-rpc.service';
-import { TransactionSigner } from './transaction-signer';
+import type { TransactionSigner } from './transaction-signer';
 import { Stroops, toBigInt } from '../amount.util';
 
 /** Lifecycle of a pot, mirroring the contract's `PotStatus` enum. */

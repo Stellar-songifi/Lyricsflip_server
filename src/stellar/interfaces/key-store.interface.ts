@@ -1,4 +1,5 @@
 import { Keypair } from '@stellar/stellar-sdk';
+import { TransactionSigner } from '../services/transaction-signer';
 
 /**
  * Supplies the signing keys the backend needs.
@@ -26,14 +27,34 @@ export interface IKeyStore {
   /**
    * The key the escrow contract accepts for `resolve` and `refund`.
    * Throws when the store has not been configured with one.
+   *
+   * Kept for call sites that need the raw `Keypair` (e.g. to derive the
+   * address synchronously). Remote stores such as KMS or Vault cannot expose
+   * the secret, so they throw here; use {@link getResolverSigner} instead.
    */
   getResolverKeypair(): Keypair;
 
   /**
+   * The signer the escrow contract accepts for `resolve` and `refund`.
+   * Works for every backing store, including remote ones that never expose
+   * the secret key. Throws when the store has not been configured with one.
+   */
+  getResolverSigner(): TransactionSigner;
+
+  /**
    * The signing key for a player's stake, or `null` when the player must sign
    * the transaction themselves.
+   *
+   * Kept for call sites that need the raw `Keypair`. Remote stores throw here;
+   * use {@link getPlayerTransactionSigner} instead.
    */
   getPlayerSigner(userId: string): Promise<Keypair | null>;
+
+  /**
+   * The signer for a player's stake, or `null` when the player must sign the
+   * transaction themselves. Works for every backing store.
+   */
+  getPlayerTransactionSigner(userId: string): Promise<TransactionSigner | null>;
 
   /**
    * The Stellar address a player's funds move from. In custodial mode this is

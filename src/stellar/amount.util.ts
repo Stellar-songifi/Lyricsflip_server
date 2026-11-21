@@ -2,6 +2,10 @@ import { BadRequestException } from '@nestjs/common';
 import { I128_MAX, I128_MIN } from './stellar.constants';
 import { getTokenDecimals } from './token-decimals';
 
+// `getTokenDecimals` is resolved lazily on every call rather than captured at
+// module load, so the value loaded once at boot (stellar mode) or read from
+// `LYRIC_TOKEN_DECIMALS` (mock mode) is always the one in effect.
+
 /**
  * A token amount in base units ("stroops"), carried as a decimal string.
  *

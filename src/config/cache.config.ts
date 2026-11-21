@@ -1,3 +1,5 @@
+import { ConfigService } from '@nestjs/config';
+
 // cache-manager v7 takes TTLs in milliseconds. Every TTL here is suffixed
 // with Ms so a value like `30` (30 ms, not 30 s) stands out in review.
 
@@ -6,8 +8,8 @@
 // their TTL. Falls back to 5,000 when unset or invalid.
 const DEFAULT_MAX_ITEMS = 5000;
 
-function resolveMaxItems(): number {
-  const raw = process.env.CACHE_MAX_ITEMS;
+function resolveMaxItems(configService: ConfigService): number {
+  const raw = configService.get<string>('CACHE_MAX_ITEMS');
   if (!raw) {
     return DEFAULT_MAX_ITEMS;
   }
@@ -29,8 +31,11 @@ export const cacheConfig = {
   // Leaderboard pages (30 seconds)
   leaderboardTtlMs: 30 * 1000,
 
-  // Maximum number of items in the in-memory cache (configurable)
-  maxItems: resolveMaxItems(),
+  // Maximum number of items in the in-memory cache (configurable).
+  // Read through ConfigService so the value is validated at boot.
+  getMaxItems(configService: ConfigService): number {
+    return resolveMaxItems(configService);
+  },
 
   // Cache key prefixes
   keys: {

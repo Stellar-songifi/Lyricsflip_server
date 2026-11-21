@@ -6,7 +6,7 @@ import {
   Inject,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { DataSource, In, Repository } from 'typeorm';
 import { Cache } from 'cache-manager';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { Lyrics } from './entities/lyrics.entity';
@@ -77,8 +77,35 @@ export class LyricsService {
     private readonly lyricsRepository: Repository<Lyrics>,
     @Inject(CACHE_MANAGER)
     private readonly cacheManager: Cache,
+    private readonly dataSource: DataSource,
   ) {
     this.cacheTtlMs = cacheConfig.lyricsTtlMs;
+  }
+
+  /**
+   * Read-through cache helper. Loads the value with `loader` on a miss and
+   * stores it under `key` for `ttlMs`. A read that started before an
+   * invalidation must not repopulate the cache with stale data, so the
+   * generation is captured before loading and compared before writing.
+   */
+  private async getOrLoad<T>(
+    key: string,
+    ttlMs: number,
+    loader: () => Promise<T>,
+  ): Promise<T> {
+    const cached = await this.cacheManager.get<T>(key);
+    if (cached !== undefined && cached !== null) {
+      return cached;
+    }
+
+    const generation = this.cacheGeneration;
+    const value = await loader();
+
+    if (generation === this.cacheGeneration) {
+      await this.cacheManager.set(key, value, ttlMs);
+    }
+
+    return value;
   }
 
   /**
@@ -126,6 +153,51 @@ export class LyricsService {
       current + 1,
       this.cacheTtlMs,
     );
+  }
+
+  /**
+   * Public alias for {@link clearCache}. Exposed so admin flows and tests can
+   * drop every lyric cache entry without reaching into a private method.
+   */
+  async invalidateCache(): Promise<void> {
+    await this.clearCache();
+  }
+
+  /**
+   * Report how many lyric cache entries exist and their TTL. Keys are counted
+   * by type so operators can see which caches dominate the store.
+   */
+  async getCacheStats(): Promise<LyricsCacheStats> {
+    const version = await this.getNamespaceVersion();
+    const prefix = `lyrics:v${version}:`;
+    const keysByType = { lyrics: 0, random: 0, category: 0, search: 0 };
+
+    const store = this.cacheManager as unknown as {
+      store?: { keys?: (pattern?: string) => Promise<string[]> };
+    };
+    const allKeys =
+      typeof store.store?.keys === 'function'
+        ? await store.store.keys(`${prefix}*`)
+        : [];
+
+    for (const key of allKeys) {
+      const suffix = key.slice(prefix.length);
+      if (suffix.startsWith(cacheConfig.keys.lyrics)) {
+        keysByType.lyrics += 1;
+      } else if (suffix.startsWith(cacheConfig.keys.random)) {
+        keysByType.random += 1;
+      } else if (suffix.startsWith(cacheConfig.keys.category)) {
+        keysByType.category += 1;
+      } else if (suffix.startsWith(cacheConfig.keys.search)) {
+        keysByType.search += 1;
+      }
+    }
+
+    return {
+      keys: allKeys.length,
+      keysByType,
+      ttlMs: this.cacheTtlMs,
+    };
   }
 
   async create(createLyricsDto: CreateLyricsDto, user: User): Promise<Lyrics> {
@@ -392,9 +464,267 @@ export class LyricsService {
   }
 
   /**
-   * Normalise a value for alias comparison: lower-case, trim,
+   * Soft-delete a lyric by setting isActive to false. Kept as a distinct
+   * method so the controller's DELETE route has an explicit entry point.
+   */
+  async remove(id: number): Promise<void> {
+    if (!id || id <= 0) {
+      throw new BadRequestException('Invalid lyrics ID');
+    }
 
-/* … truncated 8616 chars — edit only what you need near the top … */
+    const lyrics = await this.lyricsRepository.findOne({
+      where: { id, isActive: true },
+    });
+
+    if (!lyrics) {
+      throw new NotFoundException('Lyrics not found');
+    }
+
+    lyrics.isActive = false;
+    await this.lyricsRepository.save(lyrics);
+
+    await this.clearCache();
+  }
+
+  /**
+   * Return one random active lyric, optionally narrowed by genre and decade.
+   * The result is cached briefly so a burst of requests does not hammer the
+   * database.
+   */
+  async getRandomLyrics(
+    genre?: string,
+    decade?: number | string,
+  ): Promise<Lyrics> {
+    const version = await this.getNamespaceVersion();
+    const cacheKey = this.namespacedKey(
+      version,
+      `${cacheConfig.keys.random}${genre ?? 'any'}:${decade ?? 'any'}`,
+    );
+
+    return this.getOrLoad(cacheKey, this.cacheTtlMs, async () => {
+      const query = this.lyricsRepository
+        .createQueryBuilder('lyrics')
+        .where('lyrics.isActive = :isActive', { isActive: true });
+
+      if (genre) {
+        const validGenres = Object.values(Genre);
+        if (!validGenres.includes(genre as Genre)) {
+          throw new BadRequestException(
+            `Invalid genre. Valid genres are: ${validGenres.join(', ')}`,
+          );
+        }
+        query.andWhere('lyrics.genre = :genre', { genre });
+      }
+
+      if (decade !== undefined && decade !== null && decade !== '') {
+        const decadeStr = normalizeDecade(decade.toString());
+        if (!decadeStr) {
+          throw new BadRequestException(
+            'Invalid decade. Please provide a decade such as 1990 or 1990s',
+          );
+        }
+        query.andWhere('lyrics.decade = :decade', { decade: decadeStr });
+      }
+
+      const lyrics = await query.orderBy('RANDOM()').limit(1).getOne();
+
+      if (!lyrics) {
+        throw new NotFoundException('No lyrics found matching criteria');
+      }
+
+      return lyrics;
+    });
+  }
+
+  /**
+   * Return every active lyric in one genre, capped at MAX_PAGE_SIZE.
+   */
+  async getLyricsByCategory(genre: string): Promise<Lyrics[]> {
+    const validGenres = Object.values(Genre);
+    if (!validGenres.includes(genre as Genre)) {
+      throw new BadRequestException(
+        `Invalid genre. Valid genres are: ${validGenres.join(', ')}`,
+      );
+    }
+
+    const version = await this.getNamespaceVersion();
+    const cacheKey = this.namespacedKey(
+      version,
+      `${cacheConfig.keys.category}${genre}`,
+    );
+
+    return this.getOrLoad(cacheKey, this.cacheTtlMs, async () =>
+      this.lyricsRepository.find({
+        where: { genre: genre as Genre, isActive: true },
+        order: { id: 'ASC' },
+        take: MAX_PAGE_SIZE,
+      }),
+    );
+  }
+
+  /**
+   * Case-insensitive search over title and artist, capped at MAX_PAGE_SIZE.
+   */
+  async searchLyrics(
+    query: string,
+    limit: number = MAX_PAGE_SIZE,
+    offset: number = 0,
+  ): Promise<Lyrics[]> {
+    const term = query?.trim();
+    if (!term) {
+      throw new BadRequestException('Search query is required');
+    }
+
+    const version = await this.getNamespaceVersion();
+    const cacheKey = this.namespacedKey(
+      version,
+      `${cacheConfig.keys.search}${term.toLowerCase()}:${limit}:${offset}`,
+    );
+
+    return this.getOrLoad(cacheKey, this.cacheTtlMs, async () =>
+      this.lyricsRepository
+        .createQueryBuilder('lyrics')
+        .where('lyrics.isActive = :isActive', { isActive: true })
+        .andWhere(
+          '(LOWER(lyrics.songTitle) LIKE :term OR LOWER(lyrics.artist) LIKE :term)',
+          { term: `%${term.toLowerCase()}%` },
+        )
+        .orderBy('lyrics.id', 'ASC')
+        .take(Math.min(Math.max(limit, 1), MAX_PAGE_SIZE))
+        .skip(Math.max(offset, 0))
+        .getMany(),
+    );
+  }
+
+  /**
+   * Look up a lyric by its artist and title. Used by the import flow to
+   * detect duplicates before inserting.
+   */
+  async findByArtistAndTitle(
+    artist: string,
+    title: string,
+  ): Promise<Lyrics | null> {
+    return this.lyricsRepository.findOne({
+      where: { artist, songTitle: title },
+    });
+  }
+
+  /**
+   * Return every lyric by one artist, regardless of active state. Used by the
+   * admin import to reconcile an artist's catalogue.
+   */
+  async findByArtist(artist: string): Promise<Lyrics[]> {
+    const normalized = artist?.trim();
+    if (!normalized) {
+      throw new BadRequestException('artist is required');
+    }
+
+    return this.lyricsRepository.find({
+      where: { artist: normalized },
+      order: { id: 'ASC' },
+    });
+  }
+
+  /**
+   * Return the subset of (artist, title) pairs that already exist. Used by the
+   * R2-87 import to skip duplicates before inserting.
+   */
+  async findExistingKeys(
+    keys: Array<{ artist: string; title: string }>,
+  ): Promise<Array<{ artist: string; title: string }>> {
+    if (!keys || keys.length === 0) {
+      return [];
+    }
+
+    const artists = Array.from(
+      new Set(keys.map((k) => k.artist?.trim()).filter(Boolean)),
+    );
+    if (artists.length === 0) {
+      return [];
+    }
+
+    const existing = await this.lyricsRepository.find({
+      where: { artist: In(artists) },
+      select: ['artist', 'songTitle'],
+    });
+
+    const existingSet = new Set(
+      existing.map((row) => `${row.artist}\u0000${row.songTitle}`),
+    );
+
+    return keys
+      .map((k) => ({ artist: k.artist?.trim(), title: k.title?.trim() }))
+      .filter((k) => existingSet.has(`${k.artist}\u0000${k.title}`));
+  }
+
+  /**
+   * Insert many lyrics in a single transaction. Used by the R2-87 import so a
+   * partial failure leaves no half-imported catalogue behind.
+   */
+  async bulkUpsert(
+    items: CreateLyricsDto[],
+    user?: User,
+  ): Promise<Lyrics[]> {
+    if (!items || items.length === 0) {
+      return [];
+    }
+
+    const saved = await this.dataSource.transaction(async (manager) => {
+      const repository = manager.getRepository(Lyrics);
+      const entities = items.map((item) => {
+        const lyricSnippet =
+          item.lyricSnippet?.trim() ||
+          (item.content ?? '').slice(0, MAX_LYRIC_SNIPPET_LENGTH).trim();
+
+        this.assertSnippetWithinLimit(lyricSnippet);
+        if (!lyricSnippet) {
+          throw new BadRequestException(
+            'Either lyricSnippet or content must be provided',
+          );
+        }
+
+        const fields = { ...item };
+        delete fields.content;
+
+        return repository.create({
+          ...fields,
+          content: null,
+          lyricSnippet,
+          addedBy: user?.id ?? null,
+          decade: item.decade
+            ? normalizeDecade(item.decade.toString())
+            : item.decade,
+          createdBy: user,
+        });
+      });
+
+      return repository.save(entities);
+    });
+
+    await this.clearCache();
+
+    return saved;
+  }
+
+  async update(
+    id: number,
+    updateLyricsDto: UpdateLyricsDto,
+    user: User,
+  ): Promise<Lyrics> {
+    // Validate ID
+    if (!id || id <= 0) {
+      throw new BadRequestException('Invalid lyrics ID');
+    }
+
+    const lyrics = await this.lyricsRepository.findOne({
+      where: { id, isActive: true },
+      relations: ['createdBy'],
+    });
+
+    if (!lyrics) {
+      throw new NotFoundException('Lyrics not found');
+    }
+
     // Optional: Check if user is admin or creator
     // if (lyrics.createdBy.id !== user.id && !user.isAdmin) {
     //   throw new ForbiddenException('You can only update your own lyrics');
@@ -402,8 +732,15 @@ export class LyricsService {
 
     // Update lyrics with new data
     Object.assign(lyrics, updateLyricsDto);
-    lyrics.updatedAt = new Date(); // Assuming you have updatedAt field
+    lyrics.updatedAt = new Date();
 
-    if (
+    if (updateLyricsDto.decade) {
+      lyrics.decade = normalizeDecade(updateLyricsDto.decade.toString());
+    }
 
-/* … truncated 1342 chars — edit only what you need near the top … */
+    const updated = await this.lyricsRepository.save(lyrics);
+
+    await this.clearCache();
+
+    return updated;
+  }

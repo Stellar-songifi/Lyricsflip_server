@@ -73,9 +73,26 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   constructor(private readonly gameLogicService: GameLogicService) {}
 
-  /** Returns false (and disconnects) if the event exceeds its rate limit. */
+  /**
+   * Returns false (and rejects the event with a RATE_LIMITED error) if the
+   * event exceeds its per-socket rate limit. Over-limit events are never
+   * processed by the handler.
+   */
   private allow(client: Socket, event: string): boolean {
-    return this.rateLimiter.consume(client, event);
+    const result = this.rateLimiter.consume(client, event);
+    if (!result.allowed) {
+      client.emit('error', {
+        code: 'RATE_LIMITED',
+        message: `Rate limit exceeded for ${event}`,
+        event,
+        retryAfterMs: result.retryAfterMs,
+      });
+      this.logger.warn(
+        `Rate limited ${client.id} on ${event} (retry in ${result.retryAfterMs}ms)`,
+      );
+      return false;
+    }
+    return true;
   }
 
   async handleConnection(client: Socket) {
@@ -92,8 +109,11 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       return;
     }
 
-    if (!this.connectionLimiter.acquire(userId, client.id)) {
-      client.emit('error', { message: 'Too many concurrent connections' });
+    if (!(await this.connectionLimiter.acquire(userId, client.id))) {
+      client.emit('error', {
+        code: 'RATE_LIMITED',
+        message: 'Too many concurrent connections',
+      });
       client.disconnect(true);
       return;
     }
@@ -117,11 +137,11 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     });
   }
 
-  handleDisconnect(client: Socket) {
+  async handleDisconnect(client: Socket) {
     this.logger.log(`Client disconnected: ${client.id}`);
     this.sessions.delete(client.id);
     this.rateLimiter.clear(client.id);
-    this.connectionLimiter.release(client.data?.userId, client.id);
+    await this.connectionLimiter.release(client.data?.userId, client.id);
   }
 
   /**
@@ -173,31 +193,33 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
       let round;
       try {
-        round = await this.gameLogicService.issueRound(
-          session.playerId,
-          { ...options, excludeIds },
-        );
+        round = await this.gameLogicService.startRound(session.playerId, {
+          ...options,
+          excludeIds,
+        });
       } catch (error) {
         // The unseen pool is exhausted: reset the seen set and retry so the
         // player can keep playing.
         if (error instanceof NotFoundException && excludeIds.length > 0) {
           session.seenLyricIds.clear();
-          round = await this.gameLogicService.issueRound(
-            session.playerId,
-            { ...options, excludeIds: [] },
-          );
+          round = await this.gameLogicService.startRound(session.playerId, {
+            ...options,
+            excludeIds: [],
+          });
         } else {
           throw error;
         }
       }
 
-      session.currentRoundId = round.roundId;
-      session.seenLyricIds.add(round.lyric.id);
+      session.currentRoundId = round.id;
+      session.seenLyricIds.add(round.lyricId);
 
-      // Send only the lyric snippet (hide answers) plus round timing info.
+      // Emit exactly the HTTP response shape (GameLyricResponse): the lyric
+      // snippet (answers hidden) plus round timing info.
       client.emit('newLyric', {
-        roundId: round.roundId,
+        roundId: round.id,
         issuedAt: round.issuedAt,
+        expiresAt: round.expiresAt,
         answerWindowSeconds: round.answerWindowSeconds,
         id: round.lyric.id,
         lyricSnippet: round.lyric.lyricSnippet,
@@ -230,15 +252,6 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         return;
       }
 
-      // Validate guess
-      const validation = this.gameLogicService.validateGuess(
-        guessDto.guessValue,
-      );
-      if (!validation.isValid) {
-        client.emit('error', { message: validation.reason });
-        return;
-      }
-
       // Guess against the round this socket was issued, once, rather than a
       // client-supplied ID that could be replayed after the answer is shown.
       const roundId = session.currentRoundId;
@@ -248,14 +261,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       }
       session.currentRoundId = undefined;
 
-      const result = await this.gameLogicService.guessRound(
-        session.playerId,
+      // Emits the HTTP response shape (GuessResultResponse).
+      const result = await this.gameLogicService.guessRound(session.playerId, {
         roundId,
-        {
-          guessType: guessDto.guessType,
-          guessValue: guessDto.guessValue,
-        },
-      );
+        guessType: guessDto.guessType,
+        guessValue: guessDto.guessValue,
+      });
 
       client.emit('guessResult', result);
     } catch (error) {
@@ -282,10 +293,10 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         return;
       }
 
-      const hint = await this.gameLogicService.useHint(
-        session.playerId,
+      // Emits the HTTP response shape (RoundHintResponse).
+      const hint = await this.gameLogicService.getHint(session.playerId, {
         roundId,
-      );
+      });
 
       client.emit('hintResult', hint);
     } catch (error) {

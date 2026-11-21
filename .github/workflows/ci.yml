@@ -28,6 +28,54 @@ jobs:
       - name: Check migration location
         run: bash scripts/check-migration-location.sh
 
+  # Guards against destructive edits (R3-29): truncation markers, relative
+  # imports that resolve to no file, and removed public API.
+  destructive-edit-guards:
+    name: No truncation markers or unresolved imports
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Fail on truncation / placeholder markers
+        run: node scripts/check-truncation-markers.mjs
+
+      - name: Fail on relative imports that resolve to no file
+        run: node scripts/check-unresolved-imports.mjs
+
+  removed-api:
+    name: Removed public API requires the removes-api label
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Detect removed exported functions, class methods and contract pub fn
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: node scripts/check-removed-api.mjs
+
   lint-typecheck-test-build:
     name: Lint, type-check, tests and build
     runs-on: ubuntu-latest
@@ -50,10 +98,18 @@ jobs:
       - name: Lint (check mode)
         run: npm run lint:check
 
+      # Cheap, dependency-free guards so a red run names the offending file.
+      - name: No truncation markers or unresolved imports
+        run: |
+          node scripts/check-truncation-markers.mjs
+          node scripts/check-unresolved-imports.mjs
+
       - name: Type-check
         run: npx tsc --noEmit
-      - name: Dead code report (knip, report only)
-        run: npx --yes knip@5 --include files,exports || true
+
+      # Blocking: an unused file or export fails the PR (#452).
+      - name: Dead code check (knip)
+        run: npx knip
 
       # Fails when a package is imported but not declared in package.json
       # (e.g. nodemailer, csv-parse, @types/multer): the image would crash
@@ -71,6 +127,65 @@ jobs:
       # crashes `node dist/main` (#355).
       - name: Start the compiled build (smoke test)
         run: bash scripts/smoke-start.sh
+
+  # Advisory only (#455): warns when a PR changes many lines in a file its
+  # linked issue does not name. Never fails the build.
+  scope-warning:
+    name: PR scope warning
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    env:
+      # Files outside the issue's list may change up to this many lines.
+      SCOPE_MAX_LINES: '40'
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      PR_BODY: ${{ github.event.pull_request.body }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Warn on out-of-scope changes
+        run: |
+          set -euo pipefail
+          issue=$(printf '%s' "$PR_BODY" | grep -oiE '(closes|fixes|resolves|refs?)[[:space:]]+#[0-9]+' | grep -oE '[0-9]+' | head -n1 || true)
+          if [ -z "${issue:-}" ]; then
+            echo "No linked issue found in the PR body; skipping scope check."
+            exit 0
+          fi
+          echo "Linked issue: #$issue"
+
+          body=$(gh api "repos/$REPO/issues/$issue" --jq '.body // ""')
+          # The issue lists its files as backticked paths under a "Files:" line.
+          allowed=$(printf '%s\n' "$body" | grep -iE '^\s*\*?\*?Files' | grep -oE '`[^`]+`' | tr -d '`' | sort -u || true)
+          echo "Files named by the issue:"
+          printf '%s\n' "$allowed"
+
+          git diff --numstat "$BASE_SHA" "$HEAD_SHA" > numstat.txt
+          warned=0
+          while IFS=$'\t' read -r added deleted file; do
+            [ -n "${file:-}" ] || continue
+            [ "$file" = "numstat.txt" ] && continue
+            if printf '%s\n' "$allowed" | grep -qxF "$file"; then
+              continue
+            fi
+            changed=$(( ${added:-0} + ${deleted:-0} ))
+            if [ "$changed" -gt "$SCOPE_MAX_LINES" ]; then
+              echo "::warning file=$file::Changes $changed lines in $file, which issue #$issue does not list. Explain this in the PR."
+              warned=1
+            fi
+          done < numstat.txt
+          if [ "$warned" -eq 0 ]; then
+            echo "All out-of-scope changes are within $SCOPE_MAX_LINES lines."
+          fi
 
   docker-build:
     name: Docker image builds and migrates an empty database
