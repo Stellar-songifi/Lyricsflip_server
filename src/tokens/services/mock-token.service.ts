@@ -3,10 +3,11 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, EntityManager } from 'typeorm';
 import { randomBytes } from 'crypto';
 import { User } from '../../users/entities/user.entity';
-import { Wager } from '../entities/wager.entity';
+import { Wager, WagerStatus } from '../entities/wager.entity';
 import {
   EscrowContext,
   ITokenService,
+  ReconcileResult,
   SettlementStatus,
   TokenTransactionResult,
 } from '../interfaces/token.interface';
@@ -17,7 +18,6 @@ import {
   isAtLeast,
   multiplyStroops,
   subtractStroops,
-  toBigInt,
 } from '../../stellar/amount.util';
 import type { SettlementMode } from '../../stellar/stellar.config';
 
@@ -33,10 +33,15 @@ import type { SettlementMode } from '../../stellar/stellar.config';
  * Amounts are stroops (1e-7 of a LYRIC), matching the on-chain backend exactly,
  * so switching modes never changes what a wager is worth.
  *
- * Pot state is derived from the persisted `wagers` row (stake hashes and
- * status) rather than an in-process map, so a pot survives restarts and is
- * shared across instances. Pot mutations happen inside the same transaction as
- * the balance changes, using the existing row lock pattern.
+ * Pot state is derived from the persisted `wagers` row (`status`,
+ * `playerAStakeTxHash` and `playerBStakeTxHash`) rather than an in-process map,
+ * so a pot survives restarts and is shared across instances. Pot mutations
+ * happen inside the same transaction as the balance changes, using the existing
+ * row lock pattern.
+ *
+ * `WagerService.createWager` persists the `PENDING` wager row *before* calling
+ * {@link openEscrow}, so opening escrow adopts that row and moves it to
+ * `AWAITING_STAKES` rather than inserting a second one.
  */
 @Injectable()
 export class MockTokenService implements ITokenService {
@@ -52,34 +57,56 @@ export class MockTokenService implements ITokenService {
   ) {}
 
   async openEscrow(context: EscrowContext): Promise<TokenTransactionResult> {
-    const existing = await this.wagerRepository.findOne({
-      where: { sessionId: context.sessionId },
-    });
+    try {
+      await this.userRepository.manager.transaction(
+        async (manager: EntityManager) => {
+          const wager = await this.lockWager(manager, context.sessionId);
 
-    if (existing) {
+          if (!wager) {
+            throw new NoPotError(context.sessionId);
+          }
+
+          if (wager.status === WagerStatus.SETTLED) {
+            throw new PotSettledError();
+          }
+
+          if (wager.status === WagerStatus.AWAITING_STAKES) {
+            // Already opened (idempotent retry) — nothing to do.
+            return;
+          }
+
+          if (wager.status !== WagerStatus.PENDING) {
+            throw new InvalidPotStateError(wager.status);
+          }
+
+          wager.status = WagerStatus.AWAITING_STAKES;
+          await manager.save(wager);
+        },
+      );
+
+      return {
+        success: true,
+        status: SettlementStatus.CONFIRMED,
+        txHash: this.fakeTxHash(),
+        message: `Escrow opened for ${fromStroops(context.stake)} LYRIC per player`,
+      };
+    } catch (error) {
+      if (
+        error instanceof NoPotError ||
+        error instanceof PotSettledError ||
+        error instanceof InvalidPotStateError
+      ) {
+        return this.failure(error.message);
+      }
+
+      this.logger.error(
+        `Error opening escrow for session ${context.sessionId}`,
+        (error as Error).stack,
+      );
       return this.failure(
-        `A pot already exists for session ${context.sessionId}`,
+        `Failed to open escrow: ${(error as Error).message}`,
       );
     }
-
-    const wager = this.wagerRepository.create({
-      sessionId: context.sessionId,
-      playerAId: context.playerAId,
-      playerBId: context.playerBId,
-      stake: context.stake,
-      status: 'OPEN',
-      stakeHashA: null,
-      stakeHashB: null,
-    });
-
-    await this.wagerRepository.save(wager);
-
-    return {
-      success: true,
-      status: SettlementStatus.CONFIRMED,
-      txHash: this.fakeTxHash(),
-      message: `Escrow opened for ${fromStroops(context.stake)} LYRIC per player`,
-    };
   }
 
   async stakeTokens(
@@ -102,13 +129,17 @@ export class MockTokenService implements ITokenService {
             throw new NoPotError(context.sessionId);
           }
 
-          if (wager.status === 'SETTLED') {
+          if (wager.status === WagerStatus.SETTLED) {
             throw new PotSettledError();
           }
 
+          if (wager.status !== WagerStatus.AWAITING_STAKES) {
+            throw new InvalidPotStateError(wager.status);
+          }
+
           if (
-            (isPlayerA && wager.stakeHashA) ||
-            (isPlayerB && wager.stakeHashB)
+            (isPlayerA && wager.playerAStakeTxHash) ||
+            (isPlayerB && wager.playerBStakeTxHash)
           ) {
             throw new AlreadyStakedError();
           }
@@ -124,9 +155,9 @@ export class MockTokenService implements ITokenService {
 
           const stakeHash = this.fakeTxHash();
           if (isPlayerA) {
-            wager.stakeHashA = stakeHash;
+            wager.playerAStakeTxHash = stakeHash;
           } else {
-            wager.stakeHashB = stakeHash;
+            wager.playerBStakeTxHash = stakeHash;
           }
           await manager.save(wager);
 
@@ -150,7 +181,8 @@ export class MockTokenService implements ITokenService {
         error instanceof InsufficientBalanceError ||
         error instanceof NoPotError ||
         error instanceof PotSettledError ||
-        error instanceof AlreadyStakedError
+        error instanceof AlreadyStakedError ||
+        error instanceof InvalidPotStateError
       ) {
         return this.failure(error.message);
       }
@@ -192,11 +224,11 @@ export class MockTokenService implements ITokenService {
             throw new NoPotError(context.sessionId);
           }
 
-          if (wager.status === 'SETTLED') {
+          if (wager.status === WagerStatus.SETTLED) {
             throw new PotSettledError();
           }
 
-          if (!wager.stakeHashA || !wager.stakeHashB) {
+          if (!wager.playerAStakeTxHash || !wager.playerBStakeTxHash) {
             throw new BothMustStakeError();
           }
 
@@ -204,7 +236,7 @@ export class MockTokenService implements ITokenService {
           winner.mockBalance = addStroops(winner.mockBalance, payout);
           await manager.save(winner);
 
-          wager.status = 'SETTLED';
+          wager.status = WagerStatus.SETTLED;
           await manager.save(wager);
 
           return winner.mockBalance;
@@ -247,13 +279,13 @@ export class MockTokenService implements ITokenService {
             throw new NoPotError(context.sessionId);
           }
 
-          if (wager.status === 'SETTLED') {
+          if (wager.status === WagerStatus.SETTLED) {
             throw new PotSettledError();
           }
 
           const refunds: string[] = [];
-          if (wager.stakeHashA) refunds.push(context.playerAId);
-          if (wager.stakeHashB) refunds.push(context.playerBId);
+          if (wager.playerAStakeTxHash) refunds.push(context.playerAId);
+          if (wager.playerBStakeTxHash) refunds.push(context.playerBId);
 
           for (const userId of refunds) {
             const user = await this.lockUser(manager, userId);
@@ -261,9 +293,9 @@ export class MockTokenService implements ITokenService {
             await manager.save(user);
           }
 
-          wager.stakeHashA = null;
-          wager.stakeHashB = null;
-          wager.status = 'SETTLED';
+          wager.playerAStakeTxHash = null;
+          wager.playerBStakeTxHash = null;
+          wager.status = WagerStatus.SETTLED;
           await manager.save(wager);
 
           return refunds.length;
@@ -286,6 +318,91 @@ export class MockTokenService implements ITokenService {
         (error as Error).stack,
       );
       return this.failure(`Failed to refund: ${(error as Error).message}`);
+    }
+  }
+
+  /**
+   * The mock backend keeps its ledger in Postgres, so there is nothing to
+   * reconcile against an external chain. Report the stored state so callers
+   * (and the admin tooling) can still see what the backend believes.
+   */
+  async reconcile(sessionId: string): Promise<ReconcileResult> {
+    const wager = await this.wagerRepository.findOne({
+      where: { sessionId },
+    });
+
+    if (!wager) {
+      return {
+        success: false,
+        status: SettlementStatus.FAILED,
+        message: `No pot found for session ${sessionId}`,
+      };
+    }
+
+    const playerAStaked = Boolean(wager.playerAStakeTxHash);
+    const playerBStaked = Boolean(wager.playerBStakeTxHash);
+
+    return {
+      success: true,
+      status: SettlementStatus.CONFIRMED,
+      message: `Mock pot ${sessionId} is ${wager.status} (A staked: ${playerAStaked}, B staked: ${playerBStaked})`,
+      onChainState: {
+        sessionId,
+        status: wager.status,
+        playerAStaked,
+        playerBStaked,
+      },
+    };
+  }
+
+  /**
+   * Credit (or set) a user's mock balance. Used by the admin mock-balance
+   * endpoint; the increment is atomic and the user row is locked for the
+   * duration of the transaction.
+   */
+  async grantMockBalance(
+    userId: string,
+    amount: Stroops,
+    mode: 'increment' | 'set' = 'increment',
+  ): Promise<TokenTransactionResult> {
+    try {
+      const newBalance = await this.userRepository.manager.transaction(
+        async (manager: EntityManager) => {
+          const user = await this.lockUser(manager, userId);
+
+          user.mockBalance =
+            mode === 'set'
+              ? amount
+              : addStroops(user.mockBalance, amount);
+
+          await manager.save(user);
+          return user.mockBalance;
+        },
+      );
+
+      this.logger.log(
+        `Granted mock balance to ${userId} (${mode} ${fromStroops(amount)} LYRIC); balance now ${fromStroops(newBalance)}`,
+      );
+
+      return {
+        success: true,
+        status: SettlementStatus.CONFIRMED,
+        txHash: this.fakeTxHash(),
+        newBalance,
+        message: `Mock balance ${mode === 'set' ? 'set to' : 'increased by'} ${fromStroops(amount)} LYRIC`,
+      };
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        return this.failure(error.message);
+      }
+
+      this.logger.error(
+        `Error granting mock balance to ${userId}`,
+        (error as Error).stack,
+      );
+      return this.failure(
+        `Failed to grant mock balance: ${(error as Error).message}`,
+      );
     }
   }
 
@@ -379,5 +496,11 @@ class AlreadyStakedError extends Error {
 class BothMustStakeError extends Error {
   constructor() {
     super('Both players must stake before the pot can be released');
+  }
+}
+
+class InvalidPotStateError extends Error {
+  constructor(status: WagerStatus) {
+    super(`Pot is in state ${status} and cannot be used for this operation`);
   }
 }
