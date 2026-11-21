@@ -1075,3 +1075,6 @@ Do not run stellar mode with real value until the P0 issues are closed.
 
 <!-- handsoff-issue-540 -->
 - #540: [R3-118] Anti-cheat signals: impossible answer speed and lookup patterns
+
+<!-- handsoff-issue-542 -->
+- #542: [R3-120] Themed lyric packs
