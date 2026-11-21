@@ -18,7 +18,7 @@ import { Genre } from "./genre.enum"
 export { Genre }
 
 @Entity()
-@Unique(["artist", "songTitle"]) // Combination uniqueness
+@Unique(["artist", "songTitle", "lyricSnippet"]) // Combination uniqueness
 @Check('"difficulty" BETWEEN 1 AND 5')
 export class Lyrics {
   @PrimaryGeneratedColumn()
