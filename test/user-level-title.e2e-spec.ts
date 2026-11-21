@@ -1,3 +1,4 @@
+import { runtimeEnv } from '../src/config/runtime-env';
 import { randomUUID } from 'crypto';
 import { DataSource, DataSourceOptions } from 'typeorm';
 import { User, UserLevel } from '../src/users/entities/user.entity';
@@ -8,10 +9,10 @@ import { RenameGossipGodToGossipGuru1790363500000 } from '../src/migrations/1790
 // and drops its own database, so DB_NAME is only used to connect.
 const connection = {
   type: 'postgres',
-  host: process.env.DB_HOST,
-  port: Number(process.env.DB_PORT ?? 5432),
-  username: process.env.DB_USERNAME,
-  password: process.env.DB_PASSWORD,
+  host: runtimeEnv().DB_HOST,
+  port: Number(runtimeEnv().DB_PORT ?? 5432),
+  username: runtimeEnv().DB_USERNAME,
+  password: runtimeEnv().DB_PASSWORD,
 } as const;
 
 describe('User level titles (e2e)', () => {
@@ -20,7 +21,7 @@ describe('User level titles (e2e)', () => {
   let dataSource: DataSource;
 
   beforeAll(async () => {
-    admin = new DataSource({ ...connection, database: process.env.DB_NAME });
+    admin = new DataSource({ ...connection, database: runtimeEnv().DB_NAME });
     await admin.initialize();
     await admin.query(`CREATE DATABASE "${database}"`);
 

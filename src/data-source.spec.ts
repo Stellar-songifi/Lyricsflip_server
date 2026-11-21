@@ -1,3 +1,4 @@
+import { runtimeEnv } from './config/runtime-env';
 import { existsSync, readFileSync, statSync } from 'fs';
 import { join } from 'path';
 
@@ -8,10 +9,10 @@ import { join } from 'path';
  */
 
 const ROOT = join(__dirname, '..');
-const ORIGINAL_ENV = { ...process.env };
+const ORIGINAL_ENV = { ...runtimeEnv() };
 
 function loadDataSourceModule(env: Record<string, string | undefined>) {
-  process.env = { ...ORIGINAL_ENV, ...env };
+  jest.replaceProperty(process, 'env', { ...ORIGINAL_ENV, ...env });
   let mod: typeof import('./data-source') | undefined;
   jest.isolateModules(() => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -21,7 +22,7 @@ function loadDataSourceModule(env: Record<string, string | undefined>) {
 }
 
 afterEach(() => {
-  process.env = { ...ORIGINAL_ENV };
+  jest.replaceProperty(process, 'env', { ...ORIGINAL_ENV });
 });
 
 describe('data source (#352)', () => {

@@ -1,3 +1,4 @@
+import { runtimeEnv } from '../../config/runtime-env';
 import { ArgumentsHost, HttpException, HttpStatus } from '@nestjs/common';
 import { QueryFailedError } from 'typeorm';
 import { AllExceptionsFilter } from './all-exceptions.filter';
@@ -139,7 +140,7 @@ describe('AllExceptionsFilter', () => {
   });
 
   it('uses production-safe messages for mapped database errors', () => {
-    process.env.NODE_ENV = 'production';
+    runtimeEnv().NODE_ENV = 'production';
     const prodFilter = new AllExceptionsFilter();
 
     const error = new QueryFailedError('query', [], new Error('raw detail'));
@@ -154,7 +155,7 @@ describe('AllExceptionsFilter', () => {
       }),
     );
 
-    process.env.NODE_ENV = 'test';
+    runtimeEnv().NODE_ENV = 'test';
   });
 
   it('names a 429 response "Too Many Requests"', () => {
@@ -185,7 +186,7 @@ describe('AllExceptionsFilter', () => {
   });
 
   it('hides an unknown error message in production', () => {
-    process.env.NODE_ENV = 'production';
+    runtimeEnv().NODE_ENV = 'production';
     const prodFilter = new AllExceptionsFilter();
 
     prodFilter.catch(new Error('table "users" violates constraint'), mockHost);
@@ -197,7 +198,7 @@ describe('AllExceptionsFilter', () => {
       }),
     );
 
-    process.env.NODE_ENV = 'test';
+    runtimeEnv().NODE_ENV = 'test';
   });
 
   it('echoes back an incoming x-request-id', () => {

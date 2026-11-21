@@ -1,5 +1,7 @@
+import { ConfigService } from '@nestjs/config';
 import {
   Injectable,
+  Optional,
   NotFoundException,
   BadRequestException,
   ConflictException,
@@ -60,10 +62,6 @@ const TERMINAL_WAGER_STATUSES = [
   WagerStatus.FAILED,
 ];
 
-/** How long player two has to accept an invitation. */
-const INVITATION_TTL_MS =
-  Number(process.env.INVITATION_TTL_MINUTES ?? 30) * 60 * 1000;
-
 /** How often unanswered invitations are swept up and refunded. */
 const INVITATION_SWEEP_INTERVAL_MS = 60 * 1000;
 
@@ -85,7 +83,12 @@ export class GameSessionsService {
     @Inject(TOKEN_SERVICE)
     private readonly tokenService: ITokenService,
     private readonly jobLockService: JobLockService,
+    @Optional() private readonly config?: ConfigService,
   ) {}
+
+  private get invitationTtlMs(): number {
+    return (this.config?.get<number>('INVITATION_TTL_MINUTES') ?? 30) * 60_000;
+  }
 
   async create(
     createGameSessionDto: CreateGameSessionDto,
@@ -303,7 +306,7 @@ export class GameSessionsService {
     const expired = await this.gameSessionRepository.find({
       where: {
         status: GameSessionStatus.WAITING_FOR_PLAYER,
-        createdAt: LessThan(new Date(Date.now() - INVITATION_TTL_MS)),
+        createdAt: LessThan(new Date(Date.now() - this.invitationTtlMs)),
       },
     });
 
@@ -370,7 +373,7 @@ export class GameSessionsService {
   }
 
   private isExpired(gameSession: GameSession): boolean {
-    return gameSession.createdAt.getTime() <= Date.now() - INVITATION_TTL_MS;
+    return gameSession.createdAt.getTime() <= Date.now() - this.invitationTtlMs;
   }
 
   /**

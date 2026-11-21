@@ -1,3 +1,4 @@
+import { runtimeEnv } from '../../config/runtime-env';
 import * as winston from 'winston';
 import { envValidationSchema } from '../../config/env.validation';
 import {
@@ -66,7 +67,7 @@ describe('resolveLogLevel', () => {
 });
 
 describe('LoggerService emits errors at every accepted level', () => {
-  const originalLevel = process.env.LOG_LEVEL;
+  const originalLevel = runtimeEnv().LOG_LEVEL;
   let written: jest.SpyInstance;
 
   beforeEach(() => {
@@ -83,14 +84,14 @@ describe('LoggerService emits errors at every accepted level', () => {
 
   afterEach(() => {
     written.mockRestore();
-    if (originalLevel === undefined) delete process.env.LOG_LEVEL;
-    else process.env.LOG_LEVEL = originalLevel;
+    if (originalLevel === undefined) delete runtimeEnv().LOG_LEVEL;
+    else runtimeEnv().LOG_LEVEL = originalLevel;
   });
 
   it.each(ACCEPTED_LOG_LEVELS)(
     'LOG_LEVEL=%s still writes an error',
     async (level) => {
-      process.env.LOG_LEVEL = level;
+      runtimeEnv().LOG_LEVEL = level;
       const logger = new LoggerService();
 
       logger.error('database exploded');

@@ -1,3 +1,4 @@
+import { runtimeEnv } from '../config/runtime-env';
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -28,7 +29,7 @@ export class DifficultyCalibratorJob {
 
   @Cron(CronExpression.EVERY_DAY_AT_3AM)
   async calibrate(): Promise<void> {
-    if (process.env.CALIBRATION_ENABLED !== 'true') {
+    if (runtimeEnv().CALIBRATION_ENABLED !== 'true') {
       this.logger.debug(
         'Difficulty calibration disabled (awaiting game_history writes, issue 57)',
       );

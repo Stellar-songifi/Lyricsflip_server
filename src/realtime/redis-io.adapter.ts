@@ -1,11 +1,11 @@
-import { Logger } from '@nestjs/common';
+import { INestApplicationContext, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { parseAllowedOrigins } from '../app.setup';
+import { wsMaxHttpBufferSize } from '../common/websocket/ws-connection-limiter';
 import { IoAdapter } from '@nestjs/platform-socket.io';
 import { createAdapter } from '@socket.io/redis-adapter';
 import { createClient } from 'redis';
 import type { ServerOptions } from 'socket.io';
-
-/** Default cap on a single inbound WebSocket message (16 KB). */
-export const DEFAULT_MAX_HTTP_BUFFER_SIZE = 16 * 1024;
 
 /**
  * Socket.IO adapter that broadcasts through Redis, so an event emitted on one
@@ -18,6 +18,13 @@ export const DEFAULT_MAX_HTTP_BUFFER_SIZE = 16 * 1024;
 export class RedisIoAdapter extends IoAdapter {
   private readonly logger = new Logger(RedisIoAdapter.name);
   private adapterConstructor?: ReturnType<typeof createAdapter>;
+
+  constructor(
+    app: INestApplicationContext,
+    private readonly config: ConfigService,
+  ) {
+    super(app);
+  }
 
   async connectToRedis(url: string): Promise<void> {
     const pubClient = createClient({ url });
@@ -36,8 +43,14 @@ export class RedisIoAdapter extends IoAdapter {
 
   createIOServer(port: number, options?: ServerOptions) {
     const server = super.createIOServer(port, {
-      maxHttpBufferSize: DEFAULT_MAX_HTTP_BUFFER_SIZE,
       ...options,
+      maxHttpBufferSize: wsMaxHttpBufferSize(this.config),
+      cors: {
+        origin: parseAllowedOrigins(
+          this.config.get('FRONTEND_URL', 'http://localhost:3000'),
+        ),
+        credentials: true,
+      },
     });
 
     if (this.adapterConstructor) {
