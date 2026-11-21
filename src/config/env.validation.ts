@@ -169,7 +169,15 @@ export const envValidationSchema = Joi.object({
   SETTLEMENT_DRAIN_TIMEOUT_MS: Joi.number().integer().min(1).default(30000),
   CACHE_MAX_ITEMS: Joi.number().integer().min(1).default(5000),
   CALIBRATION_ENABLED: Joi.string().valid('true', 'false').default('false'),
-  DAILY_CHALLENGE_SALT: Joi.string().optional().allow(''),
+  /**
+   * Server secret mixed into the daily seed so future sets cannot be computed
+   * from public lyric ids alone. Required in production (R3-15, R3-51).
+   */
+  DAILY_CHALLENGE_SALT: Joi.string().when('NODE_ENV', {
+    is: 'production',
+    then: Joi.string().min(16).required(),
+    otherwise: Joi.string().optional().allow(''),
+  }),
 
   // Observability
   OTEL_EXPORTER_OTLP_ENDPOINT: Joi.string().uri().optional().allow(''),
