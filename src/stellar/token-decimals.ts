@@ -3,7 +3,6 @@ import { ConfigService } from '@nestjs/config';
 import {
   Contract,
   TransactionBuilder,
-  nativeToScVal,
   rpc,
   scValToNative,
   xdr,
@@ -123,16 +122,17 @@ export class TokenDecimalsService implements OnModuleInit {
 }
 
 /**
- * Resolves the token decimals for the current mode.
- *
- * - stellar mode: reads `decimals()` from the token contract once at boot and
- *   refuses to start when it disagrees with `LYRIC_TOKEN_DECIMALS`.
- * - mock mode: honours `LYRIC_TOKEN_DECIMALS` directly.
+ * Reads configured decimals for synchronous amount conversions. A caller
+ * that supplies config can verify the value against the contract at boot.
  */
-export async function getTokenDecimals(
-  config: ConfigService,
-): Promise<number> {
+export function getTokenDecimals(): number;
+export function getTokenDecimals(config: ConfigService): Promise<number>;
+export function getTokenDecimals(
+  config?: ConfigService,
+): number | Promise<number> {
+  if (!config) {
+    return new TokenDecimalsService(new ConfigService()).getDecimals();
+  }
   const service = new TokenDecimalsService(config);
-  await service.onModuleInit();
-  return service.getDecimals();
+  return service.onModuleInit().then(() => service.getDecimals());
 }
