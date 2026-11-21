@@ -351,7 +351,5 @@ export class ChallengesService {
     };
 
     this.events.emit('user.completed_challenge', payload);
-    };
-    this.events.emit('challenge.completed', payload);
   }
 }

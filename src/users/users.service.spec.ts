@@ -16,7 +16,7 @@ import { Role } from '../auth/roles/role.enum';
 import { Wager, WagerStatus } from '../tokens/entities/wager.entity';
 import { cacheConfig } from '../config/cache.config';
 import * as bcrypt from 'bcrypt';
-import { TokenRevocationService } from '../auth/token-revocation.service';
+import { TokenRevocationService } from '../auth/services/token-revocation.service';
 import { TOKEN_SERVICE } from '../tokens/interfaces/token.interface';
 
 jest.mock('bcrypt', () => ({

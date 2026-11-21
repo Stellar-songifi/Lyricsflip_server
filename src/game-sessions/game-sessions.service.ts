@@ -7,10 +7,9 @@ import {
   GoneException,
   Inject,
   Logger,
-  OnApplicationBootstrap,
-  OnApplicationShutdown,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { Interval } from '@nestjs/schedule';
 import { LessThan, Repository } from 'typeorm';
 import {
   GameSession,
@@ -36,6 +35,7 @@ import {
 import type { WagerResult } from '../tokens/services/wager.service';
 import type { UnsignedTransaction } from '../stellar/services/stellar-rpc.service';
 import { sanitizeForDisplay } from '../common/utils/sanitize.util';
+import { JobLockService } from '../jobs/job-lock.service';
 
 /**
  * A created session, plus the wager handshake when there is one.
@@ -67,14 +67,14 @@ const INVITATION_TTL_MS =
 /** How often unanswered invitations are swept up and refunded. */
 const INVITATION_SWEEP_INTERVAL_MS = 60 * 1000;
 
+/** Advisory-lock name for the invitation sweep. */
+const INVITATION_SWEEP_LOCK = 'invitation-expiry';
+
 @Injectable()
-export class GameSessionsService
-  implements OnApplicationBootstrap, OnApplicationShutdown
-{
+export class GameSessionsService {
   private readonly logger = new Logger(GameSessionsService.name);
   /** Every settlement decision is written here: who, with what, and the result. */
   private readonly auditLogger = new Logger('SettlementAudit');
-  private expirySweep?: NodeJS.Timeout;
 
   constructor(
     @InjectRepository(GameSession)
@@ -84,6 +84,7 @@ export class GameSessionsService
     private readonly wagerService: WagerService,
     @Inject(TOKEN_SERVICE)
     private readonly tokenService: ITokenService,
+    private readonly jobLockService: JobLockService,
   ) {}
 
   async create(
@@ -230,17 +231,21 @@ export class GameSessionsService
     });
   }
 
-  onApplicationBootstrap(): void {
-    this.expirySweep = setInterval(() => {
-      this.expireInvitations().catch((error: Error) =>
-        this.logger.error('Error expiring invitations', error.stack),
+  /**
+   * Sweeps unanswered invitations. Runs on every instance's timer, but the
+   * advisory lock inside `runExclusive` ensures only one instance actually
+   * performs the sweep per tick.
+   */
+  @Interval(INVITATION_SWEEP_INTERVAL_MS)
+  async sweepExpiredInvitations(): Promise<void> {
+    try {
+      await this.jobLockService.runExclusive(INVITATION_SWEEP_LOCK, () =>
+        this.expireInvitations(),
       );
-    }, INVITATION_SWEEP_INTERVAL_MS);
-    this.expirySweep.unref();
-  }
-
-  onApplicationShutdown(): void {
-    clearInterval(this.expirySweep);
+    } catch (error: unknown) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      this.logger.error('Error expiring invitations', err.stack);
+    }
   }
 
   /**
@@ -497,7 +502,7 @@ export class GameSessionsService
     triggeredBy: User,
   ): Promise<{
     gameSession: GameSession;
-    wagerResult?: any;
+    wagerResult?: WagerResult;
     message: string;
     winnerId?: string | null;
     winnerUsername?: string | null;
@@ -527,7 +532,7 @@ export class GameSessionsService
     gameSession.status = GameSessionStatus.COMPLETED;
     gameSession.completedAt = new Date();
 
-    let wagerResult;
+    let wagerResult: WagerResult;
     let message: string;
     let winnerId: string | null = null;
     let winnerUsername: string | null = null;

@@ -36,6 +36,9 @@ import {
 } from './dto/grant-mock-balance.dto';
 import { AdminLyricQueryDto, AdminUserQueryDto } from './dto/admin-query.dto';
 import { GetUser } from '../auth/decorators/get-user.decorator';
+import { AdminReportQueryDto } from './dto/admin-report-query.dto';
+import { ResolveReportDto } from './dto/resolve-report.dto';
+import { GetUser } from '../auth/decorators/user.decorator';
 import { User } from '../users/entities/user.entity';
 
 @ApiTags('admin')

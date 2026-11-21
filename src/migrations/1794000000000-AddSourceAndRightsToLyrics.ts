@@ -16,10 +16,10 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  * content: it fills `content` from lyricSnippet so the NOT NULL constraint
  * can be reinstated.
  */
-export class AddSourceAndRightsToLyrics1794000000000
+export class AddSourceAndRightsToLyrics1794000000002
   implements MigrationInterface
 {
-  name = 'AddSourceAndRightsToLyrics1794000000000';
+  name = 'AddSourceAndRightsToLyrics1794000000002';
 
   public async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`

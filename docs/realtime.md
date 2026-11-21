@@ -83,13 +83,67 @@ Match state (shared lyric set, current round, per-round results, scores, ready f
 
 The `/game` namespace runs the same round loop as the HTTP API: every message is backed by `GameLogicService`, so a round row, its answer window, speed bonus, hints and history are created identically whether you play over WebSocket or HTTP. Socket-local state is keyed by `client.id`, so two tabs of the same user play independently and disconnecting one tab does not affect the other. Authoritative state lives in the database.
 
-| Message        | Payload                                                       | Ack                                                                                                                              |
-| -------------- | ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `requestLyric` | `{ sessionId? }`                                              | `{ roundId, issuedAt, answerWindowSeconds, lyric }` — or `{ error }` when the pool is exhausted (`NotFoundException`)          |
-| `submitGuess`  | `{ roundId, guess }`                                          | `{ roundId, isCorrect, points, speedBonus, timedOut, hintsUsed }` — same scoring as `POST /game/guess`                          |
-| `requestHint`  | `{ roundId }`                                                 | `{ roundId, hint, hintsUsed, pointsPenalty }` — same as `POST /game/hint`                                                        |
+Each socket message maps to exactly one HTTP endpoint and returns **the same response shape** as that endpoint — the same fields, the same values, the same `expiresAt`, hints, XP and history. A client can switch between HTTP and WebSocket mid-round without changing how it parses responses.
 
-`requestLyric` returns `roundId`, `issuedAt` and `answerWindowSeconds` so the client can render the countdown; the answer window, hard expiry and anti-replay checks are enforced server-side. `submitGuess` and `requestHint` persist a round and a history row, so every WebSocket guess is scored and recorded exactly like an HTTP one.
+| Message        | Payload              | Mirrors HTTP endpoint            | Ack (identical to the HTTP response) |
+| -------------- | -------------------- | -------------------------------- | ------------------------------------ |
+| `requestLyric` | `{ sessionId? }`     | `GET /game/lyric`                | `GameRoundResponse`                  |
+| `submitGuess`  | `{ roundId, guess }` | `POST /game/guess`               | `GuessResultResponse`                |
+| `requestHint`  | `{ roundId }`        | `GET /game/round/:id/hint`       | `HintResponse`                       |
+
+### `requestLyric` → `GET /game/lyric`
+
+Picks a lyric and issues a round in one step (`GameLogicService.startRound`), exactly as the HTTP controller does. The ack is the HTTP `GameRoundResponse`:
+
+```json
+{
+  "id": "b1e2c3d4-...",
+  "lyricId": "9f8e7d6c-...",
+  "issuedAt": "2024-05-01T12:00:00.000Z",
+  "expiresAt": "2024-05-01T12:00:30.000Z",
+  "answerWindowSeconds": 30,
+  "lyric": {
+    "id": "9f8e7d6c-...",
+    "text": "…",
+    "artist": "…",
+    "title": "…"
+  }
+}
+```
+
+`expiresAt` is the same absolute deadline the HTTP response returns; the answer window, hard expiry and anti-replay checks are enforced server-side. When the pool is exhausted the ack carries the standard error contract (`404`, `NotFoundException`).
+
+### `submitGuess` → `POST /game/guess`
+
+The ack is the HTTP `GuessResultResponse`, with the same scoring, speed bonus, XP award and history row:
+
+```json
+{
+  "roundId": "b1e2c3d4-...",
+  "isCorrect": true,
+  "points": 120,
+  "speedBonus": 20,
+  "timedOut": false,
+  "hintsUsed": 1,
+  "xp": 15,
+  "history": { "id": "…", "createdAt": "2024-05-01T12:00:12.000Z" }
+}
+```
+
+### `requestHint` → `GET /game/round/:id/hint`
+
+The ack is the HTTP `HintResponse`, with the same hint text, hint count and points penalty:
+
+```json
+{
+  "roundId": "b1e2c3d4-...",
+  "hint": "…",
+  "hintsUsed": 1,
+  "pointsPenalty": 10
+}
+```
+
+`submitGuess` and `requestHint` persist a round and a history row, so every WebSocket guess is scored and recorded exactly like an HTTP one (R3-70).
 
 ## Where events come from
 

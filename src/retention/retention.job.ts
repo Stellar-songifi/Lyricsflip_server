@@ -2,9 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { DataSource } from 'typeorm';
-
-/** Advisory lock key so only one instance runs the retention job at a time. */
-const RETENTION_LOCK_KEY = 0x52455431; // "RET1"
+import { JobLockService } from '../jobs/job-lock.service';
 
 /** Rows moved per statement, so no single transaction holds long locks. */
 const ARCHIVE_BATCH_SIZE = 5_000;
@@ -31,34 +29,20 @@ export class RetentionJob {
   constructor(
     private readonly dataSource: DataSource,
     private readonly config: ConfigService,
+    private readonly jobLockService: JobLockService,
   ) {}
 
   @Cron(CronExpression.EVERY_DAY_AT_5AM)
   async run(): Promise<void> {
-    // Advisory locks belong to a connection, so take and release it on one.
-    const runner = this.dataSource.createQueryRunner();
-    await runner.connect();
-    try {
-      const [{ locked }] = await runner.query(
-        'SELECT pg_try_advisory_lock($1) AS locked',
-        [RETENTION_LOCK_KEY],
-      );
-      if (!locked) {
-        this.logger.debug('Retention job already running elsewhere');
-        return;
-      }
-      try {
-        const ips = await this.clearAuditIps();
-        const archived = await this.archiveGameHistory();
-        this.logger.log(
-          `Retention: cleared ${ips} audit IPs, archived ${archived} game_history rows`,
-        );
-      } finally {
-        await runner.query('SELECT pg_advisory_unlock($1)', [RETENTION_LOCK_KEY]);
-      }
-    } finally {
-      await runner.release();
-    }
+    await this.jobLockService.runExclusive('retention', () => this.runRetention());
+  }
+
+  private async runRetention(): Promise<void> {
+    const ips = await this.clearAuditIps();
+    const archived = await this.archiveGameHistory();
+    this.logger.log(
+      `Retention: cleared ${ips} audit IPs, archived ${archived} game_history rows`,
+    );
   }
 
   async clearAuditIps(): Promise<number> {
