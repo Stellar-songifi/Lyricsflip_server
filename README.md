@@ -1078,3 +1078,6 @@ Do not run stellar mode with real value until the P0 issues are closed.
 
 <!-- handsoff-issue-533 -->
 - #533: [R3-111] Ranked and casual modes
+
+<!-- handsoff-issue-534 -->
+- #534: [R3-112] Seasons, with seasonal leaderboards and rewards
