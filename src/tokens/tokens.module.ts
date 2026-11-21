@@ -1,3 +1,4 @@
+import { WagersController } from './wagers.controller';
 import { Logger, Module } from '@nestjs/common';
 import { TypeOrmModule, getRepositoryToken } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -23,6 +24,7 @@ import type { StellarConfig } from '../stellar/stellar.config';
     TypeOrmModule.forFeature([Wager, User, GameSession]),
     StellarModule,
   ],
+  controllers: [WagersController],
   providers: [
     {
       // Which settlement backend the game runs on is a deployment decision, not

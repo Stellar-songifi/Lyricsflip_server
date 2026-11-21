@@ -1,9 +1,17 @@
+import { EscrowContractService } from '../../stellar/services/escrow-contract.service';
+import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
+import {
+  DEFAULT_PAGE_SIZE,
+  toPaginated,
+} from '../../common/dto/paginated-response.dto';
+import { WagerViewDto } from '../dto/wager-view.dto';
 import {
   Injectable,
   Logger,
   NotFoundException,
   BadRequestException,
   Inject,
+  Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
@@ -76,6 +84,7 @@ export class WagerService {
     private readonly tokenService: ITokenService,
     private readonly configService: ConfigService,
     private readonly settlementTracker: InFlightSettlementTracker,
+    @Optional() private readonly escrow?: EscrowContractService,
   ) {}
 
   /**
@@ -470,7 +479,10 @@ export class WagerService {
   ): Promise<WagerResult> {
     const wager = await this.requireWager(sessionId);
 
-    if (wager.status === WagerStatus.WON || wager.status === WagerStatus.DRAW) {
+    if (
+      wager.status === WagerStatus.WON ||
+      wager.status === WagerStatus.REFUNDED
+    ) {
       return {
         success: true,
         wager,
@@ -565,7 +577,10 @@ export class WagerService {
   async resolveWagerAsDraw(sessionId: string): Promise<WagerResult> {
     const wager = await this.requireWager(sessionId);
 
-    if (wager.status === WagerStatus.DRAW || wager.status === WagerStatus.WON) {
+    if (
+      wager.status === WagerStatus.REFUNDED ||
+      wager.status === WagerStatus.WON
+    ) {
       return { success: true, wager, message: 'Wager already settled' };
     }
 
@@ -626,7 +641,7 @@ export class WagerService {
         return { success: false, wager, message: wager.resultMessage };
       }
 
-      wager.status = WagerStatus.DRAW;
+      wager.status = WagerStatus.REFUNDED;
       wager.resultMessage = 'Draw — both stakes refunded';
       wager = await this.wagerRepository.save(wager);
 
@@ -676,7 +691,7 @@ export class WagerService {
       return { success: false, wager: saved, message: saved.resultMessage };
     }
 
-    wager.status = wager.winnerId ? WagerStatus.WON : WagerStatus.DRAW;
+    wager.status = wager.winnerId ? WagerStatus.WON : WagerStatus.REFUNDED;
     wager.resultMessage = wager.winnerId
       ? `Winner paid ${fromStroops(wager.totalPotStroops)} LYRIC`
       : 'Draw — both stakes refunded';
@@ -696,14 +711,98 @@ export class WagerService {
   }
 
   async getWagerBySessionId(sessionId: string): Promise<Wager | null> {
-    return this.wagerRepository.findOne({ where: { sessionId } });
+    return this.wagerRepository.findOne({
+      where: { sessionId },
+      relations: { playerA: true, playerB: true },
+      select: { playerA: { username: true }, playerB: { username: true } },
+    });
   }
 
   async getUserWagers(userId: string): Promise<Wager[]> {
-    return this.wagerRepository.find({
+    return this.findUserWagers(userId);
+  }
+
+  async findUserWagers(
+    userId: string,
+    limit?: number,
+    offset?: number,
+  ): Promise<Wager[]> {
+    return this.wagerRepository.find(
+      this.historyOptions(userId, limit, offset),
+    );
+  }
+
+  async getUserWagerPage(userId: string, query: PaginationQueryDto) {
+    const limit = query.limit ?? DEFAULT_PAGE_SIZE;
+    const offset = query.offset ?? 0;
+    const [wagers, total] = await this.wagerRepository.findAndCount(
+      this.historyOptions(userId, limit, offset),
+    );
+    const data = await Promise.all(
+      wagers.map((wager) => this.toView(wager, userId)),
+    );
+    return toPaginated(data, total, limit, offset);
+  }
+
+  private historyOptions(userId: string, limit?: number, offset?: number) {
+    return {
       where: [{ playerAId: userId }, { playerBId: userId }],
-      order: { createdAt: 'DESC' },
-    });
+      relations: { playerA: true, playerB: true },
+      select: { playerA: { username: true }, playerB: { username: true } },
+      order: { createdAt: 'DESC', id: 'DESC' } as const,
+      take: limit,
+      skip: offset,
+    };
+  }
+
+  async toView(wager: Wager, userId: string): Promise<WagerViewDto> {
+    const isStellar = wager.settlementMode === 'stellar';
+    const network = this.configService.get<string>(
+      'STELLAR_NETWORK',
+      'testnet',
+    );
+    const transaction = (hash: string | null | undefined) =>
+      hash
+        ? {
+            hash,
+            explorerUrl:
+              isStellar && (network === 'public' || network === 'testnet')
+                ? `https://stellar.expert/explorer/${network}/tx/${encodeURIComponent(hash)}`
+                : null,
+          }
+        : null;
+
+    const pot =
+      isStellar && wager.escrowTxHash
+        ? await this.escrow?.getPot(wager.sessionId)
+        : null;
+    const opponent =
+      wager.playerAId === userId
+        ? wager.playerB
+        : wager.playerBId === userId
+          ? wager.playerA
+          : null;
+
+    return {
+      id: wager.id,
+      sessionId: wager.sessionId,
+      stake: {
+        stroops: wager.stakeStroops,
+        display: fromStroops(wager.stakeStroops),
+      },
+      totalPot: {
+        stroops: wager.totalPotStroops,
+        display: fromStroops(wager.totalPotStroops),
+      },
+      opponentUsername: opponent?.username ?? null,
+      status: wager.status,
+      escrow: transaction(wager.escrowTxHash),
+      playerAStake: transaction(wager.playerAStakeTxHash),
+      playerBStake: transaction(wager.playerBStakeTxHash),
+      settlement: transaction(wager.settlementTxHash),
+      claimDeadlineLedger: pot?.deadlineLedger || null,
+      stakeDeadline: wager.stakeDeadline ?? null,
+    };
   }
 
   /**

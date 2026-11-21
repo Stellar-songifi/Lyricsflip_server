@@ -91,7 +91,7 @@ export class GameSessionsService {
     createGameSessionDto: CreateGameSessionDto,
     player: User,
   ): Promise<CreateGameSessionResponse> {
-    const { mode, playerTwoId, wagerAmount, hasWager } = createGameSessionDto;
+    const { mode, playerTwoId, wagerAmount } = createGameSessionDto;
 
     // Validate multiplayer/wagered game requirements
     if (mode === GameMode.MULTIPLAYER || mode === GameMode.WAGERED) {
@@ -121,7 +121,7 @@ export class GameSessionsService {
     // row is written, and every downstream call works in stroops.
     let stake: Stroops | undefined;
 
-    if (mode === GameMode.WAGERED || hasWager) {
+    if (mode === GameMode.WAGERED) {
       if (!wagerAmount || !isPositive((stake = toStroops(wagerAmount)))) {
         throw new BadRequestException(
           'Wager amount must be greater than 0 for wagered games',
@@ -163,7 +163,7 @@ export class GameSessionsService {
 
     const gameSession = this.gameSessionRepository.create({
       ...sessionFields,
-      hasWager: mode === GameMode.WAGERED || Boolean(hasWager),
+      hasWager: mode === GameMode.WAGERED,
       player,
       wagerStroops: stake ?? null,
       status:
@@ -175,7 +175,7 @@ export class GameSessionsService {
     const savedGameSession = await this.gameSessionRepository.save(gameSession);
 
     // Create wager if this is a wagered game
-    if ((mode === GameMode.WAGERED || hasWager) && stake && playerTwoId) {
+    if (mode === GameMode.WAGERED && stake && playerTwoId) {
       const wagerResult = await this.wagerService.createWager({
         sessionId: savedGameSession.id,
         playerAId: player.id,
@@ -663,14 +663,18 @@ export class GameSessionsService {
     return this.wagerService.getWagerBySessionId(sessionId);
   }
 
-  /**
-   * Gets user's wager history
-   */
+  async getSessionWagerView(sessionId: string, user: User) {
+    const wager = await this.getSessionWager(sessionId, user);
+    if (!wager) throw new NotFoundException('This session has no wager');
+    return this.wagerService.toView(wager, user.id);
+  }
+
+  /** Gets the user's wager history. */
   async getUserWagers(
     userId: string,
     limit: number = 10,
     offset: number = 0,
   ): Promise<Wager[]> {
-    return this.wagerService.getUserWagers(userId, limit, offset);
+    return this.wagerService.findUserWagers(userId, limit, offset);
   }
 }
