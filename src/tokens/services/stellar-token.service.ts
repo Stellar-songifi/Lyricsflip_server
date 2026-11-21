@@ -264,7 +264,11 @@ export class StellarTokenService implements ITokenService {
 
     return {
       success: false,
-      status: SettlementStatus.SUBMIT
+      status: SettlementStatus.SUBMITTED,
+      txHash,
+      message:
+        'The transaction has not been confirmed yet; it may still be in ' +
+        'flight. Reconcile again before retrying.',
     };
   }
 
@@ -298,5 +302,105 @@ export class StellarTokenService implements ITokenService {
           'opening a wager.',
       );
     }
+  }
+
+  /**
+   * Resolves a user's Stellar address, rejecting users who have not linked a
+   * wallet.
+   */
+  private async requireAddress(userId: string): Promise<string> {
+    const user = await this.userRepository.findOne({ where: { id: userId } });
+
+    if (!user) {
+      throw new NotFoundException(`User ${userId} not found`);
+    }
+
+    if (!user.stellarPublicKey) {
+      throw new BadRequestException(
+        `User ${userId} has not linked a Stellar wallet`,
+      );
+    }
+
+    return user.stellarPublicKey;
+  }
+
+  /**
+   * Resolves the address a payout should be sent to, preferring the address
+   * recorded on the escrow context when it belongs to the winner.
+   */
+  private async addressForPlayer(
+    userId: string,
+    context: EscrowContext,
+  ): Promise<string> {
+    if (context.playerAId === userId && context.playerAAddress) {
+      return context.playerAAddress;
+    }
+
+    if (context.playerBId === userId && context.playerBAddress) {
+      return context.playerBAddress;
+    }
+
+    return this.requireAddress(userId);
+  }
+
+  /**
+   * Reads a balance without letting an RPC hiccup turn a successful
+   * settlement into a reported failure.
+   */
+  private async safeBalance(address: string): Promise<Stroops | undefined> {
+    try {
+      return await this.escrow.getTokenBalance(address);
+    } catch (error) {
+      this.logger.warn(
+        `Could not read balance for ${address}: ${(error as Error).message}`,
+      );
+      return undefined;
+    }
+  }
+
+  /**
+   * Maps a submission result onto the service's result contract, keeping the
+   * distinction between "confirmed" and "submitted but unconfirmed".
+   */
+  private toTransactionResult(
+    result: SubmitResult,
+    message: string,
+    balance?: Stroops,
+  ): TokenTransactionResult {
+    if (result.confirmed) {
+      return {
+        success: true,
+        status: SettlementStatus.CONFIRMED,
+        txHash: result.hash,
+        balance,
+        message,
+      };
+    }
+
+    return {
+      success: false,
+      status: SettlementStatus.SUBMITTED,
+      txHash: result.hash,
+      balance,
+      message: `${message} — submitted but not yet confirmed on-chain.`,
+    };
+  }
+
+  /**
+   * Turns an unexpected error into a reported settlement failure rather than
+   * letting it escape as an unhandled exception.
+   */
+  private toFailure(
+    error: unknown,
+    action: string,
+  ): TokenTransactionResult {
+    const message = error instanceof Error ? error.message : String(error);
+    this.logger.error(`Failed to ${action}: ${message}`);
+
+    return {
+      success: false,
+      status: SettlementStatus.FAILED,
+      message: `Could not ${action}: ${message}`,
+    };
   }
 }

@@ -123,7 +123,7 @@ export class WagerReconcileJob {
         async () => {
           try {
             const result = await this.wagerService.reconcileWager(wager.sessionId);
-            if (result.success) {
+            if (result?.success) {
               this.attempts.delete(wager.id);
               this.logger.log(`Wager ${wager.id} reconciled: ${result.message}`);
               return;

@@ -17,8 +17,20 @@ export class StellarRpcHealthIndicator extends HealthIndicator {
   }
 
   async isHealthy(key: string): Promise<HealthIndicatorResult> {
-    const healthy = await this.rpc.isHealthy();
-    const result = this.getStatus(key, healthy);
+    let healthy = false;
+    let error: unknown;
+
+    try {
+      healthy = await this.rpc.isHealthy();
+    } catch (err) {
+      error = err;
+      healthy = false;
+    }
+
+    const result = this.getStatus(key, healthy, {
+      mode: 'stellar',
+      ...(error ? { error: error instanceof Error ? error.message : String(error) } : {}),
+    });
 
     if (!healthy) {
       throw new HealthCheckError('Soroban RPC unreachable', result);

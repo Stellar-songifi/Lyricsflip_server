@@ -518,7 +518,7 @@ export class GameSessionsService {
       );
     }
 
-    if (!gameSession.hasWager) {
+    if (!this.isWagered(gameSession)) {
       throw new BadRequestException('This game session does not have a wager');
     }
 
@@ -565,6 +565,15 @@ export class GameSessionsService {
       message = `It's a draw! ${wagerResult.message}`;
     }
 
+    // A payout that could not be confirmed leaves the wager in `settling`;
+    // the session is still completed, but the caller is told the pot is not
+    // yet distributed so it can surface the reconciliation requirement.
+    if (!wagerResult.success) {
+      this.logger.warn(
+        `Settlement for session ${sessionId} did not complete: ${wagerResult.message}`,
+      );
+    }
+
     const updatedGameSession =
       await this.gameSessionRepository.save(gameSession);
 
@@ -576,9 +585,9 @@ export class GameSessionsService {
         playerOneScore,
         playerTwoScore,
         winnerId: gameSession.winnerId ?? null,
-        success: Boolean(wagerResult?.success),
-        wagerStatus: wagerResult?.wager?.status ?? null,
-        settlementTxHash: wagerResult?.wager?.settlementTxHash ?? null,
+        success: wagerResult.success,
+        wagerStatus: wagerResult.wager?.status ?? null,
+        settlementTxHash: wagerResult.wager?.settlementTxHash ?? null,
       }),
     );
 

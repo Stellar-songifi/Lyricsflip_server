@@ -13,6 +13,8 @@ export enum SettlementStatus {
   PENDING_SIGNATURE = 'pending_signature',
   /** Submitted to the network, outcome not yet known. */
   SUBMITTED = 'submitted',
+  /** Alias of {@link SUBMITTED}, kept for call sites that use the shorter name. */
+  SUBMIT = 'submitted',
   /** Included in a ledger and successful. */
   CONFIRMED = 'confirmed',
   /** Rejected by the network or reverted by the contract. */

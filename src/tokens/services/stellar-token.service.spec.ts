@@ -15,6 +15,7 @@ import {
 } from '../../stellar/services/stellar-rpc.service';
 import { IKeyStore } from '../../stellar/interfaces/key-store.interface';
 import type { StellarConfig } from '../../stellar/stellar.config';
+import * as trustlineUtil from '../../stellar/trustline.util';
 
 const SESSION_ID = '3f1e4b2a-9c8d-4e7f-a1b2-c3d4e5f60718';
 
@@ -45,6 +46,7 @@ describe('StellarTokenService', () => {
   >;
   let resolver: Keypair;
   let context: EscrowContext;
+  let checkTrustlineSpy: jest.SpyInstance;
 
   const addressA = Keypair.random().publicKey();
   const addressB = Keypair.random().publicKey();
@@ -122,6 +124,13 @@ describe('StellarTokenService', () => {
       lookupTransaction: jest.fn().mockResolvedValue(unconfirmed),
     };
 
+    // The pre-flight trustline check talks to the network; default it to
+    // "trustline present" so unrelated tests are not affected, and let the
+    // trustline tests below override it per case.
+    checkTrustlineSpy = jest
+      .spyOn(trustlineUtil, 'checkTrustline')
+      .mockResolvedValue(true);
+
     service = new StellarTokenService(
       userRepository as unknown as Repository<User>,
       { escrowContractId: 'C...', tokenContractId: 'C...' } as StellarConfig,
@@ -135,6 +144,52 @@ describe('StellarTokenService', () => {
 
   it('reports itself as the stellar settlement backend', () => {
     expect(service.settlementMode).toBe('stellar');
+  });
+
+  describe('trustline pre-flight', () => {
+    it('refuses to stake when the player has no trustline for the token', async () => {
+      // Without a trustline the payout can never reach the player, so the
+      // stake must not be built at all.
+      checkTrustlineSpy.mockResolvedValue(false);
+
+      const result = await service.stakeTokens('user-a', context);
+
+      expect(checkTrustlineSpy).toHaveBeenCalledWith(addressA, 'C...');
+      expect(result.status).toBe(SettlementStatus.FAILED);
+      expect(result.message).toMatch(/trustline/);
+      expect(escrow.buildUnsignedStake).not.toHaveBeenCalled();
+      expect(escrow.buildStake).not.toHaveBeenCalled();
+    });
+
+    it('refuses to open a pot when a player has no trustline', async () => {
+      checkTrustlineSpy.mockImplementation((address: string) =>
+        Promise.resolve(address === addressA),
+      );
+
+      const result = await service.openEscrow(context);
+
+      expect(result.status).toBe(SettlementStatus.FAILED);
+      expect(result.message).toMatch(/trustline/);
+      expect(escrow.openPot).not.toHaveBeenCalled();
+    });
+
+    it('refuses to pay out to a winner with no trustline', async () => {
+      checkTrustlineSpy.mockResolvedValue(false);
+
+      const result = await service.releaseToWinner('user-b', context);
+
+      expect(result.status).toBe(SettlementStatus.FAILED);
+      expect(result.message).toMatch(/trustline/);
+      expect(escrow.resolve).not.toHaveBeenCalled();
+    });
+
+    it('proceeds when the trustline is present', async () => {
+      checkTrustlineSpy.mockResolvedValue(true);
+
+      const result = await service.stakeTokens('user-a', context);
+
+      expect(result.status).toBe(SettlementStatus.PENDING_SIGNATURE);
+    });
   });
 
   describe('wallet requirements', () => {
@@ -206,6 +261,24 @@ describe('StellarTokenService', () => {
         ledger: 4242,
       });
       expect(result.message).toContain('10.5 LYRIC');
+    });
+  });
+
+  describe('unfunded player', () => {
+    it('refuses a stake the player cannot cover', async () => {
+      escrow.getTokenBalance.mockResolvedValue('1');
+
+      expect(await service.hasSufficientTokens('user-a', context.stake)).toBe(
+        false,
+      );
+    });
+
+    it('treats an unreadable balance as unfunded', async () => {
+      escrow.getTokenBalance.mockRejectedValue(new Error('rpc down'));
+
+      expect(await service.hasSufficientTokens('user-a', context.stake)).toBe(
+        false,
+      );
     });
   });
 
@@ -385,6 +458,50 @@ describe('StellarTokenService', () => {
       expect(escrow.refund).toHaveBeenCalledWith(resolver, SESSION_ID);
       expect(userRepository.findOne).not.toHaveBeenCalled();
       expect(result.success).toBe(true);
+    });
+
+    it('does not require a trustline to refund', async () => {
+      // A refund returns funds to the staking address, which already holds
+      // the token; a missing trustline must not block it.
+      checkTrustlineSpy.mockResolvedValue(false);
+
+      const result = await service.refundEscrow(context);
+
+      expect(result.success).toBe(true);
+      expect(escrow.refund).toHaveBeenCalledWith(resolver, SESSION_ID);
+    });
+  });
+
+  describe('successful stake, payout and refund', () => {
+    it('stakes, pays out and refunds a full lifecycle', async () => {
+      // Stake (non-custodial): returns an unsigned transaction.
+      const stake = await service.stakeTokens('user-a', context);
+      expect(stake.status).toBe(SettlementStatus.PENDING_SIGNATURE);
+
+      // Confirm the signed stake.
+      const confirmedStake = await service.confirmStake(
+        'user-a',
+        'SIGNED_XDR',
+        context,
+      );
+      expect(confirmedStake).toMatchObject({
+        success: true,
+        status: SettlementStatus.CONFIRMED,
+      });
+
+      // Payout to the winner.
+      const payout = await service.releaseToWinner('user-b', context);
+      expect(payout).toMatchObject({
+        success: true,
+        status: SettlementStatus.CONFIRMED,
+      });
+
+      // Refund path is exercised independently.
+      const refund = await service.refundEscrow(context);
+      expect(refund).toMatchObject({
+        success: true,
+        status: SettlementStatus.CONFIRMED,
+      });
     });
   });
 

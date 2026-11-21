@@ -58,7 +58,12 @@ export class StellarController {
       };
     }
 
-    const healthy = await this.rpc.isHealthy();
+    let healthy: boolean;
+    try {
+      healthy = await this.rpc.isHealthy();
+    } catch {
+      healthy = false;
+    }
 
     return {
       settlementMode: this.config.settlementMode,

@@ -67,6 +67,8 @@ describe('WagerService', () => {
       escrowTxHash: null,
       playerAStakeTxHash: null,
       playerBStakeTxHash: null,
+      playerALatestStakeHash: null,
+      playerBLatestStakeHash: null,
       settlementTxHash: null,
       settlementLedger: null,
       winner: null,
@@ -922,4 +924,86 @@ describe('WagerService', () => {
       );
     });
   });
-});
+
+  describe('settle', () => {
+    it('releases the pot to the winner', async () => {
+      mockWagerRepository.findOne.mockResolvedValue(wagerRow());
+      mockTokenService.releaseToWinner.mockResolvedValue(
+        confirmed({ ledger: 7 }),
+      );
+
+      const result = await service.settle(SESSION_ID, mockPlayerB.id);
+
+      expect(result.success).toBe(true);
+      expect(result.wager?.status).toBe(WagerStatus.WON);
+      expect(result.wager?.winnerId).toBe(mockPlayerB.id);
+    });
+
+    it('refunds both players when there is no winner', async () => {
+      mockWagerRepository.findOne.mockResolvedValue(wagerRow());
+      mockTokenService.refundEscrow.mockResolvedValue(confirmed());
+
+      const result = await service.settle(SESSION_ID, null as any);
+
+      expect(result.success).toBe(true);
+      expect(result.wager?.status).toBe(WagerStatus.REFUNDED);
+    });
+  });
+
+  describe('markFailed', () => {
+    it('marks the wager failed with the given reason', async () => {
+      mockWagerRepository.findOne.mockResolvedValue(wagerRow());
+
+      const result = await service.markFailed(SESSION_ID, 'operator abort');
+
+      expect(result.success).toBe(false);
+      expect(result.wager?.status).toBe(WagerStatus.FAILED);
+      expect(result.message).toContain('operator abort');
+    });
+
+    it('fails when the wager is not found', async () => {
+      mockWagerRepository.findOne.mockResolvedValue(null);
+
+      const result = await service.markFailed(SESSION_ID, 'reason');
+
+      expect(result.success).toBe(false);
+      expect(result.message).toContain('Wager for session');
+    });
+  });
+
+  describe('requireUser', () => {
+    it('returns the user when found', async () => {
+      mockUserRepository.findOne.mockResolvedValue(mockPlayerA);
+
+      await expect(service.requireUser(mockPlayerA.id)).resolves.toBe(
+        mockPlayerA,
+      );
+    });
+
+    it('throws when the user does not exist', async () => {
+      mockUserRepository.findOne.mockResolvedValue(null);
+
+      await expect(service.requireUser('missing')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+  });
+
+  describe('requireWager', () => {
+    it('returns the wager when found', async () => {
+      const row = wagerRow();
+      mockWagerRepository.findOne.mockResolvedValue(row);
+
+      await expect(service.requireWager(SESSION_ID)).resolves.toBe(row);
+    });
+
+    it('throws when the wager does not exist', async () => {
+      mockWagerRepository.findOne.mockResolvedValue(null);
+
+      await expect(service.requireWager(SESSION_ID)).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+  });
+
+  describe('contextFor

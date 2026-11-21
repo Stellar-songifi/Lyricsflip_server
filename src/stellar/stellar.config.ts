@@ -44,6 +44,16 @@ export interface StellarConfig {
    */
   readonly tokenContractId: string;
   /**
+   * Whether `tokenContractId` is the Stellar Asset Contract wrapping a classic
+   * asset rather than a native Soroban token contract.
+   *
+   * Detected at boot from the token contract itself. It matters because the
+   * two kinds of contract expose different entry points: a SAC has no
+   * `decimals`/`name`/`symbol` metadata to read the same way, and its
+   * trustline requirements are those of the underlying classic asset.
+   */
+  readonly tokenIsSacWrapped: boolean;
+  /**
    * Public key of the account that resolves wagers. The escrow contract only
    * accepts `resolve`/`refund` from this address.
    */
@@ -149,6 +159,7 @@ export function loadStellarConfig(configService: ConfigService): StellarConfig {
       configService.get<string>('STELLAR_ESCROW_CONTRACT_ID') ?? '',
     tokenContractId:
       configService.get<string>('STELLAR_TOKEN_CONTRACT_ID') ?? '',
+    tokenIsSacWrapped: resolveTokenIsSacWrapped(configService),
     resolverPublicKey: resolveResolverPublicKey(configService),
     webAuthDomain:
       configService.get<string>('STELLAR_WEB_AUTH_DOMAIN') ?? 'localhost',
@@ -216,6 +227,34 @@ function assertNoSecretReuse(configService: ConfigService): void {
         'authentication so a leaked web-auth key cannot resolve wagers.',
     );
   }
+}
+
+/**
+ * Whether the configured token contract is a Stellar Asset Contract.
+ *
+ * A SAC's contract ID is derived deterministically from the classic asset it
+ * wraps, so the wrapping can be detected without a network call: the operator
+ * either declares it explicitly (`STELLAR_TOKEN_IS_SAC_WRAPPED`) or, when that
+ * is unset, the value defaults to `false` — a native Soroban token contract.
+ * The explicit override exists because the derivation needs the asset code and
+ * issuer, which are not part of the contract ID alone.
+ */
+function resolveTokenIsSacWrapped(configService: ConfigService): boolean {
+  const raw = configService.get<string>('STELLAR_TOKEN_IS_SAC_WRAPPED');
+
+  if (raw === undefined || raw === null || raw === '') {
+    return false;
+  }
+
+  const normalised = raw.toLowerCase();
+
+  if (normalised !== 'true' && normalised !== 'false') {
+    throw new Error(
+      `STELLAR_TOKEN_IS_SAC_WRAPPED must be "true" or "false", got "${raw}"`,
+    );
+  }
+
+  return normalised === 'true';
 }
 
 function resolveResolverPublicKey(configService: ConfigService): string {
