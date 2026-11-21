@@ -463,7 +463,7 @@ export class GameSessionsService {
     offset: number = 0,
   ): Promise<GameSession[]> {
     return this.gameSessionRepository.find({
-      where: { player: { id: userId } },
+      where: [{ player: { id: userId } }, { playerTwoId: userId }],
       order: { createdAt: 'DESC' },
       take: limit,
       skip: offset,
