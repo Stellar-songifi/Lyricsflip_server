@@ -187,129 +187,191 @@ impl EscrowContract {
     /// deploy --wasm ... -- --admin ... --token ... --resolver ...`), so
     /// there is no window between deploy and initialization for an attacker
     /// to front-run: the contract is never live with unset, or someone
-    /// else's, configuration. There is deliberately no separate `initialize`
-    /// entrypoint any more, so this can never be called a second time.
+    /// else's, configuration. There is deliberately no separate
+    /// `initialize` entry point.
     pub fn __constructor(env: Env, admin: Address, token: Address, resolver: Address) {
-        admin.require_auth();
-        Self::extend_instance(&env);
-
-        env.storage().instance().set(
-            &DataKey::Config,
-            &Config {
-                admin,
-                token,
-                resolver,
-                fee_bps: 0,
-                fee_receiver: None,
-            },
-        );
-        env.storage().instance().set(&DataKey::Version, &CURRENT_VERSION);
+        let config = Config {
+            admin,
+            token,
+            resolver,
+            fee_bps: 0,
+            fee_receiver: None,
+        };
+        env.storage().instance().set(&DataKey::Config, &config);
+        env.storage()
+            .instance()
+            .set(&DataKey::Version, &CURRENT_VERSION);
     }
 
-    /// Rotates the admin. Only the current admin may call this, so losing
-    /// the admin key is still unrecoverable, but a routine key rotation —
-    /// or handing the contract to a new multisig or DAO — no longer needs a
-    /// redeploy.
-    pub fn set_admin(env: Env, new_admin: Address) -> Result<(), Error> {
-        let mut config = Self::config(&env)?;
+    /// Rotates the admin. Only the current admin may call this.
+    pub fn set_admin(env: Env, new_admin: Address) {
+        let mut config = Self::load_config(&env);
         config.admin.require_auth();
         let old_admin = config.admin.clone();
         config.admin = new_admin.clone();
-        env.storage().instance().set(&DataKey::Config, &config);
-
-        env.events()
-            .publish((symbol_short!("admin"),), (old_admin, new_admin));
-        Ok(())
+        Self::save_config(&env, &config);
+        env.events().publish(
+            (symbol_short!("admin"),),
+            (old_admin, new_admin),
+        );
     }
 
-    /// Sets the platform fee (in basis points) and its receiver. Admin only.
-    ///
-    /// Rejects a fee above `MAX_FEE_BPS`, and rejects a non-zero fee without a
-    /// receiver. A zero fee clears the receiver.
-    pub fn set_fee(
-        env: Env,
-        fee_bps: u32,
-        receiver: Option<Address>,
-    ) -> Result<(), Error> {
-        let mut config = Self::config(&env)?;
+    /// Rotates the resolver. Only the admin may call this.
+    pub fn set_resolver(env: Env, new_resolver: Address) {
+        let mut config = Self::load_config(&env);
         config.admin.require_auth();
+        let old_resolver = config.resolver.clone();
+        config.resolver = new_resolver.clone();
+        Self::save_config(&env, &config);
+        env.events().publish(
+            (symbol_short!("resolver"),),
+            (old_resolver, new_resolver),
+        );
+    }
 
+    /// Sets the platform fee (in basis points) and its receiver. Only the
+    /// admin may call this. The fee is capped at `MAX_FEE_BPS`, and a
+    /// non-zero fee requires a receiver.
+    pub fn set_fee(env: Env, fee_bps: u32, fee_receiver: Option<Address>) {
+        let mut config = Self::load_config(&env);
+        config.admin.require_auth();
         if fee_bps > MAX_FEE_BPS {
-            return Err(Error::FeeTooHigh);
+            panic_with_error!(&env, Error::FeeTooHigh);
         }
-        if fee_bps > 0 && receiver.is_none() {
-            return Err(Error::FeeReceiverRequired);
+        if fee_bps > 0 && fee_receiver.is_none() {
+            panic_with_error!(&env, Error::FeeReceiverRequired);
         }
-
         config.fee_bps = fee_bps;
-        config.fee_receiver = receiver.clone();
-        env.storage().instance().set(&DataKey::Config, &config);
-
+        config.fee_receiver = fee_receiver.clone();
+        Self::save_config(&env, &config);
         env.events()
-            .publish((symbol_short!("fee"),), (fee_bps, receiver));
-        Ok(())
+            .publish((symbol_short!("fee"),), (fee_bps, fee_receiver));
     }
 
-    /// Returns the current contract configuration, including the fee.
-    pub fn get_config(env: Env) -> Result<Config, Error> {
-        Self::config(&env)
+    /// Returns the current contract configuration.
+    pub fn get_config(env: Env) -> Config {
+        Self::load_config(&env)
     }
 
-    /// Runs any storage transformation the current WASM needs after an
-    /// `upgrade`. Admin only, and idempotent: it only acts when the stored
-    /// version is behind `CURRENT_VERSION`.
-    pub fn migrate(env: Env) -> Result<(), Error> {
-        let mut config = Self::config(&env)?;
-        config.admin.require_auth();
-
-        let version: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::Version)
-            .unwrap_or(0);
-
-        if version < CURRENT_VERSION {
-            // v1 -> v2: add fee fields to existing configs. Default to no fee.
-            config.fee_bps = 0;
-            config.fee_receiver = None;
-            env.storage().instance().set(&DataKey::Config, &config);
-            env.storage().instance().set(&DataKey::Version, &CURRENT_VERSION);
-        }
-        Ok(())
-    }
-
-    /// Returns the current storage layout version.
-    pub fn get_version(env: Env) -> u32 {
-        env.storage()
-            .instance()
-            .get(&DataKey::Version)
-            .unwrap_or(0)
-    }
-
-    /// Resolves a funded pot, paying the winner the pot minus the platform
-    /// fee, and the fee receiver the fee. A draw (both players equal) refunds
-    /// each stake with no fee.
-    pub fn resolve(env: Env, session_id: SessionId, winner: Address) -> Result<(), Error> {
-        let config = Self::config(&env)?;
+    /// Opens a pot for a game session. Only the resolver may call this.
+    ///
+    /// `stake` is the amount each player will stake, in token base units.
+    /// The pot's claim deadline is set to `CLAIM_WINDOW_LEDGERS` ledgers in
+    /// the future.
+    pub fn open_pot(
+        env: Env,
+        session_id: SessionId,
+        player_a: Address,
+        player_b: Address,
+        stake: i128,
+    ) {
+        let config = Self::load_config(&env);
         config.resolver.require_auth();
 
-        let mut pot = Self::pot(&env, &session_id)?;
+        if player_a == player_b {
+            panic_with_error!(&env, Error::SamePlayer);
+        }
+        if stake <= 0 {
+            panic_with_error!(&env, Error::InvalidStake);
+        }
+
+        let key = DataKey::Pot(session_id.clone());
+        if env.storage().persistent().has(&key) {
+            panic_with_error!(&env, Error::PotAlreadyExists);
+        }
+
+        let pot = Pot {
+            player_a: player_a.clone(),
+            player_b: player_b.clone(),
+            stake,
+            funded_a: false,
+            funded_b: false,
+            status: PotStatus::Open,
+            deadline_ledger: env.ledger().sequence() + CLAIM_WINDOW_LEDGERS,
+        };
+        env.storage().persistent().set(&key, &pot);
+        Self::bump_pot_ttl(&env, &key);
+
+        env.events().publish(
+            (symbol_short!("open"), session_id),
+            (player_a, player_b, stake),
+        );
+    }
+
+    /// Stakes the caller's share into an open pot. Either player may call
+    /// this, and each may only stake once.
+    pub fn stake(env: Env, session_id: SessionId, player: Address) {
+        player.require_auth();
+
+        let key = DataKey::Pot(session_id.clone());
+        let mut pot = Self::load_pot(&env, &key);
+
+        if pot.status != PotStatus::Open {
+            panic_with_error!(&env, Error::PotNotOpen);
+        }
+
+        let is_player_a = if player == pot.player_a {
+            if pot.funded_a {
+                panic_with_error!(&env, Error::AlreadyStaked);
+            }
+            pot.funded_a = true;
+            true
+        } else if player == pot.player_b {
+            if pot.funded_b {
+                panic_with_error!(&env, Error::AlreadyStaked);
+            }
+            pot.funded_b = true;
+            false
+        } else {
+            panic_with_error!(&env, Error::NotAPlayer);
+        };
+
+        let config = Self::load_config(&env);
+        let token_client = token::Client::new(&env, &config.token);
+        token_client.transfer(&player, &env.current_contract_address(), &pot.stake);
+
+        if pot.funded_a && pot.funded_b {
+            pot.status = PotStatus::Funded;
+        }
+        env.storage().persistent().set(&key, &pot);
+        Self::bump_pot_ttl(&env, &key);
+
+        env.events().publish(
+            (symbol_short!("stake"), session_id),
+            (player, is_player_a),
+        );
+    }
+
+    /// Returns the pot for a session, if it exists.
+    pub fn get_pot(env: Env, session_id: SessionId) -> Pot {
+        Self::load_pot(&env, &DataKey::Pot(session_id))
+    }
+
+    /// Resolves a funded pot, paying the winner (minus the platform fee).
+    /// Only the resolver may call this. Blocked once a player has claimed.
+    pub fn resolve(env: Env, session_id: SessionId, winner: Address) {
+        let config = Self::load_config(&env);
+        config.resolver.require_auth();
+
+        let key = DataKey::Pot(session_id.clone());
+        let mut pot = Self::load_pot(&env, &key);
+
         if pot.status != PotStatus::Funded {
-            return Err(Error::PotNotFunded);
+            panic_with_error!(&env, Error::PotNotFunded);
         }
         if winner != pot.player_a && winner != pot.player_b {
-            return Err(Error::NotAPlayer);
+            panic_with_error!(&env, Error::NotAPlayer);
         }
 
-        let payout = pot.stake * 2;
-        let token_client = token::Client::new(&env, &config.token);
-
+        let total = pot.stake * 2;
         let fee = if config.fee_bps > 0 {
-            (payout * config.fee_bps as i128) / BPS_DENOMINATOR as i128
+            (total * (config.fee_bps as i128)) / (BPS_DENOMINATOR as i128)
         } else {
             0
         };
+        let payout = total - fee;
 
+        let token_client = token::Client::new(&env, &config.token);
         if fee > 0 {
             if let Some(receiver) = config.fee_receiver.clone() {
                 token_client.transfer(&env.current_contract_address(), &receiver, &fee);
@@ -317,27 +379,29 @@ impl EscrowContract {
                     .publish((symbol_short!("fee"), session_id.clone()), (receiver, fee));
             }
         }
-
-        let winner_amount = payout - fee;
-        token_client.transfer(&env.current_contract_address(), &winner, &winner_amount);
+        token_client.transfer(&env.current_contract_address(), &winner, &payout);
 
         pot.status = PotStatus::Resolved;
-        env.storage().persistent().set(&DataKey::Pot(session_id.clone()), &pot);
-        Self::extend_pot_ttl(&env, &session_id);
+        env.storage().persistent().set(&key, &pot);
+        Self::bump_pot_ttl(&env, &key);
 
-        env.events()
-            .publish((symbol_short!("resolve"), session_id), (winner, winner_amount));
-        Ok(())
+        env.events().publish(
+            (symbol_short!("resolve"), session_id),
+            (winner, payout),
+        );
     }
 
-    /// Refunds each staked player their own stake. No platform fee is taken.
-    pub fn refund(env: Env, session_id: SessionId) -> Result<(), Error> {
-        let config = Self::config(&env)?;
+    /// Refunds a pot to whichever players had staked. Only the resolver may
+    /// call this. No fee is taken. Blocked once a player has claimed.
+    pub fn refund(env: Env, session_id: SessionId) {
+        let config = Self::load_config(&env);
         config.resolver.require_auth();
 
-        let mut pot = Self::pot(&env, &session_id)?;
-        if pot.status != PotStatus::Funded && pot.status != PotStatus::Open {
-            return Err(Error::PotNotOpen);
+        let key = DataKey::Pot(session_id.clone());
+        let mut pot = Self::load_pot(&env, &key);
+
+        if pot.status != PotStatus::Open && pot.status != PotStatus::Funded {
+            panic_with_error!(&env, Error::PotNotOpen);
         }
 
         let token_client = token::Client::new(&env, &config.token);
@@ -349,39 +413,116 @@ impl EscrowContract {
         }
 
         pot.status = PotStatus::Refunded;
-        env.storage().persistent().set(&DataKey::Pot(session_id.clone()), &pot);
-        Self::extend_pot_ttl(&env, &session_id);
+        env.storage().persistent().set(&key, &pot);
+        Self::bump_pot_ttl(&env, &key);
 
         env.events().publish(
             (symbol_short!("refund"), session_id),
             (pot.player_a, pot.player_b),
         );
-        Ok(())
     }
 
-    fn config(env: &Env) -> Result<Config, Error> {
+    /// Lets a player reclaim their own stake after the pot's claim deadline.
+    /// No resolver or admin is involved. Once any player claims, the pot is
+    /// marked `Refunded` so `resolve` and `refund` are permanently blocked.
+    pub fn claim_refund(env: Env, session_id: SessionId, player: Address) {
+        player.require_auth();
+
+        let key = DataKey::Pot(session_id.clone());
+        let mut pot = Self::load_pot(&env, &key);
+
+        if pot.status != PotStatus::Open && pot.status != PotStatus::Funded {
+            panic_with_error!(&env, Error::PotNotOpen);
+        }
+        if env.ledger().sequence() < pot.deadline_ledger {
+            panic_with_error!(&env, Error::DeadlineNotReached);
+        }
+
+        let is_player_a = if player == pot.player_a {
+            if !pot.funded_a {
+                panic_with_error!(&env, Error::NothingToClaim);
+            }
+            pot.funded_a = false;
+            true
+        } else if player == pot.player_b {
+            if !pot.funded_b {
+                panic_with_error!(&env, Error::NothingToClaim);
+            }
+            pot.funded_b = false;
+            false
+        } else {
+            panic_with_error!(&env, Error::NotAPlayer);
+        };
+
+        let config = Self::load_config(&env);
+        let token_client = token::Client::new(&env, &config.token);
+        token_client.transfer(&env.current_contract_address(), &player, &pot.stake);
+
+        // Once any player has claimed, the pot no longer holds both stakes, so
+        // mark it Refunded to permanently block `resolve` and `refund`.
+        pot.status = PotStatus::Refunded;
+        env.storage().persistent().set(&key, &pot);
+        Self::bump_pot_ttl(&env, &key);
+
+        let _ = is_player_a;
+        env.events().publish(
+            (symbol_short!("claim"), session_id),
+            (player, pot.stake),
+        );
+    }
+
+    /// Upgrades the contract's WASM in place. Only the admin may call this.
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) {
+        let config = Self::load_config(&env);
+        config.admin.require_auth();
+        env.deployer()
+            .update_current_contract_wasm(new_wasm_hash.clone());
+        env.events()
+            .publish((symbol_short!("upgrade"),), new_wasm_hash);
+    }
+
+    /// Runs any storage transformation the current WASM needs after an
+    /// `upgrade`. Only the admin may call this. Idempotent.
+    pub fn migrate(env: Env) {
+        let config = Self::load_config(&env);
+        config.admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::Version, &CURRENT_VERSION);
+    }
+
+    /// Returns the current storage layout version.
+    pub fn get_version(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::Version)
+            .unwrap_or(0)
+    }
+
+    fn load_config(env: &Env) -> Config {
         env.storage()
             .instance()
             .get(&DataKey::Config)
-            .ok_or(Error::NotInitialized)
+            .unwrap_or_else(|| panic_with_error!(env, Error::NotInitialized))
     }
 
-    fn pot(env: &Env, session_id: &SessionId) -> Result<Pot, Error> {
+    fn save_config(env: &Env, config: &Config) {
+        env.storage().instance().set(&DataKey::Config, config);
+    }
+
+    fn load_pot(env: &Env, key: &DataKey) -> Pot {
         env.storage()
             .persistent()
-            .get(&DataKey::Pot(session_id.clone()))
-            .ok_or(Error::PotNotFound)
+            .get(key)
+            .unwrap_or_else(|| panic_with_error!(env, Error::PotNotFound))
     }
 
-    fn extend_instance(env: &Env) {
-        env.storage()
-            .instance()
-            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
-    }
-
-    fn extend_pot_ttl(env: &Env, session_id: &SessionId) {
+    fn bump_pot_ttl(env: &Env, key: &DataKey) {
         env.storage()
             .persistent()
-            .extend_ttl(&DataKey::Pot(session_id.clone()), TTL_THRESHOLD, TTL_EXTEND_TO);
+            .extend_ttl(key, TTL_THRESHOLD, TTL_EXTEND_TO);
     }
 }
+
+#[cfg(test)]
+mod test;
