@@ -11,6 +11,7 @@ import {
 import { GameSession } from '../../game-sessions/entities/game-session.entity';
 import { Role } from '../../auth/roles/role.enum';
 import { PRIVATE_USER_GROUPS } from '../user-serialization';
+import { currentDailyStreak } from '../../challenges/daily-seed.util';
 
 export enum UserLevel {
   GOSSIP_ROOKIE = 'Gossip Rookie',
@@ -97,14 +98,8 @@ export class User {
   xp: number; // total experience points
 
   @Transform(
-    ({ obj }: { obj: User }) => {
-      const yesterday = new Date(Date.now() - 86_400_000)
-        .toISOString()
-        .slice(0, 10);
-      return obj.lastDailyAttemptDate && obj.lastDailyAttemptDate >= yesterday
-        ? obj.dailyStreak
-        : 0;
-    },
+    ({ obj }: { obj: User }) =>
+      currentDailyStreak(obj.dailyStreak, obj.lastDailyAttemptDate),
     { toPlainOnly: true },
   )
   @Column({ type: 'int', default: 0 })
