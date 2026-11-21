@@ -18,6 +18,7 @@ import { GuessLyricDto } from './dto/guess-lyric.dto';
 import { GuessType } from '../game/dto/guess.dto';
 import { matchGuess } from '../game/guess-matcher';
 import * as crypto from 'crypto';
+import { JobLockService } from '../jobs/job-lock.service';
 import { JobLockService } from '../common/locking/job-lock.service';
 
 /** Default and hard cap for the number of players allowed in a room. */
@@ -163,6 +164,22 @@ export class RoomsService {
       }
     }
 
+    const room = this.roomRepository.create({
+      name: createRoomDto.name,
+      code,
+      lyric,
+      lyricId: lyric.id,
+      hostId: hostId ?? null,
+      maxPlayers,
+      status: RoomStatus.LOBBY,
+      startedAt: null,
+      roundCount: 0,
+      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24 hours from now
+    } as Room);
+
+    this.logger.error(
+      'Failed to generate a unique room code',
+      lastError instanceof Error ? lastError.message : String(lastError),
     this.logger.error(
       'Failed to generate a unique room code',
       lastError as Error,
@@ -245,7 +262,7 @@ export class RoomsService {
     if (!error || typeof error !== 'object') {
       return false;
     }
-    const err = error as { code?: string; driverError?: { code?: string } };
+    const err = error as { code?: unknown; driverError?: { code?: unknown } };
     return err.code === '23505' || err.driverError?.code === '23505';
   }
 
@@ -577,16 +594,11 @@ export class RoomsService {
 
   /**
    * Close expired rooms on a schedule.
+   * Runs under a cross-instance advisory lock so only one instance sweeps.
    */
   @Cron(CronExpression.EVERY_HOUR)
   async closeExpiredRooms(): Promise<void> {
-    const lockKey = 'rooms:close-expired';
-    const acquired = await this.jobLock.acquire(lockKey, 60_000);
-    if (!acquired) {
-      return;
-    }
-
-    try {
+    await this.jobLock.runExclusive('room-expiry', async () => {
       const now = new Date();
       const expired = await this.roomRepository.find({
         where: { isClosed: false, expiresAt: LessThanOrEqual(now) },
@@ -602,8 +614,6 @@ export class RoomsService {
       );
 
       this.logger.log(`Closed ${expired.length} expired room(s)`);
-    } finally {
-      await this.jobLock.release(lockKey);
-    }
+    });
   }
 }

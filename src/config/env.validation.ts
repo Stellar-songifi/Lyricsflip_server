@@ -129,7 +129,8 @@ export const envValidationSchema = Joi.object({
   MAIL_FROM: Joi.string().email().default('no-reply@lyricsflip.local'),
   MAIL_SECURE: Joi.string().valid('true', 'false').default('false'),
 
-  // Redis cache (#201). Optional: when unset the app falls back to memory cache.
+  // Redis cache (#201). Optional: when unset the app falls back to memory
+  // cache. Required in production when INSTANCE_COUNT > 1 (R3-46, R3-47).
   REDIS_URL: Joi.string().uri().optional(),
 
   // Winston file logging (#200). Set to 'true' to write rotating log files.
@@ -165,11 +166,20 @@ export const envValidationSchema = Joi.object({
   STELLAR_VAULT_TOKEN: Joi.string().optional(),
   STELLAR_VAULT_TRANSIT_KEY: Joi.string().optional(),
   // Server / networking
+  // TRUST_PROXY: Express `trust proxy` setting (e.g. "1", "true", a subnet).
+  // Required when METRICS_IP_ALLOWLIST is used behind a proxy so the client
+  // IP is read from X-Forwarded-For (see ProductionSafetyCheck).
   TRUST_PROXY: Joi.string().optional().allow(''),
   SETTLEMENT_DRAIN_TIMEOUT_MS: Joi.number().integer().min(1).default(30000),
   CACHE_MAX_ITEMS: Joi.number().integer().min(1).default(5000),
   CALIBRATION_ENABLED: Joi.string().valid('true', 'false').default('false'),
+  // Salt for the daily challenge derivation (R3-51). Required in production
+  // (see ProductionSafetyCheck).
   DAILY_CHALLENGE_SALT: Joi.string().optional().allow(''),
+  // Number of app instances expected to run behind the load balancer. When
+  // greater than 1, REDIS_URL is required so caches/rate limits are shared
+  // (R3-46, R3-47; see ProductionSafetyCheck).
+  INSTANCE_COUNT: Joi.number().integer().min(1).default(1),
   // Graceful-shutdown drain window for in-flight HTTP requests.
   SHUTDOWN_DRAIN_TIMEOUT_MS: Joi.number().integer().min(1).default(30000),
   // Body-parser aliases kept for callers that read the shorter names.
@@ -226,7 +236,8 @@ export const envValidationSchema = Joi.object({
   OTEL_EXPORTER_OTLP_ENDPOINT: Joi.string().uri().optional().allow(''),
   OTEL_SERVICE_NAME: Joi.string().optional().allow(''),
   // Either an IP allowlist or basic auth must be configured in production
-  // (see ProductionSafetyCheck).
+  // (see ProductionSafetyCheck). When METRICS_IP_ALLOWLIST is set behind a
+  // proxy, TRUST_PROXY must also be set.
   METRICS_IP_ALLOWLIST: Joi.string().optional().allow(''),
   METRICS_BASIC_AUTH: Joi.string().optional().allow(''),
 

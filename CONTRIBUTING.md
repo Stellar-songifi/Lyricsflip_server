@@ -253,7 +253,46 @@ Keep the subject line under 72 characters. Use the body to explain *why*, not *w
 
 ---
 
+## TypeScript strict mode
+
+`tsconfig.json` enables `"strict": true`. Two conventions keep the codebase compiling under it:
+
+- **Entities and DTOs use definite-assignment assertions.** TypeORM entities and class-validator DTOs declare properties that are populated by the ORM or by validation, not by a constructor, so every such property is marked with `!`:
+
+  ```ts
+  @Entity('users')
+  export class User {
+    @PrimaryGeneratedColumn('uuid')
+    id!: string;
+
+    @Column()
+    email!: string;
+  }
+  ```
+
+  We deliberately keep `strictPropertyInitialization` on rather than disabling it, so that ordinary classes still get the check. **New entities and DTOs must follow the same convention** — do not add initializers just to silence the compiler, and do not turn off individual strict flags.
+
+- **`unknown` errors are narrowed, never cast.** In `catch` blocks and error callbacks, narrow with a type guard before use:
+
+  ```ts
+  function isError(value: unknown): value is Error {
+    return value instanceof Error;
+  }
+
+  try {
+    await this.doWork();
+  } catch (error: unknown) {
+    const message = isError(error) ? error.message : String(error);
+    this.logger.error(message);
+  }
+  ```
+
+  Casting to `any` (or `as Error`) to get past `TS18046` is not acceptable; fix the narrowing instead. Implicit `any` (`TS7006`) must be given an explicit type.
+
+---
+
 ## Migration rules
+=======
 
 Any change to a TypeORM entity **must** be accompanied by a migration.
 

@@ -1,7 +1,7 @@
 import { DataSource, Repository } from 'typeorm';
 import { User } from '../users/entities/user.entity';
 import { Lyrics } from '../lyrics/entities/lyrics.entity';
-import { Role } from '../common/enums/role.enum';
+import { Role } from '../auth/roles/role.enum';
 
 // Seed data coverage: categories, aliases, and sample players are exercised by
 // the upsert test above. Sample players are development-only and are refused
