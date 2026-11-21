@@ -39,6 +39,9 @@ export class Room {
   @Column({ type: 'timestamptz', nullable: true })
   startedAt: Date;
 
+  @Column({ type: 'timestamptz', nullable: true })
+  finishedAt: Date;
+
   @Column({ type: 'int', default: 0 })
   roundCount: number;
 

@@ -73,9 +73,26 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   constructor(private readonly gameLogicService: GameLogicService) {}
 
-  /** Returns false (and disconnects) if the event exceeds its rate limit. */
+  /**
+   * Returns false (and rejects the event with a RATE_LIMITED error) if the
+   * event exceeds its per-socket rate limit. Over-limit events are never
+   * processed by the handler.
+   */
   private allow(client: Socket, event: string): boolean {
-    return this.rateLimiter.consume(client, event);
+    const result = this.rateLimiter.consume(client, event);
+    if (!result.allowed) {
+      client.emit('error', {
+        code: 'RATE_LIMITED',
+        message: `Rate limit exceeded for ${event}`,
+        event,
+        retryAfterMs: result.retryAfterMs,
+      });
+      this.logger.warn(
+        `Rate limited ${client.id} on ${event} (retry in ${result.retryAfterMs}ms)`,
+      );
+      return false;
+    }
+    return true;
   }
 
   async handleConnection(client: Socket) {
@@ -92,8 +109,11 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       return;
     }
 
-    if (!this.connectionLimiter.acquire(userId, client.id)) {
-      client.emit('error', { message: 'Too many concurrent connections' });
+    if (!(await this.connectionLimiter.acquire(userId, client.id))) {
+      client.emit('error', {
+        code: 'RATE_LIMITED',
+        message: 'Too many concurrent connections',
+      });
       client.disconnect(true);
       return;
     }
@@ -117,11 +137,11 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     });
   }
 
-  handleDisconnect(client: Socket) {
+  async handleDisconnect(client: Socket) {
     this.logger.log(`Client disconnected: ${client.id}`);
     this.sessions.delete(client.id);
     this.rateLimiter.clear(client.id);
-    this.connectionLimiter.release(client.data?.userId, client.id);
+    await this.connectionLimiter.release(client.data?.userId, client.id);
   }
 
   /**
