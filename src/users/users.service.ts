@@ -244,8 +244,13 @@ export class UsersService {
     };
   }
 
+  async getUserTokenBalance(userId: string) {
+    const stroops = await this.tokenService.getUserBalance(userId);
+    return { stroops, display: fromStroops(stroops) };
+  }
+
   /**
-   * The same balance /game-sessions/tokens/balance reports: the mock balance
+   * The same balance /users/me/balance reports: the mock balance
    * in mock mode, the token contract in stellar mode. A failed RPC call must
    * not take the whole profile down, so it yields `balance: null` and a
    * reason instead.
@@ -255,11 +260,10 @@ export class UsersService {
     balanceUnavailableReason?: string;
   }> {
     try {
-      const stroops = await this.tokenService.getUserBalance(userId);
+      const balance = await this.getUserTokenBalance(userId);
       return {
         balance: {
-          stroops,
-          display: fromStroops(stroops),
+          ...balance,
           symbol: TOKEN_SYMBOL,
         },
       };
@@ -821,6 +825,7 @@ export class UsersService {
       `SELECT rank FROM (
          SELECT id, RANK() OVER (ORDER BY xp DESC) AS rank
            FROM users
+           WHERE "isActive" = true
        ) ranked
        WHERE id = $1`,
       [userId],

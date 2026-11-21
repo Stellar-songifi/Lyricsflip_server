@@ -64,6 +64,34 @@ export class UsersController {
     return this.usersService.getSelfProfile(user.id);
   }
 
+  @Get('me/balance')
+  @ApiOperation({ summary: 'Get your current LYRIC balance' })
+  @ApiResponse({
+    status: 200,
+    schema: {
+      type: 'object',
+      required: ['stroops', 'display'],
+      properties: { stroops: { type: 'string' }, display: { type: 'string' } },
+    },
+  })
+  getBalance(@GetUser() user: User) {
+    return this.usersService.getUserTokenBalance(user.id);
+  }
+
+  @Get('me/rank')
+  @ApiOperation({ summary: 'Get your current leaderboard rank' })
+  @ApiResponse({
+    status: 200,
+    schema: {
+      type: 'object',
+      required: ['rank'],
+      properties: { rank: { type: 'integer' } },
+    },
+  })
+  getRank(@GetUser() user: User) {
+    return this.usersService.getMyRank(user.id);
+  }
+
   @Get('profile')
   @ApiOperation({ summary: 'Get user profile (alias of /users/me)' })
   @ApiResponse({
