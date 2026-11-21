@@ -118,9 +118,7 @@ function IsUsernameConstraint(
  */
 export function IsUsername(validationOptions?: ValidationOptions) {
   return applyDecorators(
-    Transform(({ value }) =>
-      typeof value === 'string' ? value.trim() : value,
-    ),
+    Transform(({ value }) => (typeof value === 'string' ? value.trim() : value)),
     IsUsernameConstraint(validationOptions),
   );
 }
