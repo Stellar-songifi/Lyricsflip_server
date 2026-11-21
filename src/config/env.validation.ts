@@ -38,7 +38,19 @@ export const envValidationSchema = Joi.object({
       .valid(...ACCEPTED_LOG_LEVELS)
       .default('debug'),
   }),
-  FRONTEND_URL: Joi.string().uri().default('http://localhost:3000'),
+  FRONTEND_URL: Joi.string()
+    .custom((value: string, helpers: Joi.CustomHelpers<string>) => {
+      const origins = value.split(',').map((origin) => origin.trim());
+      if (
+        origins.some(
+          (origin) => !origin || Joi.string().uri().validate(origin).error,
+        )
+      ) {
+        return helpers.error('string.uri');
+      }
+      return value;
+    })
+    .default('http://localhost:3000'),
 
   // HTTP server limits and timeouts (#R2-120). Tune for the load balancer in
   // front of the app; see docs/deployment.md for recommended values.
@@ -61,12 +73,16 @@ export const envValidationSchema = Joi.object({
     .default(20000)
     .when('HTTP_REQUEST_TIMEOUT_MS', {
       is: Joi.number().integer().min(1),
-      then: Joi.number().integer().min(0).max(Joi.ref('HTTP_REQUEST_TIMEOUT_MS')),
+      then: Joi.number()
+        .integer()
+        .min(0)
+        .max(Joi.ref('HTTP_REQUEST_TIMEOUT_MS')),
     }),
   HTTP_KEEP_ALIVE_TIMEOUT_MS: Joi.number().integer().min(1000).default(65000),
 
   // WebSocket. Maximum number of concurrent sockets a single user may hold.
   WS_MAX_SOCKETS_PER_USER: Joi.number().integer().min(1).default(5),
+  WS_ALLOW_NO_ORIGIN: Joi.boolean().default(true),
 
   // Auth
   // Auth. JWT_SECRET must be at least 32 characters in every environment
@@ -78,13 +94,20 @@ export const envValidationSchema = Joi.object({
       then: Joi.string().min(1).required(),
       otherwise: Joi.string().min(32).required(),
     }),
+  JWT_SECRET_PREVIOUS: Joi.string()
+    .when('NODE_ENV', {
+      is: 'test',
+      then: Joi.string().min(1),
+      otherwise: Joi.string().min(32),
+    })
+    .optional(),
+  JWT_ISSUER: Joi.string().default('lyricsflip'),
+  JWT_AUDIENCE: Joi.string().default('lyricsflip-api'),
   JWT_EXPIRES_IN: Joi.string().default('15m'),
 
   // Swagger UI. Off by default in production; must be set explicitly there
   // (see ProductionSafetyCheck).
-  SWAGGER_ENABLED: Joi.string()
-    .valid('true', 'false')
-    .default('false'),
+  SWAGGER_ENABLED: Joi.string().valid('true', 'false').default('false'),
 
   // Gameplay. ROUND_ANSWER_WINDOW_SECONDS is how long a player has to score on
   // a round; SESSION_TIMEOUT_MINUTES is how long a session may sit idle.
@@ -148,7 +171,9 @@ export const envValidationSchema = Joi.object({
   // Stellar / Soroban settlement. Kept permissive here - loadStellarConfig
   // (src/stellar/stellar.config.ts) re-validates format and cross-field
   // requirements (e.g. contract IDs only when STELLAR_SETTLEMENT_MODE=stellar).
-  STELLAR_SETTLEMENT_MODE: Joi.string().valid('mock', 'stellar').default('mock'),
+  STELLAR_SETTLEMENT_MODE: Joi.string()
+    .valid('mock', 'stellar')
+    .default('mock'),
   STELLAR_NETWORK: Joi.string()
     .valid('public', 'testnet', 'futurenet', 'standalone')
     .default('testnet'),
@@ -263,10 +288,7 @@ export const envValidationSchema = Joi.object({
   // Wager reconciliation
   WAGER_RECONCILE_MIN_AGE_SECONDS: Joi.number().integer().min(1).default(120),
   WAGER_RECONCILE_MAX_ATTEMPTS: Joi.number().integer().min(1).default(8),
-  WAGER_RECONCILE_BASE_DELAY_SECONDS: Joi.number()
-    .integer()
-    .min(1)
-    .default(60),
+  WAGER_RECONCILE_BASE_DELAY_SECONDS: Joi.number().integer().min(1).default(60),
 
   // Rate limiting (ttl in ms, limit in requests per window)
   THROTTLE_TTL_MS: Joi.number().integer().min(1).default(60000),

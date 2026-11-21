@@ -5,13 +5,14 @@ import { GameSession } from '../game-sessions/entities/game-session.entity';
 import { RoomUser } from '../rooms/entities/room-user.entity';
 import { EntityEventsSubscriber } from './entity-events.subscriber';
 import { RealtimeGateway } from './realtime.gateway';
+import { SocketAuthenticator } from '../auth/socket-authenticator';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([GameSession, RoomUser]),
     JwtModule.register({}),
   ],
-  providers: [RealtimeGateway, EntityEventsSubscriber],
+  providers: [RealtimeGateway, EntityEventsSubscriber, SocketAuthenticator],
   exports: [RealtimeGateway],
 })
 export class RealtimeModule {}

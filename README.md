@@ -410,7 +410,13 @@ Each correct guess is meant to be worth 10 XP (`calculateXpGain`). **This is not
 
 Every signup, login and wallet login records the session's user agent, the client IP (truncated) and an optional `deviceName`, so the new device shows up in `GET /auth/sessions`.
 
-Access tokens are HS256 JWTs signed with `JWT_SECRET`, valid for `JWT_EXPIRES_IN` (default `15m`). The payload is `{ sub: userId, email, username, role, tokenVersion }`; `JwtStrategy` rejects a token whose `tokenVersion` no longer matches the user's. Send the token as `Authorization: Bearer <token>`.
+Access tokens are HS256 JWTs signed with `JWT_SECRET`, valid for `JWT_EXPIRES_IN` (default `15m`), and include the configured `JWT_ISSUER` and `JWT_AUDIENCE` claims. Verification pins the algorithm to HS256 and rejects mismatched issuer or audience. Each token has a `kid` derived from its signing key so the service can choose the correct key. The payload is `{ sub: userId, email, username, role, tokenVersion }`; `JwtStrategy` rejects a token whose `tokenVersion` no longer matches the user's. Send the token as `Authorization: Bearer <token>`.
+
+#### Rotating the access-token signing key
+
+1. Deploy the version that supports `JWT_SECRET_PREVIOUS` to every instance while keeping `JWT_SECRET` unchanged. This allows all instances to verify tokens with the same key before rotation begins.
+2. Coordinate a configuration rollout that sets `JWT_SECRET` to the new random value and `JWT_SECRET_PREVIOUS` to the former value on every serving instance. During this step, ensure instances using only the old secret are drained before new-key tokens are issued; old-only instances cannot verify tokens signed by the new key.
+3. Keep `JWT_SECRET_PREVIOUS` configured for at least the maximum `JWT_EXPIRES_IN` lifetime of tokens signed by the former key. Then remove it. Tokens with the former key remain valid only until their normal expiration.
 
 Refresh tokens are opaque random values returned once and stored server-side only as a SHA-256 hash (`refresh_tokens` table), each valid for 30 days unless revoked sooner by `/auth/logout`, a refresh (rotation revokes the token that was presented), or a password change.
 
@@ -718,10 +724,14 @@ All configuration comes from environment variables, loaded from `.env` by `@nest
 | `PORT`           | `3000`                   | HTTP port                                                             |
 | `HOST`           | `0.0.0.0`                | Interface to listen on. All interfaces by default, so the port works from inside a container; `127.0.0.1` for local-only. The bound address is logged at startup |
 | `NODE_ENV`       | `development`            | `production` hides validation messages and database error details, drops the mock notification endpoints, and enables the production safety checks below. Set it explicitly in every deployed environment |
-| `FRONTEND_URL`   | `http://localhost:3000`  | CORS origin. In production it must be a real origin, not a default or localhost value |
+| `FRONTEND_URL`   | `http://localhost:3000`  | Comma-separated CORS origins. In production each must be a real origin, not a default or localhost value |
 | `LOG_LEVEL`      | `info` in production, `debug` otherwise | Winston level: `error`, `warn`, `info`, `http`, `verbose` or `debug`. Nest's `log` is accepted and treated as `info` |
 | `JWT_SECRET`     | **required**             | The app refuses to start without it, and it must be at least 32 characters in every environment except `test`. Use a long random value |
+| `JWT_SECRET_PREVIOUS` | unset               | Optional former signing key accepted until its tokens expire; see the key-rotation procedure above |
+| `JWT_ISSUER`     | `lyricsflip`             | Required issuer claim checked on HTTP and WebSocket authentication |
+| `JWT_AUDIENCE`   | `lyricsflip-api`         | Required audience claim checked on HTTP and WebSocket authentication |
 | `JWT_EXPIRES_IN` | `15m`                    | Any format accepted by `jsonwebtoken`. Refresh tokens are separate, opaque and valid for 30 days |
+| `WS_ALLOW_NO_ORIGIN` | `true`               | Allow WebSocket clients with no `Origin` header; set to `false` to reject them. Logged at startup |
 | `SWAGGER_ENABLED` | `false` in production, `true` otherwise | Serves Swagger UI at `/api/docs`. In production it must be set explicitly; leaving it unset fails the boot |
 | `INVITATION_TTL_MINUTES` | `30`             | How long player two has to accept a session invitation before it is abandoned and player one refunded |
 

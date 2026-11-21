@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync, statSync } from 'fs';
 import { join } from 'path';
+import * as Joi from 'joi';
 import { envValidationSchema } from './env.validation';
 
 function sourceFiles(dir: string): string[] {
@@ -61,8 +62,27 @@ describe('env validation schema', () => {
       'METRICS_IP_ALLOWLIST',
       'METRICS_BASIC_AUTH',
       'THROTTLE_LIMIT',
+      'WS_ALLOW_NO_ORIGIN',
+      'JWT_ISSUER',
+      'JWT_AUDIENCE',
+      'JWT_SECRET_PREVIOUS',
     ]) {
       expect(envExample).toContain(key);
     }
+  });
+
+  it('accepts a comma-separated frontend origin list and explicit no-origin policy', () => {
+    const result = envValidationSchema.validate({
+      NODE_ENV: 'test',
+      JWT_SECRET: 'test-secret',
+      DATABASE_URL: 'postgres://user:password@localhost:5432/test',
+      FRONTEND_URL: 'https://app.example.com, https://admin.example.com',
+      WS_ALLOW_NO_ORIGIN: false,
+    }) as Joi.ValidationResult<{ WS_ALLOW_NO_ORIGIN?: boolean }>;
+
+    if (result.error) {
+      throw result.error;
+    }
+    expect(result.value.WS_ALLOW_NO_ORIGIN).toBe(false);
   });
 });

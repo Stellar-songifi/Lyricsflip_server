@@ -9,12 +9,21 @@ import {
   WsException,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
-import { Logger, NotFoundException, UsePipes, ValidationPipe } from '@nestjs/common';
+import {
+  Logger,
+  NotFoundException,
+  UsePipes,
+  ValidationPipe,
+} from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import { GameLogicService } from './game.service';
 import { RandomLyricOptionsDto } from './dto/random-lyrics-option.dto';
 import { GuessDto } from './dto/guess.dto';
+import { SocketUser } from '../auth/auth-context.util';
 import { authenticateSocket } from '../auth/socket-auth.util';
+import { JwtService } from '@nestjs/jwt';
+import { ConfigService } from '@nestjs/config';
+import { allowsWebSocketOrigin } from '../common/security/cors';
 import { RealtimeEvent } from '../realtime/realtime.events';
 import { WsRateLimiter } from '../common/websocket/ws-rate-limiter';
 import {
@@ -52,8 +61,7 @@ interface GameSession {
       origin: string | undefined,
       callback: (err: Error | null, allow?: boolean) => void,
     ) => {
-      const allowed = process.env.FRONTEND_URL || 'http://localhost:3000';
-      callback(null, !origin || origin === allowed);
+      callback(null, allowsWebSocketOrigin(origin));
     },
     credentials: true,
   },
@@ -71,7 +79,11 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
   private readonly rateLimiter = new WsRateLimiter();
   private readonly connectionLimiter = new WsConnectionLimiter();
 
-  constructor(private readonly gameLogicService: GameLogicService) {}
+  constructor(
+    private readonly gameLogicService: GameLogicService,
+    private readonly jwtService: JwtService,
+    private readonly configService: ConfigService,
+  ) {}
 
   /**
    * Returns false (and rejects the event with a RATE_LIMITED error) if the
@@ -99,9 +111,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     let userId: string;
     let user: SocketUser;
     try {
-      const authenticated = await authenticateSocket(client);
-      userId = authenticated.userId;
-      user = authenticated.user;
+      user = await authenticateSocket(
+        client,
+        this.jwtService,
+        this.configService,
+      );
+      userId = user.id;
     } catch {
       this.logger.warn(`Rejected unauthenticated connection: ${client.id}`);
       client.emit('error', { message: 'Unauthorized' });

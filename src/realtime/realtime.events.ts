@@ -6,6 +6,7 @@
  * it is delivered to clients with. No payload carries an answer or a lyric.
  */
 export enum RealtimeEvent {
+  USER_SESSIONS_REVOKED = 'user.sessions_revoked',
   PLAYER_JOINED = 'session.player_joined',
   ROUND_STARTED = 'round.started',
   ROUND_ENDED = 'round.ended',

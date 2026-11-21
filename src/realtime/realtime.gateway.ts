@@ -8,10 +8,12 @@ import {
   WebSocketServer,
 } from '@nestjs/websockets';
 import { Logger, UseFilters } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { OnEvent } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { isUUID } from 'class-validator';
 import { Server, Socket } from 'socket.io';
+import { allowsWebSocketOrigin } from '../common/security/cors';
 import { Repository } from 'typeorm';
 import { GameSession } from '../game-sessions/entities/game-session.entity';
 import { RoomUser } from '../rooms/entities/room-user.entity';
@@ -65,8 +67,7 @@ export type SubscribeAck =
       origin: string | undefined,
       callback: (err: Error | null, allow?: boolean) => void,
     ) => {
-      const allowed = process.env.FRONTEND_URL || 'http://localhost:3000';
-      callback(null, !origin || origin === allowed);
+      callback(null, allowsWebSocketOrigin(origin));
     },
     credentials: true,
   },
@@ -84,6 +85,7 @@ export class RealtimeGateway
 
   constructor(
     private readonly socketAuthenticator: SocketAuthenticator,
+    private readonly configService: ConfigService,
     @InjectRepository(GameSession)
     private readonly sessionRepository: Repository<GameSession>,
     @InjectRepository(RoomUser)
@@ -106,7 +108,9 @@ export class RealtimeGateway
       return;
     }
 
-    if (!(await this.connectionLimiter.acquire(client.data.userId, client.id))) {
+    if (
+      !(await this.connectionLimiter.acquire(client.data.userId, client.id))
+    ) {
       client.emit('error', {
         code: 'RATE_LIMITED',
         message: 'Too many concurrent connections',
