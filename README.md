@@ -1072,3 +1072,6 @@ Do not run stellar mode with real value until the P0 issues are closed.
 
 <!-- handsoff-issue-459 -->
 - #459: [R3-37] Refresh-token rotation can be raced, and token reuse goes undetected
+
+<!-- handsoff-issue-532 -->
+- #532: [R3-110] Quick match: a matchmaking queue for head-to-head
