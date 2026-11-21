@@ -1,15 +1,17 @@
 import {
-  BadRequestException,
   ConflictException,
   Injectable,
+  InternalServerErrorException,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import { GameLogicService } from '../game/game.service';
 import { GAME_CONSTANTS } from '../game/constants/game.constants';
+import { GameRound } from '../game/entities/game-round.entity';
 import { Lyrics } from '../lyrics/entities/lyrics.entity';
 import { User } from '../users/entities/user.entity';
 import { XpLevelService } from '../xp-level/xp-level.service';
@@ -22,16 +24,9 @@ import { pickDeterministic, utcDay } from './daily-seed.util';
 const UNIQUE_VIOLATION = '23505';
 const LEADERBOARD_SIZE = 50;
 
-/**
- * Server secret mixed into the daily seed so future sets cannot be computed
- * from the public lyric ids alone. Falls back to a per-process random value
- * when unset, which still prevents offline prediction.
- */
-const DAILY_CHALLENGE_SALT =
-  process.env.DAILY_CHALLENGE_SALT ??
-  `fallback-${Math.random().toString(36).slice(2)}`;
-
 export interface DailyLyric {
+  /** The server-issued round id the client must pass back when guessing. */
+  roundId: string;
   id: number;
   lyricSnippet: string;
   category?: string;
@@ -78,10 +73,32 @@ export class ChallengesService {
     private readonly attemptRepository: Repository<DailyChallengeAttempt>,
     @InjectRepository(Lyrics)
     private readonly lyricsRepository: Repository<Lyrics>,
+    @InjectRepository(GameRound)
+    private readonly roundRepository: Repository<GameRound>,
     private readonly gameService: GameLogicService,
     private readonly xpService: XpLevelService,
     private readonly events: EventEmitter2,
+    private readonly configService: ConfigService,
   ) {}
+
+  /**
+   * Server secret mixed into the daily seed so future sets cannot be predicted
+   * from the public lyric ids alone. Required in production; a short default
+   * is used in development/test so the app starts without configuration.
+   */
+  private get dailyChallengeSalt(): string {
+    const salt = this.configService.get<string>('DAILY_CHALLENGE_SALT');
+    if (!salt) {
+      if (this.configService.get<string>('NODE_ENV') === 'production') {
+        // env.validation.ts already rejects this at boot, but guard again.
+        throw new InternalServerErrorException(
+          'DAILY_CHALLENGE_SALT must be set in production',
+        );
+      }
+      return 'dev-salt';
+    }
+    return salt;
+  }
 
   /**
    * The lyric ids for a UTC day. Chosen with a salted, date-seeded shuffle of
@@ -109,7 +126,7 @@ export class ChallengesService {
       const lyricIds = pickDeterministic(
         pool.map((lyric) => lyric.id),
         GAME_CONSTANTS.LIMITS.DAILY_CHALLENGE_SIZE,
-        `${date}:${DAILY_CHALLENGE_SALT}`,
+        `${date}:${this.dailyChallengeSalt}`,
       );
 
       // A concurrent request may have stored the day's set first; ignore the
@@ -131,14 +148,64 @@ export class ChallengesService {
   }
 
   /**
+   * Ensures one `game_round` row exists for each of the caller's daily lyrics
+   * and returns them, keyed by lyric id.
+   *
+   * Rounds are issued once per user per lyric per day and reused on subsequent
+   * calls. The `issuedAt` timestamp on the row is what the answer window is
+   * measured against when the guess arrives — no client-supplied timestamp is
+   * ever trusted.
+   *
+   * Re-issuing open rounds (closedAt IS NULL) would reset the timer without
+   * giving points, so only the first open round per lyric is kept. A race
+   * between two simultaneous GET requests is resolved by the unique constraint
+   * on (userId, dailyDate, lyricId): whichever insert wins is used.
+   */
+  private async getOrIssueRounds(
+    userId: string,
+    date: string,
+    lyricIds: number[],
+  ): Promise<Map<number, GameRound>> {
+    if (lyricIds.length === 0) return new Map();
+
+    // Load any rounds already issued for today (open or closed).
+    const existing = await this.roundRepository.find({
+      where: { userId, dailyDate: date, lyricId: In(lyricIds) },
+    });
+    const byLyric = new Map(existing.map((r) => [r.lyricId, r]));
+
+    // Issue rounds for lyrics that do not have one yet.
+    const missing = lyricIds.filter((id) => !byLyric.has(id));
+    for (const lyricId of missing) {
+      try {
+        const issued = await this.gameService.issueRound(userId, lyricId, undefined, date);
+        byLyric.set(lyricId, issued);
+      } catch (err) {
+        const code = (err as { code?: string }).code;
+        if (code === UNIQUE_VIOLATION) {
+          // A concurrent request won the race; load the round it created.
+          const existing = await this.roundRepository.findOne({
+            where: { userId, dailyDate: date, lyricId },
+          });
+          if (existing) {
+            byLyric.set(lyricId, existing);
+          }
+        } else {
+          throw err;
+        }
+      }
+    }
+
+    return byLyric;
+  }
+
+  /**
    * The subset of the day's fixed lyric ids that are still active (playable).
    *
    * The day's set stays fixed in `daily_challenges.lyricIds`, but if an admin
-   * deactivates one of those lyrics mid-day it can no longer be guessed
-   * (`checkGuess` only loads active lyrics). To keep the challenge completable
-   * and `total` consistent with what is actually playable, both `total` and the
-   * completion check are computed from the still-active ids only. The lyric is
-   * simply excluded from today's playable set; tomorrow's draw is unaffected.
+   * deactivates one of those lyrics mid-day it can no longer be guessed.
+   * To keep the challenge completable both `total` and the completion check
+   * are computed from the still-active ids only.
    */
   private async getActiveDailyLyricIds(
     lyricIds: number[],
@@ -154,28 +221,34 @@ export class ChallengesService {
     return lyricIds.filter((id) => activeSet.has(id));
   }
 
-  /** Today's lyrics (never their answers) and the caller's progress on them. */
+  /**
+   * Today's lyrics (never their answers), each paired with a server-issued
+   * round id the client must present when guessing, and the caller's progress.
+   */
   async getDaily(userId: string): Promise<DailyChallengeView> {
     const date = utcDay();
     const lyricIds = await this.getDailyLyricIds(date);
 
-    const [lyrics, attempts] = await Promise.all([
+    const [lyrics, attempts, roundsByLyric] = await Promise.all([
       this.lyricsRepository.find({
         where: { id: In(lyricIds), isActive: true },
       }),
       this.attemptRepository.find({ where: { userId, challengeDate: date } }),
+      this.getOrIssueRounds(userId, date, lyricIds),
     ]);
 
     const byId = new Map(lyrics.map((lyric) => [lyric.id, lyric]));
     const attemptByLyric = new Map(attempts.map((a) => [a.lyricId, a]));
 
     const view: DailyLyric[] = lyricIds
-      .filter((id) => byId.has(id))
+      .filter((id) => byId.has(id) && roundsByLyric.has(id))
       .map((id) => {
         const lyric = byId.get(id)!;
+        const round = roundsByLyric.get(id)!;
         const attempt = attemptByLyric.get(id);
 
         return {
+          roundId: round.id,
           id,
           lyricSnippet: lyric.lyricSnippet,
           category: lyric.category,
@@ -191,8 +264,6 @@ export class ChallengesService {
       date,
       lyrics: view,
       attempted: attempts.length,
-      // `total` reflects the playable lyrics only, so it matches the view and
-      // stays completable even if a lyric was deactivated mid-day.
       total: view.length,
     };
   }
@@ -200,42 +271,49 @@ export class ChallengesService {
   /**
    * Scores the caller's single attempt at one of today's lyrics.
    *
-   * The attempt is recorded before the answer is revealed, and a unique
-   * constraint on (user, day, lyric) decides races, so two simultaneous
-   * requests cannot both score. Answers submitted after the answer window
-   * score 0.
+   * The guess is routed through `GameLogicService.guessRound`, which closes
+   * the round with a conditional UPDATE before scoring it. The answer window
+   * is measured against `game_rounds.issuedAt` — a server-set timestamp — so
+   * no client-supplied value is used. A guess after the window scores 0.
    */
   async guess(userId: string, dto: DailyGuessDto): Promise<DailyGuessResult> {
     const date = utcDay();
     const lyricIds = await this.getDailyLyricIds(date);
 
-    if (!lyricIds.includes(dto.lyricId)) {
+    // Verify the round belongs to the caller and is for today's challenge.
+    const round = await this.roundRepository.findOne({
+      where: { id: dto.roundId, userId, dailyDate: date },
+    });
+
+    if (!round) {
+      throw new NotFoundException(
+        "Round not found, or it does not belong to today's challenge",
+      );
+    }
+
+    if (!lyricIds.includes(round.lyricId)) {
       throw new NotFoundException(
         "That lyric is not part of today's challenge",
       );
     }
 
-    const validation = this.gameService.validateGuess(dto.guessValue);
-    if (!validation.isValid) {
-      throw new BadRequestException(validation.reason);
-    }
-
-    const result = await this.gameService.checkGuess({
-      lyricId: dto.lyricId,
+    // Delegate scoring and window enforcement entirely to the game service.
+    // guessRound measures elapsed time against game_rounds.issuedAt, which was
+    // set by the server when the round was issued — the client cannot influence
+    // the timer.
+    const result = await this.gameService.guessRound(userId, {
+      roundId: dto.roundId,
       guessType: dto.guessType,
       guessValue: dto.guessValue,
     });
 
-    // Enforce the same answer window as solo play: a guess submitted after the
-    // window has elapsed scores 0 regardless of correctness.
-    const withinWindow = this.isWithinAnswerWindow(dto);
-    const points = withinWindow ? result.points ?? 0 : 0;
+    const points = result.points ?? 0;
 
     try {
       await this.attemptRepository.insert({
         userId,
         challengeDate: date,
-        lyricId: dto.lyricId,
+        lyricId: round.lyricId,
         guessType: dto.guessType,
         isCorrect: result.isCorrect,
         points,
@@ -249,7 +327,7 @@ export class ChallengesService {
       throw error;
     }
 
-    if (result.isCorrect && withinWindow) {
+    if (result.isCorrect && !result.timedOut) {
       await this.xpService.handleCorrectGuess(userId);
     }
 
@@ -259,8 +337,7 @@ export class ChallengesService {
       }),
       this.getActiveDailyLyricIds(lyricIds),
     ]);
-    // Completion only requires attempts on the still-active lyrics, so a lyric
-    // deactivated mid-day cannot make the challenge impossible to complete.
+
     const completed =
       activeLyricIds.length > 0 &&
       activeLyricIds.every((id) =>
@@ -278,23 +355,6 @@ export class ChallengesService {
       points,
       completed,
     };
-  }
-
-  /**
-   * Whether the guess was submitted within the answer window. The window is
-   * measured from the round's issued timestamp when the client supplies one;
-   * otherwise the guess is treated as in-window (legacy clients).
-   */
-  private isWithinAnswerWindow(dto: DailyGuessDto): boolean {
-    const issuedAt = (dto as { issuedAt?: string | number }).issuedAt;
-    if (issuedAt === undefined || issuedAt === null) return true;
-
-    const issuedMs =
-      typeof issuedAt === 'number' ? issuedAt : Date.parse(issuedAt);
-    if (Number.isNaN(issuedMs)) return true;
-
-    const elapsed = Date.now() - issuedMs;
-    return elapsed <= GAME_CONSTANTS.LIMITS.ANSWER_WINDOW_MS;
   }
 
   /** Today's (or another day's) ranking by points, then correct answers. */
@@ -339,19 +399,17 @@ export class ChallengesService {
     date: string,
     attempts: DailyChallengeAttempt[],
   ): void {
-    const points = attempts.reduce((sum, attempt) => sum + attempt.points, 0);
     const correct = attempts.filter((attempt) => attempt.isCorrect).length;
 
     const payload: ChallengeCompletedNotificationPayload = {
       userId,
-      challengeDate: date,
-      points,
-      correct,
-      total: attempts.length,
+      challengeName: `daily-${date}`,
+      streakCount: correct,
+      timestamp: new Date(),
+      message: `You completed the daily challenge for ${date}!`,
     };
 
     this.events.emit('user.completed_challenge', payload);
-    };
     this.events.emit('challenge.completed', payload);
   }
 }
