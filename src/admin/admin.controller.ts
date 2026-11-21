@@ -176,4 +176,41 @@ export class AdminController {
     return this.adminService.deleteLyric(id);
   }
 
+  // --- Analytics ---
+  @Get('analytics/overview')
+  @ApiOperation({
+    summary:
+      'Game health overview: DAU, WAU, signups, rounds, accuracy, wager outcomes',
+  })
+  @ApiQuery({ name: 'from', required: false, type: String })
+  @ApiQuery({ name: 'to', required: false, type: String })
+  @ApiResponse({ status: 200, description: 'Overview metrics.', type: Object })
+  getAnalyticsOverview(
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.adminService.getAnalyticsOverview(from, to);
+  }
+
+  @Get('analytics/lyrics')
+  @ApiOperation({
+    summary: 'Per-lyric attempts and accuracy to surface broken answers',
+  })
+  @ApiQuery({ name: 'from', required: false, type: String })
+  @ApiQuery({ name: 'to', required: false, type: String })
+  @ApiQuery({
+    name: 'sort',
+    required: false,
+    enum: ['accuracy', 'attempts'],
+  })
+  @ApiQuery({ name: 'limit', required: false, type: Number })
+  @ApiResponse({ status: 200, description: 'Per-lyric stats.', type: [Object] })
+  getAnalyticsLyrics(
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('sort') sort?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.adminService.getAnalyticsLyrics(from, to, sort, limit);
+  }
 }
