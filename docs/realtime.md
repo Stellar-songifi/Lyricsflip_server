@@ -32,22 +32,24 @@ realtime gateways.
 
 ## Error contract
 
-All errors emitted over the socket share a single shape:
+The socket exception filter returns this envelope:
 
 ```json
 {
   "event": "error",
   "data": {
-    "code": 400,
+    "code": "VALIDATION_ERROR",
+    "statusCode": 400,
     "message": "Validation failed",
     "details": [
-      { "field": "guess", "message": "guess must be a string" }
+      { "field": "guess", "messages": ["guess must be a string"] }
     ]
   }
 }
 ```
 
-- `code` — numeric status code (HTTP-style, e.g. `400`, `403`, `500`).
+- `code` is a stable string such as `VALIDATION_ERROR`, `ROUND_EXPIRED` or `RATE_LIMITED`. The API Swagger document lists all supported codes.
+- `statusCode` is the numeric HTTP-style status for errors handled by the exception filter.
 - `message` — human-readable summary.
 - `details` — optional array of field-level messages (present for validation
   failures).
@@ -199,13 +201,13 @@ sequenceDiagram
 ### Ack callbacks
 
 When a client sends an event with an acknowledgement callback, the same
-`{ code, message, details }` object is passed to the ack instead of (or in
+`{ code, statusCode, message, details }` object is passed to the ack instead of (or in
 addition to) the `error` event, so callers can handle failures inline.
 
 ### Validation failures
 
 Gateway handlers validate payloads with a `ValidationPipe` configured with an
-exception factory that throws `WsException`. An invalid payload (for example an
+exception factory that throws `DomainException`. An invalid payload (for example an
 invalid `submitGuess` body) therefore returns a `400`-style error with
 field-level messages over the socket rather than a generic
 `Internal server error`.

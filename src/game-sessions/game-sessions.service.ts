@@ -1,10 +1,14 @@
 import {
+  DomainException,
+  ErrorCode,
+} from '../common/exceptions/domain.exception';
+import {
+  HttpStatus,
   Injectable,
   NotFoundException,
   BadRequestException,
   ConflictException,
   ForbiddenException,
-  GoneException,
   Inject,
   Logger,
 } from '@nestjs/common';
@@ -141,7 +145,9 @@ export class GameSessionsService {
       ]);
 
       if (!playerOneBalance) {
-        throw new BadRequestException(
+        throw new DomainException(
+          ErrorCode.INSUFFICIENT_BALANCE,
+          HttpStatus.BAD_REQUEST,
           `You have insufficient tokens for this wager (${fromStroops(stake)} LYRIC required)`,
         );
       }
@@ -150,7 +156,9 @@ export class GameSessionsService {
         const playerTwo = await this.userRepository.findOne({
           where: { id: playerTwoId },
         });
-        throw new BadRequestException(
+        throw new DomainException(
+          ErrorCode.INSUFFICIENT_BALANCE,
+          HttpStatus.BAD_REQUEST,
           `${sanitizeForDisplay(playerTwo?.username) || 'Player Two'} has insufficient tokens for this wager`,
         );
       }
@@ -186,7 +194,9 @@ export class GameSessionsService {
       if (!wagerResult.success) {
         // If wager creation fails, delete the game session
         await this.gameSessionRepository.delete(savedGameSession.id);
-        throw new BadRequestException(
+        throw new DomainException(
+          wagerResult.code ?? ErrorCode.BAD_REQUEST,
+          HttpStatus.BAD_REQUEST,
           `Failed to create wager: ${wagerResult.message}`,
         );
       }
@@ -261,7 +271,11 @@ export class GameSessionsService {
 
     if (this.isExpired(gameSession)) {
       await this.abandonInvitation(gameSession);
-      throw new GoneException('This invitation has expired');
+      throw new DomainException(
+        ErrorCode.INVITATION_EXPIRED,
+        HttpStatus.GONE,
+        'This invitation has expired',
+      );
     }
 
     if (!this.isWagered(gameSession)) {
