@@ -1,3 +1,4 @@
+import { ErrorCode } from '../../common/exceptions/domain.exception';
 import {
   Injectable,
   Logger,
@@ -37,6 +38,7 @@ export interface CreateWagerDto {
 
 export interface WagerResult {
   success: boolean;
+  code?: ErrorCode;
   wager?: Wager;
   message?: string;
   /**
@@ -143,6 +145,7 @@ export class WagerService {
       if (!playerAFunded) {
         return {
           success: false,
+          code: ErrorCode.INSUFFICIENT_BALANCE,
           message: `${sanitizeForDisplay(playerA.username)} has insufficient LYRIC for this wager (${fromStroops(stake)} required)`,
         };
       }
@@ -150,6 +153,7 @@ export class WagerService {
       if (!playerBFunded) {
         return {
           success: false,
+          code: ErrorCode.INSUFFICIENT_BALANCE,
           message: `${sanitizeForDisplay(playerB.username)} has insufficient LYRIC for this wager (${fromStroops(stake)} required)`,
         };
       }
