@@ -1075,3 +1075,6 @@ Do not run stellar mode with real value until the P0 issues are closed.
 
 <!-- handsoff-issue-532 -->
 - #532: [R3-110] Quick match: a matchmaking queue for head-to-head
+
+<!-- handsoff-issue-533 -->
+- #533: [R3-111] Ranked and casual modes
