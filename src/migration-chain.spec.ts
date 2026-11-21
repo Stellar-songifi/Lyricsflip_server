@@ -7,9 +7,9 @@ import { join, relative } from 'path';
  * Migrations workflow; these catch the cheap mistakes without a database.
  */
 const migrationsDir = join(__dirname, 'migrations');
-const migrationFiles = readdirSync(migrationsDir).filter((file) =>
-  /\.(t|j)s$/.test(file),
-);
+const migrationFiles = readdirSync(migrationsDir)
+  .filter((file) => /\.(t|j)s$/.test(file))
+  .sort();
 const migrationSources = migrationFiles.map((file) =>
   readFileSync(join(migrationsDir, file), 'utf8'),
 );

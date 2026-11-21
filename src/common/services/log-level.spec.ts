@@ -100,6 +100,9 @@ describe('LoggerService emits errors at every accepted level', () => {
         ([info]) => (info as { message?: string }).message,
       );
       expect(messages).toContain('database exploded');
+      expect(
+        messages.every((message) => typeof message !== 'object'),
+      ).toBe(true);
     },
   );
 });
