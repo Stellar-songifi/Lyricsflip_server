@@ -134,6 +134,7 @@ export class StellarTokenService implements ITokenService {
     userId: string,
     signedXdr: string,
     context: EscrowContext,
+    expectedHash?: string | null,
   ): Promise<TokenTransactionResult> {
     try {
       const address = await this.requireAddress(userId);
@@ -141,6 +142,7 @@ export class StellarTokenService implements ITokenService {
         signedXdr,
         context.sessionId,
         address,
+        expectedHash,
       );
 
       return this.toTransactionResult(
