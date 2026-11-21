@@ -53,10 +53,42 @@ export class GameController {
   @ApiQuery({ name: 'decade', required: false, type: String })
   @ApiQuery({ name: 'genre', required: false, type: String })
   @ApiQuery({ name: 'excludeIds', required: false, type: [Number] })
+  @ApiQuery({
+    name: 'sessionId',
+    required: false,
+    schema: { type: 'string', format: 'uuid' },
+  })
+  @ApiQuery({ name: 'ignorePreferences', required: false, type: Boolean })
+  @ApiQuery({
+    name: 'difficulty',
+    required: false,
+    schema: { type: 'integer', minimum: 1, maximum: 5 },
+  })
   @ApiResponse({
     status: 200,
     description: 'A playable lyric and a round id.',
-    type: Object,
+    schema: {
+      type: 'object',
+      required: [
+        'roundId',
+        'issuedAt',
+        'expiresAt',
+        'answerWindowSeconds',
+        'id',
+        'lyricSnippet',
+      ],
+      properties: {
+        roundId: { type: 'string', format: 'uuid' },
+        issuedAt: { type: 'string', format: 'date-time' },
+        expiresAt: { type: 'string', format: 'date-time' },
+        answerWindowSeconds: { type: 'integer' },
+        id: { type: 'integer' },
+        lyricSnippet: { type: 'string' },
+        category: { type: 'string' },
+        decade: { type: 'string' },
+        genre: { type: 'string' },
+      },
+    },
   })
   @Get('lyric')
   async getRandomLyric(
@@ -126,6 +158,17 @@ export class GameController {
   @ApiQuery({ name: 'decade', required: false, type: String })
   @ApiQuery({ name: 'genre', required: false, type: String })
   @ApiQuery({ name: 'excludeIds', required: false, type: [Number] })
+  @ApiQuery({
+    name: 'sessionId',
+    required: false,
+    schema: { type: 'string', format: 'uuid' },
+  })
+  @ApiQuery({ name: 'ignorePreferences', required: false, type: Boolean })
+  @ApiQuery({
+    name: 'difficulty',
+    required: false,
+    schema: { type: 'integer', minimum: 1, maximum: 5 },
+  })
   @ApiResponse({
     status: 200,
     description: 'A list of playable lyrics.',
