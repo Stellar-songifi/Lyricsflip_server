@@ -19,6 +19,7 @@ describe('AuthService refresh token flow', () => {
     save: jest.fn(),
     create: jest.fn((data) => data),
     update: jest.fn(),
+    query: jest.fn(),
   };
   const mockJwtService = {
     sign: jest.fn().mockReturnValue('signed-jwt'),
@@ -91,22 +92,91 @@ describe('AuthService refresh token flow', () => {
 
     it('rotates a valid token and returns a new pair', async () => {
       const existing = {
+        id: 'token-1',
         revokedAt: null,
         expiresAt: new Date(Date.now() + 10000),
         userId: 'user-1',
+        familyId: 'family-1',
       };
       mockRefreshTokenRepository.findOne.mockResolvedValue(existing);
       mockUserRepository.findOne.mockResolvedValue({ ...baseUser });
+      mockRefreshTokenRepository.query.mockResolvedValue([{ id: 'token-1' }]);
       mockRefreshTokenRepository.save.mockImplementation((t) =>
         Promise.resolve(t),
       );
 
       const result = await service.refresh('good-token');
 
-      expect(existing.revokedAt).not.toBeNull();
+      expect(mockRefreshTokenRepository.query).toHaveBeenCalled();
       expect(result.accessToken).toBe('signed-jwt');
       expect(typeof result.refreshToken).toBe('string');
       expect(result.refreshToken).not.toBe('good-token');
+    });
+
+    it('issues exactly one new pair for two parallel refreshes with one token', async () => {
+      const existing = {
+        id: 'token-1',
+        revokedAt: null,
+        expiresAt: new Date(Date.now() + 10000),
+        userId: 'user-1',
+        familyId: 'family-1',
+      };
+      mockRefreshTokenRepository.findOne.mockResolvedValue(existing);
+      mockUserRepository.findOne.mockResolvedValue({ ...baseUser });
+      mockRefreshTokenRepository.save.mockImplementation((t) =>
+        Promise.resolve(t),
+      );
+      // Conditional UPDATE succeeds only for the first caller.
+      mockRefreshTokenRepository.query
+        .mockResolvedValueOnce([{ id: 'token-1' }])
+        .mockResolvedValueOnce([]);
+
+      const results = await Promise.allSettled([
+        service.refresh('good-token'),
+        service.refresh('good-token'),
+      ]);
+
+      const fulfilled = results.filter((r) => r.status === 'fulfilled');
+      const rejected = results.filter((r) => r.status === 'rejected');
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(
+        UnauthorizedException,
+      );
+    });
+
+    it('revokes the whole family, bumps tokenVersion and audits on replay of a rotated token', async () => {
+      mockRefreshTokenRepository.findOne.mockResolvedValue({
+        id: 'token-1',
+        revokedAt: new Date(),
+        expiresAt: new Date(Date.now() + 10000),
+        userId: 'user-1',
+        familyId: 'family-1',
+      });
+      mockUserRepository.findOne.mockResolvedValue({ ...baseUser });
+      mockUserRepository.save.mockImplementation((u) => Promise.resolve(u));
+      mockRefreshTokenRepository.query.mockResolvedValue([]);
+
+      await expect(service.refresh('rotated-token')).rejects.toThrow(
+        UnauthorizedException,
+      );
+
+      // Family-wide revocation issued.
+      const revokeCall = mockRefreshTokenRepository.query.mock.calls.find(
+        ([sql]) => /family_id/i.test(sql),
+      );
+      expect(revokeCall).toBeDefined();
+
+      // tokenVersion bumped.
+      expect(mockUserRepository.save).toHaveBeenCalled();
+      const saved = mockUserRepository.save.mock.calls[0][0];
+      expect(saved.tokenVersion).toBe(baseUser.tokenVersion + 1);
+
+      // Security audit event written.
+      const auditCall = mockRefreshTokenRepository.query.mock.calls.find(
+        ([sql]) => /audit/i.test(sql),
+      );
+      expect(auditCall).toBeDefined();
     });
   });
 

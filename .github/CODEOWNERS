@@ -60,6 +60,8 @@
 *.wasm                       @simeontech
 
 # --- Code that moves money or controls access
+# Branch protection's "Require review from Code Owners" makes a maintainer
+# approval mandatory for any change under these paths (R3-28).
 /contracts/                  @simeontech
 /src/stellar/                @simeontech
 /src/tokens/                 @simeontech

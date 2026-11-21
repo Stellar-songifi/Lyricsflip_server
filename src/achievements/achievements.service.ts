@@ -1,5 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { Achievement } from './achievement.entity';
+import { UserAchievement } from './user-achievement.entity';
 
 /**
  * Achievement definition identifiers.
@@ -123,6 +127,51 @@ export interface RoundEndedEvent {
 export interface WagerSettledEvent {
   userId: string;
   won: boolean;
+}
+
+/**
+ * TypeORM-backed implementation of {@link AchievementsRepository}. Registered
+ * as the `AchievementsRepository` provider in `AchievementsModule` so the
+ * service can be injected wherever achievements are needed.
+ */
+@Injectable()
+export class TypeOrmAchievementsRepository implements AchievementsRepository {
+  constructor(
+    @InjectRepository(Achievement)
+    private readonly achievements: Repository<Achievement>,
+    @InjectRepository(UserAchievement)
+    private readonly userAchievements: Repository<UserAchievement>,
+  ) {}
+
+  async upsertDefinition(definition: AchievementDefinition): Promise<void> {
+    await this.achievements.upsert(
+      {
+        code: definition.code,
+        name: definition.name,
+        description: definition.description,
+      },
+      ['code'],
+    );
+  }
+
+  async findUnlockedCodes(userId: string): Promise<AchievementCode[]> {
+    const rows = await this.userAchievements.find({
+      where: { userId },
+      select: ['achievementCode'],
+    });
+    return rows.map((row) => row.achievementCode as AchievementCode);
+  }
+
+  async insertUnlock(userId: string, code: AchievementCode): Promise<boolean> {
+    const result = await this.userAchievements
+      .createQueryBuilder()
+      .insert()
+      .into(UserAchievement)
+      .values({ userId, achievementCode: code })
+      .orIgnore()
+      .execute();
+    return (result.identifiers?.length ?? 0) > 0;
+  }
 }
 
 @Injectable()

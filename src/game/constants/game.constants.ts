@@ -1,3 +1,32 @@
+/**
+ * XP awarded for each correct guess, before difficulty and speed bonuses.
+ */
+export const XP_PER_CORRECT_GUESS = 10;
+
+export interface LevelThreshold {
+  level: number;
+  xp: number;
+  title: string;
+}
+
+/**
+ * Cumulative XP required to reach each level, plus the display title.
+ */
+export const LEVEL_THRESHOLDS: readonly LevelThreshold[] = [
+  { level: 1, xp: 0, title: 'Novice' },
+  { level: 2, xp: 100, title: 'Listener' },
+  { level: 3, xp: 300, title: 'Fan' },
+  { level: 4, xp: 600, title: 'Devotee' },
+  { level: 5, xp: 1000, title: 'Expert' },
+  { level: 6, xp: 1500, title: 'Virtuoso' },
+  { level: 7, xp: 2100, title: 'Maestro' },
+  { level: 8, xp: 2800, title: 'Legend' },
+  { level: 9, xp: 3600, title: 'Icon' },
+  { level: 10, xp: 4500, title: 'Immortal' },
+] as const;
+
+export const MAX_LEVEL = LEVEL_THRESHOLDS[LEVEL_THRESHOLDS.length - 1].level;
+
 export const GAME_CONSTANTS = {
   POINTS: {
     CORRECT_GUESS: 100,
@@ -44,6 +73,13 @@ export const GAME_CONSTANTS = {
     /** Hint levels: 1 decade, 2 word counts, 3 first letters. */
     MAX_HINTS: 3,
     DAILY_CHALLENGE_SIZE: 10,
+    /**
+     * How many days back a lyric counts as "seen" when picking a random
+     * round, so recently played songs are not repeated.
+     */
+    SEEN_WINDOW_DAYS: 30,
+    /** How long finished game rounds are kept before the retention job prunes them. */
+    ROUND_RETENTION_DAYS: 30,
   },
   VALIDATION: {
     MIN_PARTIAL_MATCH_LENGTH: 3,
@@ -85,5 +121,10 @@ export const GAME_CONSTANTS = {
       'featuring',
       'ft',
     ],
+  },
+  XP: {
+    PER_CORRECT_GUESS: XP_PER_CORRECT_GUESS,
+    LEVEL_THRESHOLDS,
+    MAX_LEVEL,
   },
 } as const;

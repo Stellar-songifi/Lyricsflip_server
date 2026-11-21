@@ -180,6 +180,57 @@ export const envValidationSchema = Joi.object({
   // greater than 1, REDIS_URL is required so caches/rate limits are shared
   // (R3-46, R3-47; see ProductionSafetyCheck).
   INSTANCE_COUNT: Joi.number().integer().min(1).default(1),
+  // Graceful-shutdown drain window for in-flight HTTP requests.
+  SHUTDOWN_DRAIN_TIMEOUT_MS: Joi.number().integer().min(1).default(30000),
+  // Body-parser aliases kept for callers that read the shorter names.
+  JSON_BODY_LIMIT: Joi.string().default('100kb'),
+  URLENCODED_BODY_LIMIT: Joi.string().default('100kb'),
+  // Round scoring multiplier applied to every round's points.
+  ROUND_SCORE_MULTIPLIER: Joi.number().min(0).default(1),
+  // Pagination defaults for list endpoints.
+  DEFAULT_PAGE_SIZE: Joi.number().integer().min(1).default(20),
+  MAX_PAGE_SIZE: Joi.number().integer().min(1).default(100),
+  // Feature flags read by gameplay services.
+  DAILY_CHALLENGE_ENABLED: Joi.string().valid('true', 'false').default('false'),
+  LEADERBOARD_ENABLED: Joi.string().valid('true', 'false').default('true'),
+  // Cache tuning.
+  CACHE_TTL_MS: Joi.number().integer().min(0).default(60000),
+  REDIS_TTL_SECONDS: Joi.number().integer().min(0).default(60),
+  // Logging.
+  LOG_DIR: Joi.string().optional().allow(''),
+  LOG_MAX_FILES: Joi.string().optional().allow(''),
+  LOG_MAX_SIZE: Joi.string().optional().allow(''),
+  // Mail tuning.
+  MAIL_POOL_SIZE: Joi.number().integer().min(1).default(5),
+  MAIL_TIMEOUT_MS: Joi.number().integer().min(0).default(10000),
+  // Stellar / Soroban additional tuning.
+  STELLAR_TIMEOUT_MS: Joi.number().integer().min(0).default(30000),
+  STELLAR_MAX_RETRIES: Joi.number().integer().min(0).default(3),
+  STELLAR_RETRY_DELAY_MS: Joi.number().integer().min(0).default(1000),
+  STELLAR_CONFIRMATION_TIMEOUT_MS: Joi.number().integer().min(0).default(60000),
+  STELLAR_FEE_BUMP_MULTIPLIER: Joi.number().min(1).default(1.5),
+  // Wager / settlement extras.
+  WAGER_MIN_AMOUNT: Joi.number().min(0).optional(),
+  WAGER_MAX_AMOUNT: Joi.number().min(0).optional(),
+  SETTLEMENT_BATCH_SIZE: Joi.number().integer().min(1).default(100),
+  SETTLEMENT_POLL_INTERVAL_MS: Joi.number().integer().min(1).default(5000),
+  // Rate limiting extras.
+  THROTTLE_WINDOW_MS: Joi.number().integer().min(1).default(60000),
+  THROTTLE_MAX_REQUESTS: Joi.number().integer().min(1).default(100),
+  // Observability extras.
+  OTEL_TRACES_SAMPLER_ARG: Joi.string().optional().allow(''),
+  OTEL_EXPORTER_OTLP_HEADERS: Joi.string().optional().allow(''),
+  METRICS_ENABLED: Joi.string().valid('true', 'false').default('true'),
+  METRICS_PATH: Joi.string().default('/metrics'),
+  // Security / auth extras.
+  BCRYPT_ROUNDS: Joi.number().integer().min(4).max(31).default(10),
+  PASSWORD_RESET_TTL_MINUTES: Joi.number().integer().min(1).default(60),
+  REFRESH_TOKEN_TTL_DAYS: Joi.number().integer().min(1).default(7),
+  CORS_ORIGINS: Joi.string().optional().allow(''),
+  // Misc.
+  APP_NAME: Joi.string().default('lyricsflip'),
+  APP_VERSION: Joi.string().optional().allow(''),
+  TIMEZONE: Joi.string().default('UTC'),
 
   // Observability
   OTEL_EXPORTER_OTLP_ENDPOINT: Joi.string().uri().optional().allow(''),

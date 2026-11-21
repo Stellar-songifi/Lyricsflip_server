@@ -5,14 +5,13 @@ import { RoomsService } from './rooms.service';
 import { Room } from './entities/room.entity';
 import { RoomUser } from './entities/room-user.entity';
 import { Lyrics } from '../lyrics/entities/lyrics.entity';
-import { ConflictException, NotFoundException } from '@nestjs/common';
-import { User } from '../users/entities/user.entity';
-import { GuessType } from '../game/dto/guess.dto';
 import {
   BadRequestException,
   ConflictException,
   NotFoundException,
 } from '@nestjs/common';
+import { User } from '../users/entities/user.entity';
+import { GuessType } from '../game/dto/guess.dto';
 import { LessThanOrEqual } from 'typeorm';
 
 describe('RoomsService', () => {
@@ -96,7 +95,9 @@ describe('RoomsService', () => {
       roomRepository = module.get<Repository<Room>>(getRepositoryToken(Room));
       roomUserRepository = module.get<Repository<RoomUser>>(getRepositoryToken(RoomUser));
       lyricsRepository = module.get<Repository<Lyrics>>(getRepositoryToken(Lyrics));
-    });  it('should be defined', () => {
+    });
+
+  it('should be defined', () => {
     expect(service).toBeDefined();
   });
 

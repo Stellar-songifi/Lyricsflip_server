@@ -48,23 +48,18 @@ describe('OpenAPI document', () => {
   });
 
   it('puts API routes under the global prefix', () => {
-    const login = paths.find((path) => path.endsWith('/auth/login'));
-    expect(login).toBeDefined();
-    expect(login!.startsWith(`/${API_PREFIX}/`)).toBe(true);
+    expect(paths).toContain(`/${API_PREFIX}/auth/login`);
   });
 
   it('keeps the health probes outside the global prefix', () => {
-    const live = paths.find((path) => path.endsWith('/health/live'));
-    expect(live).toBeDefined();
-    expect(live!.startsWith(`/${API_PREFIX}/`)).toBe(false);
+    expect(paths).toContain('/health/live');
   });
 
   it('lists only paths the app actually serves', async () => {
-    const login = paths.find((path) => path.endsWith('/auth/login'))!;
-    const live = paths.find((path) => path.endsWith('/health/live'))!;
-
-    await request(app.getHttpServer()).post(login).expect(201);
-    await request(app.getHttpServer()).get(live).expect(200);
+    await request(app.getHttpServer())
+      .post(`/${API_PREFIX}/auth/login`)
+      .expect(201);
+    await request(app.getHttpServer()).get('/health/live').expect(200);
   });
 
   it('declares the bearer scheme used by the Authorize button', () => {

@@ -19,6 +19,7 @@ import { GuessType } from '../game/dto/guess.dto';
 import { matchGuess } from '../game/guess-matcher';
 import * as crypto from 'crypto';
 import { JobLockService } from '../jobs/job-lock.service';
+import { JobLockService } from '../common/locking/job-lock.service';
 
 /** Default and hard cap for the number of players allowed in a room. */
 export const DEFAULT_MAX_PLAYERS = 8;
@@ -129,6 +130,8 @@ export class RoomsService {
       lyric = foundLyric;
     }
 
+    const maxPlayers = this.normalizeMaxPlayers(createRoomDto.maxPlayers);
+
     // Generate a unique 6-character code, retrying on unique violations.
     let lastError: unknown;
     for (let attempt = 0; attempt < ROOM_CODE_MAX_ATTEMPTS; attempt++) {
@@ -139,6 +142,11 @@ export class RoomsService {
         code,
         lyric,
         lyricId: lyric.id,
+        hostId: hostId ?? null,
+        maxPlayers,
+        status: RoomStatus.LOBBY,
+        startedAt: null,
+        roundCount: 0,
         expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24 hours from now
       } as Room);
 
@@ -155,10 +163,6 @@ export class RoomsService {
         throw error;
       }
     }
-    // Generate a unique 6-character code
-    const code = this.generateRoomCode();
-
-    const maxPlayers = this.normalizeMaxPlayers(createRoomDto.maxPlayers);
 
     const room = this.roomRepository.create({
       name: createRoomDto.name,
@@ -176,13 +180,14 @@ export class RoomsService {
     this.logger.error(
       'Failed to generate a unique room code',
       lastError instanceof Error ? lastError.message : String(lastError),
+    this.logger.error(
+      'Failed to generate a unique room code',
+      lastError as Error,
     );
     throw new ConflictException('Could not generate a unique room code');
   }
 
   /**
-   * Generates a 6-character uppercase code from an unambiguous alphabet.
-   * Uses crypto.randomInt for uniform, unbiased selection.
    * Pick a random active lyric without a full-table sort.
    *
    * Uses random ID ranges with a retry: pick a random id in [minId, maxId],
@@ -223,6 +228,9 @@ export class RoomsService {
       .where('lyrics.isActive = :isActive', { isActive: true })
       .orderBy('lyrics.id', 'ASC')
       .getOne();
+  }
+
+  /**
    * Clamp the requested player cap into the allowed range.
    */
   private normalizeMaxPlayers(requested?: number): number {
@@ -236,8 +244,8 @@ export class RoomsService {
   }
 
   /**
-   * Generates a unique 6-character alphanumeric code.
-   * Uses base36 encoding of random bytes for a short, URL-friendly code.
+   * Generates a 6-character uppercase code from an unambiguous alphabet.
+   * Uses crypto.randomInt for uniform, unbiased selection.
    */
   private generateRoomCode(): string {
     let code = '';
@@ -549,59 +557,6 @@ export class RoomsService {
   private calculateScore(lyric: Lyrics, guessType: GuessType): number {
     // Base score per guess type; kept simple and deterministic.
     return guessType === GuessType.SONG_TITLE ? 100 : 50;
-  }
-
-  private toLyricView(lyric: Lyrics, reveal: boolean): RoomLyricView {
-    const view: RoomLyricView = {
-      id: lyric.id,
-      lyricSnippet: lyric.lyricSnippet,
-      category: lyric.category,
-      genre: lyric.genre,
-      decade: lyric.decade,
-    };
-    if (reveal) {
-      view.artist = lyric.artist;
-      view.songTitle = lyric.songTitle;
-    }
-    return view;
-  }
-
-  private toPlayerView(roomUser: RoomUser): RoomPlayerView {
-    return {
-      id: roomUser.userId,
-      username: roomUser.user?.username ?? null,
-      hasGuessed: roomUser.hasGuessed,
-      score: roomUser.score,
-    };
-  }
-
-    if (roomUser.hasGuessed) {
-      throw new ConflictException('User has already guessed in this room');
-    }
-
-    this.assertPlayable(roomUser.room);
-
-    const lyric = roomUser.room.lyric;
-    const guessType = guessDto.guessType ?? GuessType.SONG_TITLE;
-    const target =
-      guessType === GuessType.ARTIST ? lyric.artist : lyric.songTitle;
-
-    const isCorrect = matchGuess(guessDto.guess, target);
-    const score = isCorrect ? 100 : 0;
-
-    roomUser.hasGuessed = true;
-    roomUser.score = score;
-    await this.roomUserRepository.save(roomUser);
-
-    return {
-      roomId,
-      guessType,
-      guess: guessDto.guess,
-      isCorrect,
-      score,
-      correctAnswer: target,
-      lyric: this.toLyricView(lyric, true),
-    };
   }
 
   private toLyricView(lyric: Lyrics, reveal: boolean): RoomLyricView {

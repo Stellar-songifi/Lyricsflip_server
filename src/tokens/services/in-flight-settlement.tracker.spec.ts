@@ -110,4 +110,14 @@ describe('InFlightSettlementTracker', () => {
 
     expect(tracker.count).toBe(0);
   });
+
+  it('done callback is idempotent and safe to call multiple times', () => {
+    const done = tracker.register('session-idempotent');
+    expect(tracker.count).toBe(1);
+    done();
+    expect(tracker.count).toBe(0);
+    // Calling done again must not throw or affect the count.
+    expect(() => done()).not.toThrow();
+    expect(tracker.count).toBe(0);
+  });
 });

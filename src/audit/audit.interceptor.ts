@@ -10,6 +10,7 @@ import { Observable } from 'rxjs';
 import { tap } from 'rxjs/operators';
 import { AuditService } from './audit.service';
 import { AUDIT_ACTION_KEY, AuditedOptions } from './decorators/audited.decorator';
+import { redact } from '../common/utils/redact.util';
 
 /** The parts of a call the audit row records. An Express request fits. */
 interface AuditSource {
@@ -19,8 +20,6 @@ interface AuditSource {
   body?: unknown;
   ip?: string;
 }
-
-const SENSITIVE_FIELDS = ['password', 'token', 'secret', 'transaction', 'authorization'];
 
 /**
  * Writes an `audit_logs` row after a handler marked `@Audited(...)`
@@ -110,11 +109,13 @@ export class AuditInterceptor implements NestInterceptor {
       targetType: options.targetType ?? null,
       targetId,
       ip: request.ip ?? null,
-      payload: {
+      // Recursively redact password-like fields (e.g. `currentPassword`,
+      // `newPassword`) so plaintext credentials never reach `audit_logs`.
+      payload: redact({
         params: request.params,
         query: request.query,
-        body: this.sanitize(request.body),
-      },
+        body: request.body,
+      }) as Record<string, unknown>,
     });
   }
 
@@ -126,17 +127,4 @@ export class AuditInterceptor implements NestInterceptor {
     return null;
   }
 
-  private sanitize(body: unknown): unknown {
-    if (!body || typeof body !== 'object') {
-      return body;
-    }
-
-    const sanitized: Record<string, unknown> = { ...(body as Record<string, unknown>) };
-    for (const field of SENSITIVE_FIELDS) {
-      if (field in sanitized) {
-        sanitized[field] = '***REDACTED***';
-      }
-    }
-    return sanitized;
-  }
 }
