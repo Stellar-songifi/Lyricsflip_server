@@ -50,6 +50,10 @@ export const envValidationSchema = Joi.object({
   //   the load balancer's idle timeout (AWS ALB default 60 s) to avoid 502s.
   HTTP_JSON_BODY_LIMIT: Joi.string().default('100kb'),
   HTTP_URLENCODED_BODY_LIMIT: Joi.string().default('100kb'),
+  // Alias for HTTP_JSON_BODY_LIMIT; validated as a size string (e.g. 100kb).
+  HTTP_BODY_LIMIT: Joi.string()
+    .pattern(/^\d+(\.\d+)?(b|kb|mb|gb)$/i)
+    .default('100kb'),
   HTTP_REQUEST_TIMEOUT_MS: Joi.number().integer().min(0).default(30000),
   HTTP_HEADERS_TIMEOUT_MS: Joi.number()
     .integer()
@@ -60,6 +64,9 @@ export const envValidationSchema = Joi.object({
       then: Joi.number().integer().min(0).max(Joi.ref('HTTP_REQUEST_TIMEOUT_MS')),
     }),
   HTTP_KEEP_ALIVE_TIMEOUT_MS: Joi.number().integer().min(1000).default(65000),
+
+  // WebSocket. Maximum number of concurrent sockets a single user may hold.
+  WS_MAX_SOCKETS_PER_USER: Joi.number().integer().min(1).default(5),
 
   // Auth
   // Auth. JWT_SECRET must be at least 32 characters in every environment
@@ -86,9 +93,11 @@ export const envValidationSchema = Joi.object({
 
   // Misc. SEED_ADMIN_* are read by ProductionSafetyCheck to refuse booting
   // production with the seed's default admin credentials still in place.
-  INVITATION_TTL_MINUTES: Joi.number().positive().default(30),
+  INVITATION_TTL_MINUTES: Joi.number().integer().min(1).default(30),
   SEED_ADMIN_EMAIL: Joi.string().email().optional(),
   SEED_ADMIN_PASSWORD: Joi.string().optional(),
+  // Opt-in: when 'true', `npm run seed` also inserts the load-test lyric set.
+  LOAD_SEED_LYRICS: Joi.string().valid('true', 'false').default('false'),
 
   // Database (src/config/database.config.ts). Either DATABASE_URL, which
   // takes precedence, or the discrete DB_* variables.
@@ -268,4 +277,6 @@ export const envValidationSchema = Joi.object({
   THROTTLE_STELLAR_LIMIT: Joi.number().integer().min(1).default(10),
   THROTTLE_GUESS_TTL_MS: Joi.number().integer().min(1).default(60000),
   THROTTLE_GUESS_LIMIT: Joi.number().integer().min(1).default(30),
+  THROTTLE_EXPORT_TTL_MS: Joi.number().integer().min(1).default(60000),
+  THROTTLE_EXPORT_LIMIT: Joi.number().integer().min(1).default(10),
 }).unknown(true);

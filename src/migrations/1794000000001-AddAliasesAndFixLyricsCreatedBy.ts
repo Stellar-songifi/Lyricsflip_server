@@ -13,10 +13,10 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  * - renames `CHK_lyrics_difficulty` to the name TypeORM derives for the
  *   entity's `@Check`, so `migration:check` stops reporting it.
  */
-export class AddAliasesAndFixLyricsCreatedBy1794000000001
+export class AddAliasesAndFixLyricsCreatedBy1794000000004
   implements MigrationInterface
 {
-  name = 'AddAliasesAndFixLyricsCreatedBy1794000000001';
+  name = 'AddAliasesAndFixLyricsCreatedBy1794000000004';
 
   public async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`

@@ -92,6 +92,7 @@ describe('Seed Script', () => {
         genre: expect.any(String),
         artist: expect.any(String),
         songTitle: expect.any(String),
+        source: 'seed',
       }),
     );
 
@@ -118,7 +119,8 @@ describe('Seed Script', () => {
       artist: 'Existing Artist',
       songTitle: 'Existing Song',
       content: 'old',
-      aliases: [],
+      artistAliases: [],
+      titleAliases: [],
       category: null,
     });
 
@@ -128,8 +130,10 @@ describe('Seed Script', () => {
     expect(mockLyricsRepo.save).toHaveBeenCalledWith(
       expect.objectContaining({
         id: 'existing-lyrics',
-        aliases: expect.any(Array),
+        artistAliases: expect.any(Array),
+        titleAliases: expect.any(Array),
         category: expect.any(String),
+        source: 'seed',
       }),
     );
   });

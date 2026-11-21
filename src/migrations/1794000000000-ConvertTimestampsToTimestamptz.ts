@@ -5,10 +5,10 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  * `timestamptz`. Existing values were written as UTC wall-clock time, so they
  * are reinterpreted with `AT TIME ZONE 'UTC'`.
  */
-export class ConvertTimestampsToTimestamptz1794000000000
+export class ConvertTimestampsToTimestamptz1794000000003
   implements MigrationInterface
 {
-  name = 'ConvertTimestampsToTimestamptz1794000000000';
+  name = 'ConvertTimestampsToTimestamptz1794000000003';
 
   public async up(queryRunner: QueryRunner): Promise<void> {
     await this.convert(queryRunner, 'timestamp without time zone', 'timestamptz');

@@ -1,5 +1,10 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
 
+/** Database-level append-only protection for audit_logs. */
+export class AuditLogsAppendOnlyTrigger1794000000005
+  implements MigrationInterface
+{
+  name = 'AuditLogsAppendOnlyTrigger1794000000005';
 /**
  * One-off scrub of plaintext password-like fields from existing audit_logs rows.
  *
