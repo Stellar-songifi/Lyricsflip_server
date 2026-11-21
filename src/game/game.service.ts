@@ -368,12 +368,14 @@ export class GameLogicService {
       guessValue: dto.guessValue,
     });
 
+    const lyric = await this.lyricsRepository.findOne({ where: { id: round.lyricId } });
     const score = scoreRound({
       basePoints: result.points ?? 0,
       isCorrect: result.isCorrect,
       elapsedMs: now.getTime() - round.issuedAt.getTime(),
       windowMs: round.answerWindowSeconds * 1000,
       hintsUsed: round.hintsUsed,
+      difficulty: lyric?.difficulty ?? 1,
     });
 
     const scored: GuessResult = {
