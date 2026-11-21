@@ -4,6 +4,7 @@ import {
   UnauthorizedException,
   BadRequestException,
   NotFoundException,
+  Logger,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { IsNull, MoreThan, Repository } from 'typeorm';
@@ -15,7 +16,7 @@ import { LoginDto } from './dto/login.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { JwtPayload } from './interfaces/jwt-payload.interface';
 import { Role } from './roles/role.enum';
-import { AuthResult, AuthTokenService } from './services/auth-token.service';
+import { AuthTokenService } from './services/auth-token.service';
 import { EmailVerificationService } from './services/email-verification.service';
 import { PasswordResetService } from './services/password-reset.service';
 import { User } from '../users/entities/user.entity';
@@ -29,6 +30,11 @@ const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export interface TokenPair {
   accessToken: string;
   refreshToken: string;
+}
+
+/** What signup, login and wallet login return to the client. */
+export interface AuthResult extends TokenPair {
+  user: User;
 }
 
 /** Where a refresh token is being used from; recorded on the session. */
@@ -51,6 +57,8 @@ export interface SessionView {
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     @InjectRepository(User)
     private userRepository: Repository<User>,
@@ -62,7 +70,10 @@ export class AuthService {
     private passwordResetService: PasswordResetService,
   ) {}
 
-  async signup(signupDto: SignupDto): Promise<AuthResult> {
+  async signup(
+    signupDto: SignupDto,
+    context: ClientContext = {},
+  ): Promise<AuthResult> {
     const { username, email, password } = signupDto;
 
     // Check if user already exists
@@ -102,10 +113,13 @@ export class AuthService {
       throw new BadRequestException('Failed to create user');
     }
 
-    return this.authTokenService.issueToken(user);
+    return this.issueAuthResult(user, context);
   }
 
-  async login(loginDto: LoginDto): Promise<AuthResult> {
+  async login(
+    loginDto: LoginDto,
+    context: ClientContext = {},
+  ): Promise<AuthResult> {
     const { email, password } = loginDto;
 
     // passwordHash is select: false, so it must be requested explicitly
@@ -142,7 +156,7 @@ export class AuthService {
     user.lastLoginAt = new Date();
     await this.userRepository.save(user);
 
-    return this.authTokenService.issueToken(user);
+    return this.issueAuthResult(user, context);
   }
 
   /**
@@ -153,18 +167,47 @@ export class AuthService {
   async refresh(
     refreshToken: string,
     context: ClientContext = {},
-  ): Promise<TokenPair> {
+  ): Promise<AuthResult> {
     const tokenHash = this.hashRefreshToken(refreshToken);
 
     const existing = await this.refreshTokenRepository.findOne({
       where: { tokenHash },
     });
 
-    if (
-      !existing ||
-      existing.revokedAt ||
-      existing.expiresAt.getTime() < Date.now()
-    ) {
+    if (!existing) {
+      throw new UnauthorizedException('Refresh token is invalid or expired');
+    }
+
+    // A token that has already been rotated (or revoked) being presented
+    // again is the standard signal that it leaked: sign out the whole
+    // family and bump tokenVersion so every access token dies too.
+    if (existing.revokedAt) {
+      await this.revokeFamily(existing);
+      throw new UnauthorizedException('Refresh token is invalid or expired');
+    }
+
+    if (existing.expiresAt.getTime() < Date.now()) {
+      throw new UnauthorizedException('Refresh token is invalid or expired');
+    }
+
+    // Conditional update: only one concurrent request can flip revoked_at
+    // from NULL, so exactly one of them gets to rotate the token.
+    const result = await this.refreshTokenRepository
+      .createQueryBuilder()
+      .update(RefreshToken)
+      .set({ revokedAt: () => 'now()' })
+      .where('id = :id', { id: existing.id })
+      .andWhere('revoked_at IS NULL')
+      .returning('id')
+      .execute();
+
+    const rotated = Array.isArray(result.raw)
+      ? result.raw.length > 0
+      : (result.affected ?? 0) > 0;
+
+    if (!rotated) {
+      // Someone else won the race with this token; treat it as reuse.
+      await this.revokeFamily(existing);
       throw new UnauthorizedException('Refresh token is invalid or expired');
     }
 
@@ -175,15 +218,12 @@ export class AuthService {
       throw new UnauthorizedException('Refresh token is invalid or expired');
     }
 
-    existing.revokedAt = new Date();
-    await this.refreshTokenRepository.save(existing);
-
     // The rotated token is the same device, so it keeps its name unless the
     // client sends a new one.
-    return this.issueTokenPair(user, {
+    return this.issueAuthResult(user, {
       ...context,
       deviceName: context.deviceName ?? existing.deviceName,
-    });
+    }, existing.familyId);
   }
 
   /** The user's signed-in devices: unrevoked, unexpired refresh tokens. */
@@ -351,10 +391,43 @@ export class AuthService {
     });
   }
 
+  /** Issues a token pair and returns it alongside the user. */
+  private async issueAuthResult(
+    user: User,
+    context: ClientContext = {},
+    familyId?: string,
+  ): Promise<AuthResult> {
+    const pair = await this.issueTokenPair(user, context, familyId);
+    return { ...pair, user };
+  }
+
+  /**
+   * Revokes every refresh token in a family, bumps the user's tokenVersion
+   * (invalidating outstanding access tokens) and records a security audit
+   * event.
+   */
+  private async revokeFamily(token: RefreshToken): Promise<void> {
+    await this.refreshTokenRepository.update(
+      { familyId: token.familyId, revokedAt: IsNull() },
+      { revokedAt: new Date() },
+    );
+    await this.userRepository.increment(
+      { id: token.userId },
+      'tokenVersion',
+      1,
+    );
+
+    this.logger.warn(
+      `Refresh token reuse detected for user ${token.userId} ` +
+        `(family ${token.familyId}); all sessions in the family revoked`,
+    );
+  }
+
   /** Signs a short-lived access token and issues a new stored refresh token. */
   private async issueTokenPair(
     user: User,
     context: ClientContext = {},
+    familyId?: string,
   ): Promise<TokenPair> {
     const payload: JwtPayload = {
       sub: user.id,
@@ -372,6 +445,7 @@ export class AuthService {
       this.refreshTokenRepository.create({
         userId: user.id,
         tokenHash,
+        familyId: familyId ?? crypto.randomUUID(),
         expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_MS),
         revokedAt: null,
         userAgent: context.userAgent?.slice(0, 255) ?? null,
