@@ -166,6 +166,11 @@ export const envValidationSchema = Joi.object({
   STELLAR_WEB_AUTH_DOMAIN: Joi.string().default('localhost'),
   STELLAR_WEB_AUTH_SECRET: Joi.string().optional().allow(''),
 
+  // When true, unverified accounts cannot wager or appear on the leaderboard.
+  AUTH_REQUIRE_VERIFIED_EMAIL: Joi.string()
+    .valid('true', 'false')
+    .default('false'),
+
   // KMS / Vault key store (STELLAR_KEY_STORE=kms|vault). Optional because
   // they are only required when that store is selected; KmsKeyStore itself
   // throws a specific error naming whichever of these is missing.
