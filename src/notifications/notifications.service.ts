@@ -17,6 +17,7 @@ import {
 import { Notification } from './entities/notification.entity';
 import { RealtimeRoomsService } from '../realtime/realtime-rooms.service';
 import { PushService } from '../push/push.service';
+import { RealtimePublisher } from '../realtime/realtime.publisher';
 
 const RETENTION_DAYS = 90;
 
@@ -27,7 +28,7 @@ export interface NotificationQueryOptions {
 }
 
 export interface PaginatedNotifications {
-  data: Notification[];
+  notifications: Notification[];
   total: number;
   page: number;
   limit: number;
@@ -43,6 +44,7 @@ export class NotificationsService {
     private readonly notificationRepository: Repository<Notification>,
     private readonly realtimeRooms: RealtimeRoomsService,
     @Optional() private readonly pushService?: PushService,
+    private readonly realtimePublisher: RealtimePublisher,
   ) {}
 
   // Event emission methods
@@ -126,7 +128,7 @@ export class NotificationsService {
     const saved = await this.notificationRepository.save(entity);
     this.logger.log(`Stored notification ${saved.id}: ${notification.message}`);
 
-    this.realtimeRooms.user(notification.userId).emit('notification', saved);
+    this.realtimePublisher.toUser(notification.userId, 'notification', saved);
 
     // Deliver a push notification when the app is closed. PushService enforces
     // per-type preferences and quiet hours, and prunes dead subscriptions.
@@ -183,14 +185,14 @@ export class NotificationsService {
       where.readAt = null;
     }
 
-    const [data, total] = await this.notificationRepository.findAndCount({
+    const [notifications, total] = await this.notificationRepository.findAndCount({
       where,
       order: { createdAt: 'DESC' },
       skip: (page - 1) * limit,
       take: limit,
     });
 
-    return { data, total, page, limit };
+    return { notifications, total, page, limit };
   }
 
   async markAsRead(userId: string, id: string): Promise<Notification | null> {
@@ -215,6 +217,15 @@ export class NotificationsService {
       { userId, readAt: null },
       { readAt: new Date() },
     );
+
+    return result.affected ?? 0;
+  }
+
+  // Per-user deletion (scoped to the requesting user)
+  async clearNotifications(userId: string): Promise<number> {
+    const result = await this.notificationRepository.delete({ userId });
+
+    this.logger.log(`Cleared ${result.affected ?? 0} notifications for user ${userId}`);
 
     return result.affected ?? 0;
   }

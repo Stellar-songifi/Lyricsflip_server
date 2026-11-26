@@ -23,6 +23,7 @@ import { fromStroops } from '../stellar/amount.util';
 import { GameHistory } from '../game-history/entities/game-history.entity';
 import { GameRound } from '../game/entities/game-round.entity';
 import { DailyChallengeAttempt } from '../challenges/entities/daily-challenge-attempt.entity';
+import { currentDailyStreak } from '../challenges/daily-seed.util';
 import { Room } from '../rooms/entities/room.entity';
 import { RoomUser } from '../rooms/entities/room-user.entity';
 import { Lyrics } from '../lyrics/entities/lyrics.entity';
@@ -53,6 +54,7 @@ import { Notification } from '../notifications/entities/notification.entity';
 import { AuditLog } from '../audit/entities/audit-log.entity';
 import { DeleteAccountDto } from './dto/delete-account.dto';
 import { StellarAuthService } from '../auth/stellar-auth.service';
+import { isVerifiedEmailRequired } from '../auth/verified-email.util';
 
 /** Public profiles are cached briefly; they change only after a match. */
 const PUBLIC_PROFILE_CACHE_TTL_MS = 60_000;
@@ -230,8 +232,12 @@ export class UsersService {
       ...wagerStats,
     };
 
+    const { lastDailyAttemptDate, ...profile } = user;
     return {
+      ...profile,
+      dailyStreak: currentDailyStreak(user.dailyStreak, lastDailyAttemptDate),
       ...user,
+      emailVerified: Boolean(user.emailVerifiedAt),
       levelTitle: this.getLevelTitle(level),
       wallet: user.stellarAddress
         ? {
@@ -796,10 +802,16 @@ export class UsersService {
     const safeLimit = Math.min(Math.max(limit, 1), MAX_PAGE_SIZE);
     const safeOffset = Math.max(offset, 0);
 
+    // With AUTH_REQUIRE_VERIFIED_EMAIL on, unverified accounts are not listed.
+    const verifiedOnly = isVerifiedEmailRequired()
+      ? 'WHERE "emailVerifiedAt" IS NOT NULL'
+      : '';
+
     const rows = await this.userRepository.query(
       `SELECT id, username, xp, level, "levelTitle",
               RANK() OVER (ORDER BY xp DESC) AS rank
          FROM users
+        ${verifiedOnly}
         WHERE "isActive" = true
         ORDER BY xp DESC, id ASC
         LIMIT $1 OFFSET $2`,

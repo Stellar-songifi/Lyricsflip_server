@@ -55,6 +55,22 @@ export class MetricsService implements OnModuleInit {
   /** Total Soroban RPC call errors, by method. */
   readonly rpcCallErrors: Counter<string>;
 
+  // ------------------------------------------------------------------
+  // Scheduled-job metrics (#526 / R3-104)
+  // ------------------------------------------------------------------
+
+  /** Unix timestamp (seconds) of the last successful run, by job. */
+  readonly jobLastSuccessTimestamp: Gauge<string>;
+
+  /** Duration distribution of scheduled-job runs in seconds, by job. */
+  readonly jobDuration: Histogram<string>;
+
+  /** Total scheduled-job failures, by job. */
+  readonly jobFailures: Counter<string>;
+
+  /** Total scheduled-job runs skipped because the lock was held, by job. */
+  readonly jobSkippedLocked: Counter<string>;
+
   constructor() {
     this.httpRequestDuration = new Histogram({
       name: 'lyricsflip_http_request_duration_seconds',
@@ -97,6 +113,35 @@ export class MetricsService implements OnModuleInit {
       name: 'lyricsflip_rpc_call_errors_total',
       help: 'Total number of Stellar RPC call errors by method',
       labelNames: ['method'],
+      registers: [this.registry],
+    });
+
+    this.jobLastSuccessTimestamp = new Gauge({
+      name: 'lyricsflip_job_last_success_timestamp_seconds',
+      help: 'Unix timestamp of the last successful scheduled-job run',
+      labelNames: ['job'],
+      registers: [this.registry],
+    });
+
+    this.jobDuration = new Histogram({
+      name: 'lyricsflip_job_duration_seconds',
+      help: 'Duration of scheduled-job runs in seconds',
+      labelNames: ['job'],
+      buckets: [0.1, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300],
+      registers: [this.registry],
+    });
+
+    this.jobFailures = new Counter({
+      name: 'lyricsflip_job_failures_total',
+      help: 'Total number of scheduled-job failures',
+      labelNames: ['job'],
+      registers: [this.registry],
+    });
+
+    this.jobSkippedLocked = new Counter({
+      name: 'lyricsflip_job_skipped_locked_total',
+      help: 'Total number of scheduled-job runs skipped because the lock was held',
+      labelNames: ['job'],
       registers: [this.registry],
     });
   }
