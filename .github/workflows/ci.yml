@@ -2,6 +2,17 @@ name: CI
 
 on:
   push:
+    branches:
+      - main
+    tags: ['v*']
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege: CI only needs to read the code.
+permissions:
+  contents: read
     branches: [main]
   pull_request:
     branches: [main]
@@ -111,7 +122,6 @@ jobs:
       SCOPE_MAX_LINES: '40'
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
-      PR_BODY: ${{ github.event.pull_request.body }}
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       REPO: ${{ github.repository }}
@@ -124,7 +134,7 @@ jobs:
       - name: Warn on out-of-scope changes
         run: |
           set -euo pipefail
-          issue=$(printf '%s' "$PR_BODY" | grep -oiE '(closes|fixes|resolves|refs?)[[:space:]]+#[0-9]+' | grep -oE '[0-9]+' | head -n1 || true)
+          issue=$(jq -r '.pull_request.body // ""' "$GITHUB_EVENT_PATH" | grep -oiE '(closes|fixes|resolves|refs?)[[:space:]]+#[0-9]+' | grep -oE '[0-9]+' | head -n1 || true)
           if [ -z "${issue:-}" ]; then
             echo "No linked issue found in the PR body; skipping scope check."
             exit 0
@@ -196,6 +206,90 @@ jobs:
 
       - name: Wait for the API to become healthy
         run: |
+          if git ls-files --error-unmatch openapi.json >/dev/null 2>&1; then
+            diff -u openapi.json "$RUNNER_TEMP/openapi.json" || {
+              echo "openapi.json is out of date: run npm run openapi:export and commit it." >&2
+              exit 1
+            }
+          else
+            echo "No openapi.json is committed; nothing to compare."
+          fi
+
+      - name: Upload the OpenAPI document
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: openapi
+          path: ${{ runner.temp }}/openapi.json
+
+      - name: Generate, type-check and pack the API client
+        working-directory: clients/typescript
+        run: |
+          npm ci
+          npm run generate -- "$RUNNER_TEMP/openapi.json" -o src/schema.ts
+          npm run check
+          npm run build
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            if ! [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+              echo "Expected a version tag such as v1.2.3."
+              exit 1
+            fi
+            npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version
+          fi
+          npm pack --pack-destination "$RUNNER_TEMP"
+
+      - name: Upload the API client package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: api-client
+          path: ${{ runner.temp }}/lyricsflip-api-client-*.tgz
+
+  publish-api-client:
+    name: Publish the API client to npm
+    if: github.repository == 'Stellar-songifi/Lyricsflip_server' && startsWith(github.ref, 'refs/tags/v')
+    needs: [e2e, lint-typecheck-test-build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: api-client
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+      - name: Publish the generated tarball
+        run: |
+          tag=latest
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then tag=next; fi
+          npm publish ./lyricsflip-api-client-*.tgz --access public --tag "$tag"
+
+  contract:
+    name: Escrow contract (tests and release build)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable
+        with:
+          # Pinned to a SHA, so the toolchain can no longer come from the ref name.
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            contracts/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('contracts/Cargo.lock') }}
+
+      - name: Contract tests
+        working-directory: contracts
+        run: cargo test
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:3000/health >/dev/null 2>&1; then
               echo "API is healthy."

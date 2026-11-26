@@ -1,0 +1,31 @@
+{
+  "name": "@lyricsflip/api-client",
+  "version": "0.0.0",
+  "description": "Typed fetch client for the LyricsFlip API",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Stellar-songifi/Lyricsflip_server.git",
+    "directory": "clients/typescript"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "generate": "openapi-typescript",
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.check.json"
+  },
+  "dependencies": {
+    "openapi-fetch": "0.15.0"
+  },
+  "devDependencies": {
+    "openapi-typescript": "7.10.1",
+    "typescript": "5.7.3"
+  }
+}
