@@ -1,3 +1,4 @@
+import { runtimeEnv } from '../../src/config/runtime-env';
 import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { DataSource } from 'typeorm';
@@ -25,7 +26,7 @@ export interface DbApp {
  */
 export async function createDbApp(): Promise<DbApp> {
   for (const [key, value] of Object.entries(DEFAULT_ENV)) {
-    process.env[key] ??= value;
+    runtimeEnv()[key] ??= value;
   }
   // Imported lazily so the env above is in place before config validation.
   const { AppModule } = await import('../../src/app.module');

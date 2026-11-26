@@ -1,18 +1,19 @@
+import { runtimeEnv } from './config/runtime-env';
 import { initOpenTelemetry, getTracer, getActiveTraceId } from './tracing';
 
 // Note: initOpenTelemetry() must be invoked before the Nest application boots
 // (see src/main.ts) so that auto-instrumentation can patch HTTP, Express, pg and Socket.IO.
 
 describe('Tracing Module', () => {
-  const originalEnv = process.env;
+  const originalEnv = runtimeEnv();
 
   beforeEach(() => {
-    process.env = { ...originalEnv };
-    delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+    jest.replaceProperty(process, 'env', { ...originalEnv });
+    delete runtimeEnv().OTEL_EXPORTER_OTLP_ENDPOINT;
   });
 
   afterAll(() => {
-    process.env = originalEnv;
+    jest.replaceProperty(process, 'env', originalEnv);
   });
 
   it('runs as a no-op when OTEL_EXPORTER_OTLP_ENDPOINT is not set', () => {

@@ -60,7 +60,37 @@ export class AuthController {
   @Throttle(authThrottle)
   @Post('login')
   @ApiOperation({ summary: 'Login a user' })
-  @ApiResponse({ status: 200, description: 'User logged in successfully.' })
+  @ApiResponse({
+    status: 200,
+    description: 'User logged in successfully.',
+    schema: {
+      type: 'object',
+      required: ['accessToken', 'refreshToken', 'user'],
+      properties: {
+        accessToken: { type: 'string' },
+        refreshToken: { type: 'string' },
+        user: {
+          type: 'object',
+          required: [
+            'id',
+            'username',
+            'xp',
+            'level',
+            'levelTitle',
+            'createdAt',
+          ],
+          properties: {
+            id: { type: 'string', format: 'uuid' },
+            username: { type: 'string' },
+            xp: { type: 'integer' },
+            level: { type: 'integer' },
+            levelTitle: { type: 'string' },
+            createdAt: { type: 'string', format: 'date-time' },
+          },
+        },
+      },
+    },
+  })
   @HttpCode(HttpStatus.OK)
   async login(@Body(ValidationPipe) loginDto: LoginDto) {
     return this.authService.login(loginDto);
@@ -223,96 +253,82 @@ export class AuthController {
 
   @Public()
   @Throttle(stellarThrottle)
-  @Post('stellar/challenge')
+  @Post('stellar/signup')
   @ApiOperation({
-    summary: 'Request a SEP-10 challenge transaction for a Stellar account',
+    summary: 'Sign up with a Stellar wallet alone',
     description:
-      'Returns a transaction for the wallet to sign. It has sequence number 0 and ' +
-      'can never be submitted to the network — signing it only proves key ownership.',
+      'Verifies a SEP-10 challenge and creates a wallet-only account with a ' +
+      'verified stellarAddress and no password. An email and password can be ' +
+      'added later via POST /auth/stellar/add-credentials.',
   })
+  @ApiResponse({ status: 201, description: 'Wallet-only account created.' })
+  @ApiResponse({ status: 400, description: 'Challenge invalid or username taken.' })
+  @ApiResponse({ status: 409, description: 'Wallet already linked to an account.' })
+  async stellarSignup(
+    @Body(ValidationPipe) dto: StellarSignupDto,
+    @Req() request: Request,
+  ) {
+    return this.stellarAuthService.signup(
+      dto.transaction,
+      dto.username,
+      this.clientContext(request),
+    );
+  }
+
+  @ApiBearerAuth()
+  @Throttle(stellarThrottle)
+  @Post('stellar/add-credentials')
+  @Audited({ action: 'auth.stellar.add-credentials', targetType: 'user' })
+  @ApiOperation({
+    summary: 'Add an email and password to a wallet-only account',
+    description:
+      'Requires a fresh SEP-10 signature proving control of the linked wallet. ' +
+      'Only available to accounts that do not yet have a password.',
+  })
+  @ApiResponse({ status: 200, description: 'Email and password added.' })
+  @ApiResponse({ status: 400, description: 'Challenge invalid or password too weak.' })
+  @ApiResponse({ status: 409, description: 'Account already has a password or email in use.' })
+  @HttpCode(HttpStatus.OK)
+  async stellarAddCredentials(
+    @GetUser() user: User,
+    @Body(ValidationPipe) dto: StellarAddCredentialsDto,
+  ) {
+    await this.stellarAuthService.addCredentials(user.id, dto);
+    return { message: 'Email and password added. Please log in again.' };
+  }
+
+  @Public()
+  @Throttle(stellarThrottle)
+  @Post('stellar/challenge')
+  @ApiOperation({ summary: 'Request a SEP-10 challenge transaction' })
   @ApiResponse({ status: 200, description: 'Challenge transaction.' })
   @HttpCode(HttpStatus.OK)
-  challenge(@Body(ValidationPipe) dto: StellarChallengeDto) {
-    return {
-      ...this.stellarAuthService.buildChallenge(dto.account),
-      server_account_id: this.stellarAuthService.serverAccountId,
-    };
+  async stellarChallenge(@Body(ValidationPipe) dto: StellarChallengeDto) {
+    return this.stellarAuthService.createChallenge(dto.publicKey);
   }
 
   @Public()
   @Throttle(stellarThrottle)
   @Post('stellar/login')
-  @ApiOperation({
-    summary: 'Authenticate with a signed SEP-10 challenge',
-    description:
-      'Exchanges a signed challenge for the same JWT the password flow issues. ' +
-      'The wallet must already be linked to a LyricsFlip account.',
-  })
-  @ApiResponse({ status: 200, description: 'Authenticated with wallet.' })
+  @ApiOperation({ summary: 'Log in with a Stellar wallet' })
+  @ApiResponse({ status: 200, description: 'Logged in successfully.' })
+  @ApiResponse({ status: 401, description: 'Challenge invalid or wallet not linked.' })
   @HttpCode(HttpStatus.OK)
-  async stellarLogin(@Body(ValidationPipe) dto: StellarVerifyDto) {
-    return this.stellarAuthService.loginWithWallet(dto.transaction);
-  }
-
-  @ApiBearerAuth()
-  @Throttle(stellarThrottle)
-  @Post('stellar/link')
-  @Audited({ action: 'auth.wallet.link', targetType: 'user' })
-  @ApiOperation({
-    summary: 'Link a Stellar wallet to the signed-in account',
-    description:
-      'Required before joining a wagered match: stakes are pulled from this ' +
-      'address and payouts are sent to it.',
-  })
-  @ApiResponse({ status: 200, description: 'Wallet linked.' })
-  @ApiResponse({
-    status: 409,
-    description: 'Address already linked to another account.',
-  })
-  @HttpCode(HttpStatus.OK)
-  async linkWallet(
-    @GetUser() user: User,
+  async stellarLogin(
     @Body(ValidationPipe) dto: StellarVerifyDto,
+    @Req() request: Request,
   ) {
-    return this.stellarAuthService.linkWallet(user.id, dto.transaction);
-  }
-
-  @ApiBearerAuth()
-  @Get('stellar/wallet')
-  @ApiOperation({
-    summary: 'Get the Stellar wallet linked to the signed-in account',
-  })
-  @ApiResponse({ status: 200, description: 'Linked wallet, or nulls if none.' })
-  async getWallet(@GetUser() user: User) {
-    return {
-      stellarAddress: user.stellarAddress ?? null,
-      verifiedAt: user.stellarAddressVerifiedAt ?? null,
-    };
-  }
-
-  @ApiBearerAuth()
-  @Throttle(stellarThrottle)
-  @Delete('stellar/wallet')
-  @Audited({ action: 'auth.wallet.unlink', targetType: 'user' })
-  @ApiOperation({
-    summary: 'Unlink the Stellar wallet from the signed-in account',
-    description:
-      'The account can no longer authenticate with the wallet or join wagered ' +
-      'matches until a wallet is linked again.',
-  })
-  @ApiResponse({ status: 200, description: 'Wallet unlinked.' })
-  @HttpCode(HttpStatus.OK)
-  async unlinkWallet(@GetUser() user: User) {
-    await this.stellarAuthService.unlinkWallet(user.id);
-    return { message: 'Stellar wallet unlinked' };
+    return this.stellarAuthService.login(
+      dto.transaction,
+      this.clientContext(request),
+    );
   }
 
   private clientContext(request: Request, deviceName?: string): ClientContext {
-    const userAgent = request.headers['user-agent'];
     return {
-      userAgent: typeof userAgent === 'string' ? userAgent : null,
-      ip: request.ip ?? null,
-      deviceName: deviceName ?? null,
+      ip: request.ip,
+      userAgent: request.headers['user-agent'],
+      deviceName,
     };
   }
 }

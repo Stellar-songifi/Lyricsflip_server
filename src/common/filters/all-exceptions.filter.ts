@@ -1,3 +1,4 @@
+import { runtimeEnv } from '../../config/runtime-env';
 import {
   ArgumentsHost,
   Catch,
@@ -12,8 +13,16 @@ import { QueryFailedError } from 'typeorm';
 import { Request, Response } from 'express';
 import { getRequestId } from '../request-context';
 
+import {
+  DomainException,
+  ErrorCode,
+  errorCodeForStatus,
+} from '../exceptions/domain.exception';
+
 export interface ErrorResponse {
   statusCode: number;
+  code: ErrorCode;
+  details?: unknown;
   message: string | string[];
   error: string;
   timestamp: string;
@@ -41,7 +50,7 @@ import { WsExceptionFilter } from './ws-exception.filter';
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
   private readonly logger = new Logger(AllExceptionsFilter.name);
-  private readonly isProduction = process.env.NODE_ENV === 'production';
+  private readonly isProduction = runtimeEnv().NODE_ENV === 'production';
 
   private readonly wsFilter = new WsExceptionFilter();
 
@@ -115,6 +124,14 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
       return {
         statusCode,
+        code:
+          exception instanceof DomainException
+            ? exception.code
+            : errorCodeForStatus(statusCode),
+        ...(exception instanceof DomainException &&
+        exception.details !== undefined
+          ? { details: exception.details }
+          : {}),
         message,
         error: this.getErrorName(statusCode),
         timestamp,
@@ -128,13 +145,31 @@ export class AllExceptionsFilter implements ExceptionFilter {
       return this.handleDatabaseError(exception, timestamp, path, method, requestId);
     }
 
+    // Express's body parsers throw http-errors objects rather than HttpException.
+    const status =
+      exception instanceof Error && 'status' in exception
+        ? exception.status
+        : undefined;
+    const statusCode =
+      typeof status === 'number' &&
+      Number.isInteger(status) &&
+      status >= 400 &&
+      status <= 599
+        ? status
+        : HttpStatus.INTERNAL_SERVER_ERROR;
+    const showMessage = statusCode < 500 || !this.isProduction;
     const message =
-      exception instanceof Error ? exception.message : 'Internal server error';
+      showMessage && exception instanceof Error
+        ? exception.message
+        : statusCode === 500
+          ? 'Internal server error'
+          : this.getErrorName(statusCode);
 
     return {
-      statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
-      message: this.isProduction ? 'Internal server error' : message,
-      error: 'Internal Server Error',
+      statusCode,
+      code: errorCodeForStatus(statusCode),
+      message,
+      error: this.getErrorName(statusCode),
       timestamp,
       path,
       method,
@@ -203,6 +238,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
     return {
       statusCode,
+      code: errorCodeForStatus(statusCode),
       message,
       error: this.getErrorName(statusCode),
       timestamp,

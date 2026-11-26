@@ -37,6 +37,8 @@ import { ThrottlerModule } from '@nestjs/throttler';
 import { AppThrottlerGuard } from './common/throttler/app-throttler.guard';
 import { defaultThrottle } from './common/throttler/throttle.config';
 import { buildDataSourceOptions } from './config/database.config';
+import { I18nModule, AcceptLanguageResolver, QueryResolver, HeaderResolver } from 'nestjs-i18n';
+import * as path from 'path';
 
 @Module({
   imports: [
@@ -49,7 +51,45 @@ import { buildDataSourceOptions } from './config/database.config';
         abortEarly: false,
       },
     }),
+    // Localize server messages (#543). Catalogues live in src/i18n/<lang>/*.json
+    // and are keyed by the error codes from R3-107. Locale is resolved from
+    // the `locale` query param, then the `Accept-Language` header, falling
+    // back to English.
+    I18nModule.forRoot({
+      fallbackLanguage: 'en',
+      loaderOptions: {
+        path: path.join(__dirname, '/i18n/'),
+        watch: true,
+      },
+      resolvers: [
+        new QueryResolver(['locale']),
+        new HeaderResolver(['x-locale']),
+        AcceptLanguageResolver,
+      ],
+    }),
     ThrottlerModule.forRoot([defaultThrottle()]),
+    ThrottlerModule.forRootAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: async (configService: ConfigService) => {
+        const redisUrl = configService.get<string>('REDIS_URL');
+
+        if (redisUrl) {
+          const { default: ThrottlerStorageRedisService } = await import(
+            '@nest-lab/throttler-storage-redis'
+          );
+          return {
+            throttlers: [defaultThrottle()],
+            storage: new ThrottlerStorageRedisService(redisUrl),
+          };
+        }
+
+        // In-memory fallback (single instance / local dev)
+        return {
+          throttlers: [defaultThrottle()],
+        };
+      },
+    }),
     // Drives periodic jobs such as RoomsService.checkAndCloseExpiredRooms.
     ScheduleModule.forRoot(),
 

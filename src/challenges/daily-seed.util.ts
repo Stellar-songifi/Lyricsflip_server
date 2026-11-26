@@ -68,3 +68,13 @@ export function pickDailyLyrics(
 export function utcDay(now: Date = new Date()): string {
   return now.toISOString().slice(0, 10);
 }
+
+/** A player can continue the streak until the end of the UTC day after playing. */
+export function currentDailyStreak(
+  streak: number,
+  lastAttempt: string | null,
+  now: Date = new Date(),
+): number {
+  const yesterday = utcDay(new Date(now.getTime() - 86_400_000));
+  return lastAttempt && lastAttempt >= yesterday ? streak : 0;
+}

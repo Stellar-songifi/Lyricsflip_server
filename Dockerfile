@@ -4,7 +4,7 @@
 # Stage 2 ships only production dependencies and runs as a non-root user.
 
 # ---- Build stage ----
-FROM node:20-alpine AS build
+FROM node:22-alpine AS build
 
 WORKDIR /app
 
@@ -17,7 +17,7 @@ COPY . .
 RUN npm run build
 
 # ---- Runtime stage ----
-FROM node:20-alpine AS runtime
+FROM node:22-alpine AS runtime
 
 ENV NODE_ENV=production
 # main.ts listens on HOST (default localhost), which is unreachable from
@@ -26,9 +26,10 @@ ENV HOST=0.0.0.0
 
 WORKDIR /app
 
-# Install production dependencies only.
+# Install production dependencies only. bcrypt is a native module, so rebuild
+# it against the runtime Node 22 ABI instead of reusing prebuilt binaries.
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+RUN npm ci --omit=dev && npm rebuild bcrypt && npm cache clean --force
 
 # Copy the compiled output (including dist/data-source.js and dist/migrations)
 # and the entrypoint that waits for the database and optionally migrates.

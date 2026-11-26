@@ -5,7 +5,6 @@ import {
   ConflictException,
   ForbiddenException,
   Logger,
-  GoneException,
   NotFoundException,
 } from '@nestjs/common';
 import { GameSessionsService } from './game-sessions.service';
@@ -115,7 +114,7 @@ describe('GameSessionsService', () => {
     resolveWagerWithWinner: jest.fn(),
     resolveWagerAsDraw: jest.fn(),
     getWagerBySessionId: jest.fn(),
-    getUserWagers: jest.fn(),
+    findUserWagers: jest.fn(),
   };
 
   const mockTokenService = {
@@ -575,12 +574,12 @@ describe('GameSessionsService', () => {
       const userId = 'user-123';
       const wagers = [{ id: 'wager-123', amount: 10 }];
 
-      mockWagerService.getUserWagers.mockResolvedValue(wagers);
+      mockWagerService.findUserWagers.mockResolvedValue(wagers);
 
       const result = await service.getUserWagers(userId, 10, 20);
 
       expect(result).toBe(wagers);
-      expect(mockWagerService.getUserWagers).toHaveBeenCalledWith(userId, 10, 20);
+      expect(mockWagerService.findUserWagers).toHaveBeenCalledWith(userId, 10, 20);
     });
   });
 
@@ -797,7 +796,7 @@ describe('GameSessionsService', () => {
 
       await expect(
         service.accept('session-123', mockPlayerTwo),
-      ).rejects.toThrow(GoneException);
+      ).rejects.toMatchObject({ code: 'INVITATION_EXPIRED' });
       expect(mockWagerService.acceptWager).not.toHaveBeenCalled();
       expect(mockWagerService.resolveWagerAsDraw).toHaveBeenCalledWith(
         'session-123',

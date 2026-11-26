@@ -1,4 +1,5 @@
 import { Controller, Get, INestApplication, Post } from '@nestjs/common';
+import { ApiOkResponse, ApiProperty } from '@nestjs/swagger';
 import { Test } from '@nestjs/testing';
 import * as request from 'supertest';
 import {
@@ -7,9 +8,20 @@ import {
   configureApiRouting,
 } from './app.openapi';
 
+class LoginResponseDto {
+  @ApiProperty()
+  ok: boolean;
+}
+
+class LiveResponseDto {
+  @ApiProperty()
+  status: string;
+}
+
 @Controller('auth')
 class FakeAuthController {
   @Post('login')
+  @ApiOkResponse({ type: LoginResponseDto })
   login() {
     return { ok: true };
   }
@@ -18,6 +30,7 @@ class FakeAuthController {
 @Controller('health')
 class FakeHealthController {
   @Get('live')
+  @ApiOkResponse({ type: LiveResponseDto })
   live() {
     return { status: 'ok' };
   }
@@ -28,6 +41,10 @@ class FakeHealthController {
  * served it under the global prefix. These tests build the document the way
  * main.ts and scripts/export-openapi.ts do, then call every path it lists on
  * the same app, so a document whose paths do not match real routing fails.
+ *
+ * #527: every operation must declare a typed response schema so clients can
+ * generate types and response drift is caught. This test fails if any
+ * operation in the exported document has a response without a schema.
  */
 describe('OpenAPI document', () => {
   let app: INestApplication;
@@ -68,5 +85,35 @@ describe('OpenAPI document', () => {
       type: 'http',
       scheme: 'bearer',
     });
+  });
+
+  it('gives every operation a typed response schema', () => {
+    const document = buildOpenApiDocument(app);
+    const untyped: string[] = [];
+
+    for (const [path, pathItem] of Object.entries(document.paths ?? {})) {
+      for (const [method, operation] of Object.entries(
+        pathItem as Record<string, unknown>,
+      )) {
+        if (!operation || typeof operation !== 'object') {
+          continue;
+        }
+        const responses = (operation as { responses?: Record<string, unknown> })
+          .responses;
+        if (!responses || Object.keys(responses).length === 0) {
+          untyped.push(`${method.toUpperCase()} ${path} (no responses)`);
+          continue;
+        }
+        for (const [status, response] of Object.entries(responses)) {
+          const schema = (response as { content?: Record<string, { schema?: unknown }> })
+            ?.content?.['application/json']?.schema;
+          if (!schema) {
+            untyped.push(`${method.toUpperCase()} ${path} -> ${status}`);
+          }
+        }
+      }
+    }
+
+    expect(untyped).toEqual([]);
   });
 });

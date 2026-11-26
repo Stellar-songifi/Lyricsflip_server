@@ -175,12 +175,25 @@ export class EscrowContractService {
     signedXdr: string,
     sessionId: string,
     playerAddress: string,
+    expectedHash?: string | null,
   ): Promise<SubmitResult> {
     let transaction: Transaction;
     try {
       transaction = this.rpc.fromXdr(signedXdr);
     } catch {
       throw new BadRequestException('Not a valid signed transaction envelope');
+    }
+
+    // Both checks run before anything touches the network: a superseded or
+    // foreign envelope must never be submitted.
+    if (
+      expectedHash &&
+      Buffer.from(transaction.hash()).toString('hex') !== expectedHash
+    ) {
+      throw new BadRequestException(
+        'This stake transaction has expired. Request a new one via ' +
+          'POST /game-sessions/:id/stake/transaction and sign that instead.',
+      );
     }
 
     this.assertIsStake(transaction, sessionId, playerAddress);

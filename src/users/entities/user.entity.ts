@@ -1,4 +1,4 @@
-import { Exclude, Expose } from 'class-transformer';
+import { Exclude, Expose, Transform } from 'class-transformer';
 import {
   Entity,
   PrimaryGeneratedColumn,
@@ -13,6 +13,7 @@ import {
 import { GameSession } from '../../game-sessions/entities/game-session.entity';
 import { Role } from '../../auth/roles/role.enum';
 import { PRIVATE_USER_GROUPS } from '../user-serialization';
+import { currentDailyStreak } from '../../challenges/daily-seed.util';
 
 export enum UserLevel {
   GOSSIP_ROOKIE = 'Gossip Rookie',
@@ -121,6 +122,21 @@ export class User {
   @Column({ default: 0 })
   xp: number; // total experience points
 
+  @Transform(
+    ({ obj }: { obj: User }) =>
+      currentDailyStreak(obj.dailyStreak, obj.lastDailyAttemptDate),
+    { toPlainOnly: true },
+  )
+  @Column({ type: 'int', default: 0 })
+  dailyStreak: number;
+
+  @Column({ type: 'int', default: 0 })
+  bestDailyStreak: number;
+
+  @Exclude()
+  @Column({ type: 'date', nullable: true })
+  lastDailyAttemptDate: string | null;
+
   @Column({ default: 1 })
   level: number; // numeric level (1 = Rookie, etc.)
 
@@ -130,6 +146,34 @@ export class User {
     default: UserLevel.GOSSIP_ROOKIE,
   })
   levelTitle: UserLevel; // human-readable title
+
+  /**
+   * Consecutive correct answers in the current run. Incremented on a correct
+   * guess and reset to 0 on a wrong answer or a timeout. Drives the live
+   * streak bonus in round scoring.
+   */
+  @Column({ type: 'int', default: 0 })
+  currentStreak: number;
+
+  /** Highest `currentStreak` ever reached by this user. */
+  @Column({ type: 'int', default: 0 })
+  bestStreak: number;
+
+  /** When the user last submitted a guess (correct or not). */
+  @Column({ type: 'timestamptz', nullable: true })
+  lastPlayedAt?: Date | null;
+
+  /**
+   * Consecutive days the user has completed the daily challenge. Incremented
+   * when the daily challenge is played on a new calendar day and reset when a
+   * day is skipped.
+   */
+  @Column({ type: 'int', default: 0 })
+  dailyStreak: number;
+
+  /** The last calendar day (UTC) the daily challenge was completed. */
+  @Column({ type: 'date', nullable: true })
+  lastDailyPlayedAt?: string | null;
 
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;
