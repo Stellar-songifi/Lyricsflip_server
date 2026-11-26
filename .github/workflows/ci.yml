@@ -39,6 +39,174 @@ jobs:
 
       - name: Test
         run: npm test --if-present
+      # Blocking: an unused file or export fails the PR (#452).
+      - name: Dead code check (knip)
+        run: npx knip
+
+      # Fails when a package is imported but not declared in package.json
+      # (e.g. nodemailer, csv-parse, @types/multer): the image would crash
+      # with MODULE_NOT_FOUND on the first require (#424).
+      - name: Undeclared dependencies (knip unlisted)
+        run: npx --yes knip@5 --include unlisted
+
+      # Thresholds live in jest.config.js and are enforced by Jest itself, so
+      # a PR that lowers coverage below them fails here (#524).
+      - name: Tests with coverage
+        run: npm test -- --coverage
+
+      # Surface the per-path coverage on the PR so reviewers can see the
+      # ratchet targets without opening the job log (#524).
+      - name: Comment per-path coverage on the PR
+        if: github.event_name == 'pull_request' && always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ ! -f coverage/coverage-summary.json ]; then
+            echo "No coverage summary produced; skipping PR comment."
+            exit 0
+          fi
+          body=$(node -e '
+            const s = require("./coverage/coverage-summary.json");
+            const paths = ["total", "src/tokens", "src/stellar", "src/auth"];
+            const rows = paths.map((p) => {
+              const key = Object.keys(s).find((k) => k === p || k.endsWith("/" + p));
+              const m = key ? s[key] : null;
+              const pct = (v) => (m && v ? v.pct + "%" : "n/a");
+              return `| ${p} | ${pct(m && m.lines)} | ${pct(m && m.statements)} | ${pct(m && m.functions)} | ${pct(m && m.branches)} |`;
+            });
+            process.stdout.write(
+              "### Coverage (per path)\n\n" +
+              "| Path | Lines | Statements | Functions | Branches |\n" +
+              "| --- | --- | --- | --- | --- |\n" +
+              rows.join("\n") +
+              "\n\nThresholds are enforced by `jest.config.js`; a drop below them fails CI.\n"
+            );
+          ')
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$body"
 
       - name: Build
         run: npm run build --if-present
+        run: npm run build
+
+      # The compiled app must load: a bare src/... import builds fine but
+      # crashes `node dist/main` (#355).
+      - name: Start the compiled build (smoke test)
+        run: bash scripts/smoke-start.sh
+
+  # Advisory only (#455): warns when a PR changes many lines in a file its
+  # linked issue does not name. Never fails the build.
+  scope-warning:
+    name: PR scope warning
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    env:
+      # Files outside the issue's list may change up to this many lines.
+      SCOPE_MAX_LINES: '40'
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      PR_BODY: ${{ github.event.pull_request.body }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Warn on out-of-scope changes
+        run: |
+          set -euo pipefail
+          issue=$(printf '%s' "$PR_BODY" | grep -oiE '(closes|fixes|resolves|refs?)[[:space:]]+#[0-9]+' | grep -oE '[0-9]+' | head -n1 || true)
+          if [ -z "${issue:-}" ]; then
+            echo "No linked issue found in the PR body; skipping scope check."
+            exit 0
+          fi
+          echo "Linked issue: #$issue"
+
+          body=$(gh api "repos/$REPO/issues/$issue" --jq '.body // ""')
+          # The issue lists its files as backticked paths under a "Files:" line.
+          allowed=$(printf '%s\n' "$body" | grep -iE '^\s*\*?\*?Files' | grep -oE '`[^`]+`' | tr -d '`' | sort -u || true)
+          echo "Files named by the issue:"
+          printf '%s\n' "$allowed"
+
+          git diff --numstat "$BASE_SHA" "$HEAD_SHA" > numstat.txt
+          warned=0
+          while IFS=$'\t' read -r added deleted file; do
+            [ -n "${file:-}" ] || continue
+            [ "$file" = "numstat.txt" ] && continue
+            if printf '%s\n' "$allowed" | grep -qxF "$file"; then
+              continue
+            fi
+            changed=$(( ${added:-0} + ${deleted:-0} ))
+            if [ "$changed" -gt "$SCOPE_MAX_LINES" ]; then
+              echo "::warning file=$file::Changes $changed lines in $file, which issue #$issue does not list. Explain this in the PR."
+              warned=1
+            fi
+          done < numstat.txt
+          if [ "$warned" -eq 0 ]; then
+            echo "All out-of-scope changes are within $SCOPE_MAX_LINES lines."
+          fi
+
+  docker-build:
+    name: Docker image builds and migrates an empty database
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: lyricsflip
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # Build only, never push: a broken Dockerfile fails the PR (#352).
+      - name: Build image
+        run: docker build --tag lyricsflip-server:ci .
+
+      - name: Image contains the compiled data source and entrypoint
+        run: |
+          docker run --rm --entrypoint sh lyricsflip-server:ci -c \
+            'test -f dist/main.js && test -f dist/data-source.js && test -x docker-entrypoint.sh && ls dist/migrations | head -n 3'
+
+      - name: Run with RUN_MIGRATIONS=true against the empty database
+        run: |
+          docker run -d --name api --network host \
+            -e RUN_MIGRATIONS=true -e PORT=3000 \
+            -e JWT_SECRET=ci-secret-that-is-at-least-32-characters-long \
+            -e DB_HOST=127.0.0.1 -e DB_PORT=5432 -e DB_USERNAME=postgres \
+            -e DB_PASSWORD=postgres \
+            lyricsflip-server:ci
+
+      - name: Wait for the API to become healthy
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3000/health >/dev/null 2>&1; then
+              echo "API is healthy."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "API did not become healthy in time."
+          docker logs api || true
+          exit 1
+
+      - name: Stop the container
+        if: always()
+        run: docker rm -f api || true
