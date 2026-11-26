@@ -166,6 +166,7 @@ export class GameSessionsService {
 
     const gameSession = this.gameSessionRepository.create({
       ...sessionFields,
+      hasWager: mode === GameMode.WAGERED || Boolean(hasWager),
       player,
       wagerStroops: stake ?? null,
       status:
@@ -466,7 +467,7 @@ export class GameSessionsService {
     offset: number = 0,
   ): Promise<GameSession[]> {
     return this.gameSessionRepository.find({
-      where: { player: { id: userId } },
+      where: [{ player: { id: userId } }, { playerTwoId: userId }],
       order: { createdAt: 'DESC' },
       take: limit,
       skip: offset,

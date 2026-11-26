@@ -70,8 +70,9 @@ export const GAME_CONSTANTS = {
      * ROUND_ANSWER_WINDOW_SECONDS.
      */
     ROUND_ANSWER_WINDOW_SECONDS: 20,
-    /** Hint levels: 1 decade, 2 word counts, 3 first letters. */
-    MAX_HINTS: 3,
+    /** Hint levels: 1 genre and word counts, 2 first letters. */
+    MAX_HINTS: 2,
+    MAX_HINTS_PER_ROUND: 2,
     DAILY_CHALLENGE_SIZE: 10,
     /**
      * How many days back a lyric counts as "seen" when picking a random

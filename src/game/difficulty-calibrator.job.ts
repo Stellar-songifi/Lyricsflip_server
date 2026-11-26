@@ -50,6 +50,7 @@ export class DifficultyCalibratorJob {
             AVG(CASE WHEN gh."success" THEN 1.0 ELSE 0.0 END) AS rate
           FROM "game_history" gh
           GROUP BY gh."lyricId"
+          HAVING COUNT(*) >= 30
         ) AS stats
         WHERE l."id" = stats."lyricId"
           AND l."difficulty" IS DISTINCT FROM GREATEST(
