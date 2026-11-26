@@ -1,3 +1,4 @@
+import { runtimeEnv } from '../config/runtime-env';
 import {
   Controller,
   Get,
@@ -119,7 +120,7 @@ export class AdminController {
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: GrantMockBalanceDto,
   ) {
-    if (process.env.STELLAR_SETTLEMENT_MODE !== 'mock') {
+    if (runtimeEnv().STELLAR_SETTLEMENT_MODE !== 'mock') {
       throw new NotFoundException();
     }
     return this.adminService.grantMockBalance(

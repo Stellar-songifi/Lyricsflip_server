@@ -24,10 +24,7 @@ import {
   UserSessionsRevokedPayload,
 } from '../auth/socket-authenticator';
 import { WsRateLimiter } from '../common/websocket/ws-rate-limiter';
-import {
-  WsConnectionLimiter,
-  WS_MAX_HTTP_BUFFER_SIZE,
-} from '../common/websocket/ws-connection-limiter';
+import { WsConnectionLimiter } from '../common/websocket/ws-connection-limiter';
 import {
   PlayerJoinedPayload,
   RealtimeEvent,
@@ -68,18 +65,6 @@ export type SpectateAck =
 @UseFilters(WsExceptionFilter)
 @WebSocketGateway({
   namespace: '/realtime',
-  cors: {
-    // Same allow-list as the HTTP API (FRONTEND_URL), evaluated per request.
-    origin: (
-      origin: string | undefined,
-      callback: (err: Error | null, allow?: boolean) => void,
-    ) => {
-      const allowed = process.env.FRONTEND_URL || 'http://localhost:3000';
-      callback(null, !origin || origin === allowed);
-    },
-    credentials: true,
-  },
-  maxHttpBufferSize: WS_MAX_HTTP_BUFFER_SIZE,
 })
 export class RealtimeGateway
   implements OnGatewayConnection, OnGatewayDisconnect

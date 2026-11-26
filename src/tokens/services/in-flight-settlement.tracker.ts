@@ -1,3 +1,4 @@
+import { runtimeEnv } from '../../config/runtime-env';
 import { Injectable, Logger, OnApplicationShutdown } from '@nestjs/common';
 
 /**
@@ -32,7 +33,7 @@ export class InFlightSettlementTracker implements OnApplicationShutdown {
    * Configurable via SETTLEMENT_DRAIN_TIMEOUT_MS; defaults to 30 seconds.
    */
   private get drainTimeoutMs(): number {
-    const raw = process.env['SETTLEMENT_DRAIN_TIMEOUT_MS'];
+    const raw = runtimeEnv()['SETTLEMENT_DRAIN_TIMEOUT_MS'];
     const parsed = raw ? Number(raw) : NaN;
     return Number.isFinite(parsed) && parsed > 0 ? parsed : 30_000;
   }

@@ -1,3 +1,4 @@
+import { runtimeEnv } from '../../config/runtime-env';
 import {
   BadRequestException,
   ConflictException,
@@ -376,8 +377,8 @@ describe('StellarAuthService', () => {
     });
 
     it('fails to boot in production without a web-auth secret', () => {
-      const prev = process.env.NODE_ENV;
-      process.env.NODE_ENV = 'production';
+      const prev = runtimeEnv().NODE_ENV;
+      runtimeEnv().NODE_ENV = 'production';
       try {
         expect(
           () =>
@@ -389,7 +390,7 @@ describe('StellarAuthService', () => {
             ),
         ).toThrow(/STELLAR_WEB_AUTH_SECRET/);
       } finally {
-        process.env.NODE_ENV = prev;
+        runtimeEnv().NODE_ENV = prev;
       }
     });
 

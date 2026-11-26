@@ -1,6 +1,8 @@
+import { ConfigService } from '@nestjs/config';
 import {
   ConflictException,
   Injectable,
+  Optional,
   InternalServerErrorException,
   Logger,
   NotFoundException,
@@ -23,6 +25,13 @@ import { pickDeterministic, utcDay } from './daily-seed.util';
 
 const UNIQUE_VIOLATION = '23505';
 const LEADERBOARD_SIZE = 50;
+
+/**
+ * Server secret mixed into the daily seed so future sets cannot be computed
+ * from the public lyric ids alone. Falls back to a per-process random value
+ * when unset, which still prevents offline prediction.
+ */
+const FALLBACK_SALT = `fallback-${Math.random().toString(36).slice(2)}`;
 
 export interface DailyLyric {
   /** The server-issued round id the client must pass back when guessing. */
@@ -76,6 +85,7 @@ export class ChallengesService {
     private readonly gameService: GameLogicService,
     private readonly xpService: XpLevelService,
     private readonly events: EventEmitter2,
+    @Optional() private readonly config?: ConfigService,
     private readonly configService: ConfigService,
   ) {}
 
@@ -124,6 +134,7 @@ export class ChallengesService {
       const lyricIds = pickDeterministic(
         pool.map((lyric) => lyric.id),
         GAME_CONSTANTS.LIMITS.DAILY_CHALLENGE_SIZE,
+        `${date}:${this.config?.get<string>('DAILY_CHALLENGE_SALT') ?? FALLBACK_SALT}`,
         `${date}:${this.dailyChallengeSalt}`,
       );
 

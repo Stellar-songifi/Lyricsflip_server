@@ -1,3 +1,4 @@
+import { runtimeEnv } from '../../config/runtime-env';
 import {
   BadRequestException,
   ConflictException,
@@ -78,7 +79,7 @@ export class StellarAuthService {
       this.configService.get<string>('STELLAR_WEB_AUTH_SECRET') ??
       this.configService.get<string>('STELLAR_RESOLVER_SECRET');
 
-    if (!secret && process.env.NODE_ENV === 'production') {
+    if (!secret && runtimeEnv().NODE_ENV === 'production') {
       throw new Error(
         'STELLAR_WEB_AUTH_SECRET (or STELLAR_RESOLVER_SECRET) must be set when NODE_ENV=production; ' +
           'an ephemeral key would differ on every instance.',

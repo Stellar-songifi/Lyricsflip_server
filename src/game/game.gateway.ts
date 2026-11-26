@@ -16,6 +16,7 @@ import { RandomLyricOptionsDto } from './dto/random-lyrics-option.dto';
 import { GuessDto } from './dto/guess.dto';
 import { RealtimeEvent } from '../realtime/realtime.events';
 import { WsRateLimiter } from '../common/websocket/ws-rate-limiter';
+import { WsConnectionLimiter } from '../common/websocket/ws-connection-limiter';
 import {
   WsConnectionLimiter,
   WS_MAX_HTTP_BUFFER_SIZE,
@@ -38,7 +39,6 @@ interface GameSession {
 @WebSocketGateway({
   cors: socketCorsOptions,
   namespace: '/game',
-  maxHttpBufferSize: WS_MAX_HTTP_BUFFER_SIZE,
 })
 export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()

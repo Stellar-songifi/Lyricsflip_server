@@ -1,3 +1,4 @@
+import { runtimeEnv } from '../config/runtime-env';
 /**
  * Seed script — run with:  npm run seed
  *
@@ -56,8 +57,8 @@ const seedData: Array<{
 // Load-test volume (issue R2-117). Opt-in: only seeded when
 // LOAD_SEED_LYRICS is set to a positive integer, so the default fixture
 // seed is unaffected.
-const LOAD_SEED_LYRICS = parseInt(process.env.LOAD_SEED_LYRICS ?? '0', 10);
-const LOAD_SEED_USERS = parseInt(process.env.LOAD_SEED_USERS ?? '0', 10);
+const LOAD_SEED_LYRICS = parseInt(runtimeEnv().LOAD_SEED_LYRICS ?? '0', 10);
+const LOAD_SEED_USERS = parseInt(runtimeEnv().LOAD_SEED_USERS ?? '0', 10);
 const GENRES = [Genre.Afrobeats, Genre.HipHop, Genre.Pop, Genre.Other];
 
 // Sample players used for local head-to-head / wager testing.
@@ -95,10 +96,10 @@ const samplePlayers: Array<{
 // Guard: refuse to run in production without explicit credentials
 // ---------------------------------------------------------------------------
 function resolveCredentials(): { email: string; password: string } {
-  const email = process.env.SEED_ADMIN_EMAIL;
-  const password = process.env.SEED_ADMIN_PASSWORD;
+  const email = runtimeEnv().SEED_ADMIN_EMAIL;
+  const password = runtimeEnv().SEED_ADMIN_PASSWORD;
 
-  if (process.env.NODE_ENV === 'production') {
+  if (runtimeEnv().NODE_ENV === 'production') {
     if (!email || !password) {
       console.error(
         'ERROR: SEED_ADMIN_EMAIL and SEED_ADMIN_PASSWORD must be set ' +
@@ -120,7 +121,7 @@ function resolveCredentials(): { email: string; password: string } {
 function buildDataSource(): DataSource {
   try {
     return new DataSource({
-      ...buildDataSourceOptions(envFromRecord(process.env), {
+      ...buildDataSourceOptions(envFromRecord(runtimeEnv()), {
         entities: [User, Lyrics],
       }),
       logging: false,
@@ -298,7 +299,7 @@ export async function bootstrap() {
   // ------------------------------------------------------------------
   // 3. Upsert sample players (development only)
   // ------------------------------------------------------------------
-  if (process.env.NODE_ENV === 'production') {
+  if (runtimeEnv().NODE_ENV === 'production') {
     console.log('Skipping sample players: NODE_ENV=production.');
   } else {
     for (const p of samplePlayers) {

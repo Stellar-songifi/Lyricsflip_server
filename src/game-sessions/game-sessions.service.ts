@@ -1,5 +1,7 @@
+import { ConfigService } from '@nestjs/config';
 import {
   Injectable,
+  Optional,
   NotFoundException,
   BadRequestException,
   ConflictException,
@@ -61,10 +63,6 @@ const TERMINAL_WAGER_STATUSES = [
   WagerStatus.FAILED,
 ];
 
-/** How long player two has to accept an invitation. */
-const INVITATION_TTL_MS =
-  Number(process.env.INVITATION_TTL_MINUTES ?? 30) * 60 * 1000;
-
 /** How often unanswered invitations are swept up and refunded. */
 const INVITATION_SWEEP_INTERVAL_MS = 60 * 1000;
 
@@ -104,7 +102,12 @@ export class GameSessionsService {
     @Inject(TOKEN_SERVICE)
     private readonly tokenService: ITokenService,
     private readonly jobLockService: JobLockService,
+    @Optional() private readonly config?: ConfigService,
   ) {}
+
+  private get invitationTtlMs(): number {
+    return (this.config?.get<number>('INVITATION_TTL_MINUTES') ?? 30) * 60_000;
+  }
 
   async create(
     createGameSessionDto: CreateGameSessionDto,
@@ -272,6 +275,32 @@ export class GameSessionsService {
     const seriesId = original.seriesId ?? original.id;
     const seriesLength = original.seriesLength ?? DEFAULT_SERIES_LENGTH;
 
+    return {
+      ...saved,
+      wager: wagerResult.wager,
+      ...(wagerResult.pendingSignatures?.length
+        ? { pendingSignatures: wagerResult.pendingSignatures }
+        : {}),
+    };
+  }
+
+  /** Player two declines an invitation; player one's stake is refunded. */
+  async decline(
+    sessionId: string,
+    user: User,
+  ): Promise<{ gameSession: GameSession; wagerResult?: WagerResult }> {
+    const gameSession = await this.requireInvitation(sessionId, user);
+    return this.abandonInvitation(gameSession);
+  }
+
+  /** Abandons invitations left unanswered too long, refunding player one. */
+  async expireInvitations(): Promise<number> {
+    const expired = await this.gameSessionRepository.find({
+      where: {
+        status: GameSessionStatus.WAITING_FOR_PLAYER,
+        createdAt: LessThan(new Date(Date.now() - this.invitationTtlMs)),
+      },
+    });
     if (original.seriesId) {
       const seriesSessions = await this.gameSessionRepository.find({
         where: { seriesId },
@@ -321,6 +350,15 @@ export class GameSessionsService {
       };
     }
 
+    return { gameSession: saved, wagerResult };
+  }
+
+  private isWagered(gameSession: GameSession): boolean {
+    return gameSession.mode === GameMode.WAGERED || gameSession.hasWager;
+  }
+
+  private isExpired(gameSession: GameSession): boolean {
+    return gameSession.createdAt.getTime() <= Date.now() - this.invitationTtlMs;
     return saved;
   }
 

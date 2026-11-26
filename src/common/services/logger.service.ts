@@ -1,3 +1,4 @@
+import { runtimeEnv } from '../../config/runtime-env';
 import { Injectable, LoggerService as NestLoggerService } from '@nestjs/common';
 import * as winston from 'winston';
 import * as DailyRotateFile from 'winston-daily-rotate-file';
@@ -25,11 +26,14 @@ export class LoggerService implements NestLoggerService {
   private readonly logger: winston.Logger;
 
   constructor() {
-    const isProduction = process.env.NODE_ENV === 'production';
-    const logToFile = process.env.LOG_TO_FILE === 'true';
+    const isProduction = runtimeEnv().NODE_ENV === 'production';
+    const logToFile = runtimeEnv().LOG_TO_FILE === 'true';
     // `log` (Nest) maps to `info`: Winston has no `log` level and would drop
     // every message (#359).
-    const level = resolveLogLevel(process.env.LOG_LEVEL, process.env.NODE_ENV);
+    const level = resolveLogLevel(
+      runtimeEnv().LOG_LEVEL,
+      runtimeEnv().NODE_ENV,
+    );
 
     // ------------------------------------------------------------------
     // Formats
