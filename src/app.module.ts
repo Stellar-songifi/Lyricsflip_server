@@ -66,6 +66,28 @@ import * as path from 'path';
       ],
     }),
     ThrottlerModule.forRoot([defaultThrottle()]),
+    ThrottlerModule.forRootAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: async (configService: ConfigService) => {
+        const redisUrl = configService.get<string>('REDIS_URL');
+
+        if (redisUrl) {
+          const { default: ThrottlerStorageRedisService } = await import(
+            '@nest-lab/throttler-storage-redis'
+          );
+          return {
+            throttlers: [defaultThrottle()],
+            storage: new ThrottlerStorageRedisService(redisUrl),
+          };
+        }
+
+        // In-memory fallback (single instance / local dev)
+        return {
+          throttlers: [defaultThrottle()],
+        };
+      },
+    }),
     // Drives periodic jobs such as RoomsService.checkAndCloseExpiredRooms.
     ScheduleModule.forRoot(),
 

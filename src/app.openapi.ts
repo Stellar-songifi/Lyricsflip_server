@@ -40,6 +40,18 @@ export function configureApiRouting(app: INestApplication): void {
 }
 
 /**
+ * Shared error response shape. Every operation documents its error responses
+ * against this schema so clients can generate a single error type (#527).
+ */
+export const ERROR_RESPONSE_SCHEMA = 'ErrorResponse';
+
+/**
+ * Generic pagination envelope schema name. List endpoints reference this
+ * schema so the envelope is described once instead of per route (#527).
+ */
+export const PAGINATION_ENVELOPE_SCHEMA = 'PaginationEnvelope';
+
+/**
  * The OpenAPI document served at /api/docs and written by
  * `npm run openapi:export`. One definition, so the two cannot drift apart.
  * Call {@link configureApiRouting} on `app` first.
@@ -60,5 +72,76 @@ export function buildOpenApiDocument(app: INestApplication): OpenAPIObject {
       'JWT-auth',
     )
     .build();
-  return SwaggerModule.createDocument(app, config);
+  const document = SwaggerModule.createDocument(app, config);
+  registerSharedResponseSchemas(document);
+  return document;
+}
+
+/**
+ * Registers the shared error and pagination envelope schemas and backfills
+ * any operation whose response lacks a schema, so the exported document never
+ * contains an untyped response (#527).
+ */
+function registerSharedResponseSchemas(document: OpenAPIObject): void {
+  document.components = document.components ?? {};
+  document.components.schemas = document.components.schemas ?? {};
+
+  document.components.schemas[ERROR_RESPONSE_SCHEMA] = {
+    type: 'object',
+    required: ['statusCode', 'message'],
+    properties: {
+      statusCode: { type: 'integer', example: 400 },
+      message: {
+        oneOf: [
+          { type: 'string' },
+          { type: 'array', items: { type: 'string' } },
+        ],
+      },
+      error: { type: 'string', example: 'Bad Request' },
+    },
+  };
+
+  document.components.schemas[PAGINATION_ENVELOPE_SCHEMA] = {
+    type: 'object',
+    required: ['data', 'meta'],
+    properties: {
+      data: { type: 'array', items: { type: 'object' } },
+      meta: {
+        type: 'object',
+        required: ['total', 'page', 'limit'],
+        properties: {
+          total: { type: 'integer', example: 0 },
+          page: { type: 'integer', example: 1 },
+          limit: { type: 'integer', example: 20 },
+          totalPages: { type: 'integer', example: 0 },
+        },
+      },
+    },
+  };
+
+  const errorRef = { $ref: `#/components/schemas/${ERROR_RESPONSE_SCHEMA}` };
+
+  for (const pathItem of Object.values(document.paths ?? {})) {
+    for (const operation of Object.values(pathItem ?? {})) {
+      if (!operation || typeof operation !== 'object' || !('responses' in operation)) {
+        continue;
+      }
+      const responses = (operation as { responses?: Record<string, unknown> }).responses;
+      if (!responses) {
+        continue;
+      }
+      for (const [status, response] of Object.entries(responses)) {
+        const res = response as { content?: Record<string, unknown> };
+        if (res.content && Object.keys(res.content).length > 0) {
+          continue;
+        }
+        const isError = Number(status) >= 400;
+        res.content = {
+          'application/json': {
+            schema: isError ? errorRef : { type: 'object' },
+          },
+        };
+      }
+    }
+  }
 }

@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { createHash } from 'crypto';
 import { DataSource, QueryRunner } from 'typeorm';
+import { MetricsService } from '../metrics/metrics.service';
 
 /**
  * Single, shared implementation for making scheduled jobs run exclusively
@@ -12,6 +13,9 @@ import { DataSource, QueryRunner } from 'typeorm';
  * acquired and released on the *same* dedicated query runner. Using the
  * pooled `DataSource.query` for acquire/release would (usually) hit different
  * connections and leak the lock until the pooled connection is closed.
+ *
+ * Every job run is also instrumented for observability: last success
+ * timestamp, duration, failures and lock-skips are recorded as metrics.
  */
 @Injectable()
 export class JobLockService {
@@ -20,6 +24,7 @@ export class JobLockService {
   constructor(
     @InjectDataSource()
     private readonly dataSource: DataSource,
+    private readonly metrics: MetricsService,
   ) {}
 
   /**
@@ -69,10 +74,19 @@ export class JobLockService {
 
       if (!acquired) {
         this.logger.debug(`Job "${name}" is already running elsewhere; skipping`);
+        this.metrics.recordJobSkippedLocked(name);
         return undefined;
       }
 
-      return await fn();
+      const start = process.hrtime.bigint();
+      try {
+        const result = await fn();
+        this.metrics.recordJobSuccess(name, this.elapsedSeconds(start));
+        return result;
+      } catch (err) {
+        this.metrics.recordJobFailure(name, this.elapsedSeconds(start));
+        throw err;
+      }
     } finally {
       if (acquired) {
         try {
@@ -98,37 +112,8 @@ export class JobLockService {
       }
     }
   }
+
+  private elapsedSeconds(start: bigint): number {
+    return Number(process.hrtime.bigint() - start) / 1e9;
+  }
 }
-```
-
-```typescript
-import { Global, Module } from '@nestjs/common';
-import { JobLockService } from './job-lock.service';
-
-/**
- * Global module exposing the single scheduled-job locking implementation.
- * Imported once in AppModule so every scheduled job can inject
- * `JobLockService` without importing this module individually.
- */
-@Global()
-@Module({
-  providers: [JobLockService],
-  exports: [JobLockService],
-})
-export class JobsModule {}
-```
-
-```typescript
-import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
-import { TypeOrmModule } from '@nestjs/typeorm';
-import { JobsModule } from './jobs/jobs.module';
-
-@Module({
-  imports: [
-    ConfigModule.forRoot({ isGlobal: true }),
-    TypeOrmModule.forRoot(),
-    JobsModule,
-  ],
-})
-export class AppModule {}

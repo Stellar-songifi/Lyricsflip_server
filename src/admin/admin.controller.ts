@@ -40,6 +40,16 @@ import { AdminReportQueryDto } from './dto/admin-report-query.dto';
 import { ResolveReportDto } from './dto/resolve-report.dto';
 import { GetUser } from '../auth/decorators/user.decorator';
 import { User } from '../users/entities/user.entity';
+import {
+  AdminUserResponseDto,
+  AdminLyricResponseDto,
+  AdminDeleteResponseDto,
+  AdminMockBalanceResponseDto,
+  AdminImportLyricsResponseDto,
+  AdminDeactivateBySourceResponseDto,
+  AdminRestoreLyricResponseDto,
+} from './dto/admin-response.dto';
+import { ErrorResponseDto } from '../common/dto/error-response.dto';
 
 @ApiTags('admin')
 @Controller('admin')
@@ -60,7 +70,13 @@ export class AdminController {
     enum: ['createdAt', 'username', 'email', 'role'],
   })
   @ApiQuery({ name: 'sortOrder', required: false, enum: ['ASC', 'DESC'] })
-  @ApiResponse({ status: 200, description: 'List of users.', type: [Object] })
+  @ApiResponse({
+    status: 200,
+    description: 'List of users.',
+    type: [AdminUserResponseDto],
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized.', type: ErrorResponseDto })
+  @ApiResponse({ status: 403, description: 'Forbidden.', type: ErrorResponseDto })
   @SerializeOptions({ groups: [UserGroup.ADMIN] })
   findAllUsers(@Query() query: AdminUserQueryDto) {
     return this.adminService.findAllUsers(query);
@@ -68,7 +84,14 @@ export class AdminController {
 
   @Delete('users/:id')
   @ApiOperation({ summary: 'Delete a user record' })
-  @ApiResponse({ status: 200, description: 'User deleted.' })
+  @ApiResponse({
+    status: 200,
+    description: 'User deleted.',
+    type: AdminDeleteResponseDto,
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized.', type: ErrorResponseDto })
+  @ApiResponse({ status: 403, description: 'Forbidden.', type: ErrorResponseDto })
+  @ApiResponse({ status: 404, description: 'User not found.', type: ErrorResponseDto })
   @Audited({ action: 'admin.user.delete', targetType: 'user' })
   deleteUser(@Param('id', ParseUUIDPipe) id: string) {
     return this.adminService.deleteUser(id);
@@ -79,8 +102,18 @@ export class AdminController {
     summary: 'Grant (add or set) a user mock balance (mock settlement mode only)',
   })
   @ApiBody({ type: GrantMockBalanceDto })
-  @ApiResponse({ status: 201, description: 'Mock balance updated.' })
-  @ApiResponse({ status: 404, description: 'Not available outside mock mode.' })
+  @ApiResponse({
+    status: 201,
+    description: 'Mock balance updated.',
+    type: AdminMockBalanceResponseDto,
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized.', type: ErrorResponseDto })
+  @ApiResponse({ status: 403, description: 'Forbidden.', type: ErrorResponseDto })
+  @ApiResponse({
+    status: 404,
+    description: 'Not available outside mock mode.',
+    type: ErrorResponseDto,
+  })
   @Audited({ action: 'admin.user.mock-balance', targetType: 'user' })
   grantMockBalance(
     @Param('id', ParseUUIDPipe) id: string,
@@ -118,7 +151,13 @@ export class AdminController {
     type: String,
     description: 'Only lyrics from this source',
   })
-  @ApiResponse({ status: 200, description: 'List of lyrics.', type: [Object] })
+  @ApiResponse({
+    status: 200,
+    description: 'List of lyrics.',
+    type: [AdminLyricResponseDto],
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized.', type: ErrorResponseDto })
+  @ApiResponse({ status: 403, description: 'Forbidden.', type: ErrorResponseDto })
   findAllLyrics(@Query() query: AdminLyricQueryDto) {
     return this.adminService.findAllLyrics(query);
   }
@@ -128,7 +167,14 @@ export class AdminController {
   @ApiOperation({ summary: 'Import lyrics from a CSV or JSON file' })
   @ApiConsumes('multipart/form-data')
   @ApiBody({ type: ImportLyricsDto })
-  @ApiResponse({ status: 200, description: 'Import completed.', type: Object })
+  @ApiResponse({
+    status: 200,
+    description: 'Import completed.',
+    type: AdminImportLyricsResponseDto,
+  })
+  @ApiResponse({ status: 400, description: 'Invalid import file.', type: ErrorResponseDto })
+  @ApiResponse({ status: 401, description: 'Unauthorized.', type: ErrorResponseDto })
+  @ApiResponse({ status: 403, description: 'Forbidden.', type: ErrorResponseDto })
   @UseInterceptors(FileInterceptor('file'))
   importLyrics(
     @UploadedFile() file: Express.Multer.File,
@@ -155,14 +201,24 @@ export class AdminController {
   @ApiResponse({
     status: 201,
     description: 'Lyrics deactivated; returns the count and their ids.',
+    type: AdminDeactivateBySourceResponseDto,
   })
+  @ApiResponse({ status: 401, description: 'Unauthorized.', type: ErrorResponseDto })
+  @ApiResponse({ status: 403, description: 'Forbidden.', type: ErrorResponseDto })
   deactivateLyricsBySource(@Param('source') source: string) {
     return this.adminService.deactivateLyricsBySource(source);
   }
 
   @Post('lyrics/:id/restore')
   @ApiOperation({ summary: 'Restore a deleted lyric' })
-  @ApiResponse({ status: 200, description: 'Lyric restored.' })
+  @ApiResponse({
+    status: 200,
+    description: 'Lyric restored.',
+    type: AdminRestoreLyricResponseDto,
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized.', type: ErrorResponseDto })
+  @ApiResponse({ status: 403, description: 'Forbidden.', type: ErrorResponseDto })
+  @ApiResponse({ status: 404, description: 'Lyric not found.', type: ErrorResponseDto })
   @Audited({ action: 'admin.lyric.restore', targetType: 'lyric' })
   restoreLyric(@Param('id', ParseIntPipe) id: number) {
     return this.adminService.restoreLyric(id);
@@ -171,7 +227,14 @@ export class AdminController {
   @Delete('lyrics/:id')
   @Audited({ action: 'admin.lyric.delete', targetType: 'lyric' })
   @ApiOperation({ summary: 'Delete a lyric' })
-  @ApiResponse({ status: 200, description: 'Lyric deleted.' })
+  @ApiResponse({
+    status: 200,
+    description: 'Lyric deleted.',
+    type: AdminDeleteResponseDto,
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized.', type: ErrorResponseDto })
+  @ApiResponse({ status: 403, description: 'Forbidden.', type: ErrorResponseDto })
+  @ApiResponse({ status: 404, description: 'Lyric not found.', type: ErrorResponseDto })
   deleteLyric(@Param('id', ParseIntPipe) id: number) {
     return this.adminService.deleteLyric(id);
   }

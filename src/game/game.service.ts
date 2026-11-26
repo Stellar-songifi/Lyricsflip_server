@@ -190,11 +190,16 @@ export class GameLogicService {
    *
    * `issuedAt` is set here, from the server clock, and is what the answer
    * window is measured against when the guess arrives.
+   *
+   * Pass `dailyDate` (a `YYYY-MM-DD` string) to tag the round as belonging to
+   * the daily challenge for that date. Daily rounds are looked up by
+   * `(userId, dailyDate, lyricId)` so they can be reused across requests.
    */
   async issueRound(
     userId: string,
     lyricId: number,
     sessionId?: string,
+    dailyDate?: string,
   ): Promise<GameRound> {
     if (sessionId) {
       await this.assertActiveParticipant(userId, sessionId);
@@ -210,6 +215,7 @@ export class GameLogicService {
         userId,
         lyricId,
         sessionId: sessionId ?? null,
+        dailyDate: dailyDate ?? null,
         issuedAt,
         expiresAt,
         answerWindowSeconds: this.answerWindowSeconds,

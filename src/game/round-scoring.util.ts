@@ -32,6 +32,17 @@ export interface RoundScore {
 }
 
 /**
+ * Streak bonus for a given streak, capped so it cannot run away. The bonus is
+ * STREAK_BONUS per consecutive correct answer, up to MAX_STREAK_BONUS_STEPS
+ * steps (e.g. 5 × 25).
+ */
+export function computeStreakBonus(streak: number): number {
+  if (streak <= 0) return 0;
+  const capped = Math.min(streak, GAME_CONSTANTS.POINTS.MAX_STREAK_BONUS_STEPS);
+  return GAME_CONSTANTS.POINTS.STREAK_BONUS * capped;
+}
+
+/**
  * Speed bonus for a correct answer, falling linearly from MAX_SPEED_BONUS at
  * the moment the round is issued to 0 when the answer window closes. A partial
  * match earns a proportionally smaller bonus, like its base points.
@@ -119,8 +130,7 @@ export function scoreRound(input: RoundScoreInput): RoundScore {
   }
 
   const speedBonus = computeSpeedBonus(basePoints, elapsedMs, windowMs);
-  const streakBonus =
-    streak > 0 ? GAME_CONSTANTS.POINTS.STREAK_BONUS * streak : 0;
+  const streakBonus = computeStreakBonus(streak);
   const gross =
     Math.round((basePoints + speedBonus) * multiplier) + streakBonus;
   const points = Math.round(gross * hintMultiplier(hintsUsed));
