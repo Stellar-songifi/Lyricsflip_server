@@ -12,6 +12,17 @@ import { GameSession } from '../src/game-sessions/entities/game-session.entity';
 import { RoomUser } from '../src/rooms/entities/room-user.entity';
 import { RealtimeGateway } from '../src/realtime/realtime.gateway';
 import { RealtimeEvent } from '../src/realtime/realtime.events';
+import { SocketAuthenticator } from '../src/auth/socket-authenticator';
+import { jwtKeyId } from '../src/auth/jwt-key.util';
+
+const jwtConfig = (secret: string) => ({
+  get: (name: string, fallback?: string) =>
+    ({
+      JWT_SECRET: secret,
+      JWT_ISSUER: 'lyricsflip',
+      JWT_AUDIENCE: 'lyricsflip-api',
+    })[name] ?? fallback,
+});
 
 describe('Realtime (e2e)', () => {
   const secret = 'e2e-secret';
@@ -27,7 +38,16 @@ describe('Realtime (e2e)', () => {
   const sockets: Socket[] = [];
 
   const connect = async (userId: string): Promise<Socket> => {
-    const token = await jwt.signAsync({ sub: userId }, { secret });
+    const token = await jwt.signAsync(
+      { sub: userId },
+      {
+        secret,
+        algorithm: 'HS256',
+        keyid: jwtKeyId(secret),
+        issuer: 'lyricsflip',
+        audience: 'lyricsflip-api',
+      },
+    );
     const socket = io(`${url}/realtime`, {
       auth: { token },
       transports: ['websocket'],
@@ -55,7 +75,8 @@ describe('Realtime (e2e)', () => {
       imports: [EventEmitterModule.forRoot(), JwtModule.register({})],
       providers: [
         RealtimeGateway,
-        { provide: ConfigService, useValue: { get: () => secret } },
+        SocketAuthenticator,
+        { provide: ConfigService, useValue: jwtConfig(secret) },
         {
           // alice and bob play this session; carol does not.
           provide: getRepositoryToken(GameSession),
@@ -228,7 +249,7 @@ describe('Game gateway (e2e)', () => {
       imports: [EventEmitterModule.forRoot(), JwtModule.register({})],
       providers: [
         GameGateway,
-        { provide: ConfigService, useValue: { get: () => secret } },
+        { provide: ConfigService, useValue: jwtConfig(secret) },
         { provide: GameLogicService, useValue: gameLogic },
       ],
     }).compile();
@@ -246,7 +267,16 @@ describe('Game gateway (e2e)', () => {
   });
 
   it('plays a round over the socket with HTTP-shaped payloads', async () => {
-    const token = await jwt.signAsync({ sub: playerId }, { secret });
+    const token = await jwt.signAsync(
+      { sub: playerId },
+      {
+        secret,
+        algorithm: 'HS256',
+        keyid: jwtKeyId(secret),
+        issuer: 'lyricsflip',
+        audience: 'lyricsflip-api',
+      },
+    );
     socket = io(`${url}/game`, {
       auth: { token },
       transports: ['websocket'],

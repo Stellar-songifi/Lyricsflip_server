@@ -14,6 +14,11 @@ import {
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import {
+  Logger,
+  NotFoundException,
+  UsePipes,
+  ValidationPipe,
+} from '@nestjs/common';
   HttpStatus,
   Logger,
   NotFoundException,
@@ -26,6 +31,11 @@ import { OnEvent } from '@nestjs/event-emitter';
 import { GameLogicService } from './game.service';
 import { RandomLyricOptionsDto } from './dto/random-lyrics-option.dto';
 import { GuessDto } from './dto/guess.dto';
+import { SocketUser } from '../auth/auth-context.util';
+import { authenticateSocket } from '../auth/socket-auth.util';
+import { JwtService } from '@nestjs/jwt';
+import { ConfigService } from '@nestjs/config';
+import { allowsWebSocketOrigin } from '../common/security/cors';
 import { RealtimeEvent } from '../realtime/realtime.events';
 import { WsRateLimiter } from '../common/websocket/ws-rate-limiter';
 import { WsConnectionLimiter } from '../common/websocket/ws-connection-limiter';
@@ -66,6 +76,16 @@ interface GameSession {
 )
 @UsePipes(socketValidationPipe)
 @WebSocketGateway({
+  cors: {
+    // Same allow-list as the HTTP API (FRONTEND_URL), evaluated per request.
+    origin: (
+      origin: string | undefined,
+      callback: (err: Error | null, allow?: boolean) => void,
+    ) => {
+      callback(null, allowsWebSocketOrigin(origin));
+    },
+    credentials: true,
+  },
   cors: socketCorsOptions,
   namespace: '/game',
 })
@@ -80,7 +100,11 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
   private readonly rateLimiter = new WsRateLimiter();
   private readonly connectionLimiter = new WsConnectionLimiter();
 
-  constructor(private readonly gameLogicService: GameLogicService) {}
+  constructor(
+    private readonly gameLogicService: GameLogicService,
+    private readonly jwtService: JwtService,
+    private readonly configService: ConfigService,
+  ) {}
 
   /**
    * Returns false (and rejects the event with a RATE_LIMITED error) if the
@@ -108,6 +132,13 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     let userId: string;
     let user: SocketUser;
     try {
+      user = await authenticateSocket(
+        client,
+        this.jwtService,
+        this.configService,
+      );
+      userId = user.id;
+    } catch {
       const authenticated = await authenticateSocket(client);
       userId = authenticated.userId;
       user = authenticated.user;

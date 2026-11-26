@@ -11,6 +11,7 @@ import { Repository } from 'typeorm';
 import { JwtPayload } from '../interfaces/jwt-payload.interface';
 import { User } from '../../users/entities/user.entity';
 import { INACTIVE_USER_MESSAGE } from '../services/auth-token.service';
+import { jwtSecretForToken } from '../jwt-key.util';
 
 /**
  * Shared user/token validation used by both the HTTP JWT strategy and the
@@ -58,7 +59,26 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
-      secretOrKey: jwtSecret,
+      secretOrKeyProvider: (_request, rawJwtToken, done) => {
+        try {
+          if (typeof rawJwtToken !== 'string') {
+            throw new UnauthorizedException('Token is invalid');
+          }
+          done(
+            null,
+            jwtSecretForToken(
+              rawJwtToken,
+              jwtSecret,
+              configService.get<string>('JWT_SECRET_PREVIOUS'),
+            ),
+          );
+        } catch (error) {
+          done(error instanceof Error ? error : new Error(String(error)));
+        }
+      },
+      issuer: configService.get<string>('JWT_ISSUER', 'lyricsflip'),
+      audience: configService.get<string>('JWT_AUDIENCE', 'lyricsflip-api'),
+      algorithms: ['HS256'],
     });
   }
 

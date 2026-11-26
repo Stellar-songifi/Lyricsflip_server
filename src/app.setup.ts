@@ -13,6 +13,7 @@ import {
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { json, urlencoded } from 'express';
+import { allowedOrigins } from './common/security/cors';
 
 /**
  * Global route prefix.
@@ -79,6 +80,7 @@ export function configureApp(app: INestApplication): void {
   // CORS must be registered before the HTTP adapter starts listening,
   // otherwise the configuration is never applied to the running server.
   app.enableCors({
+    origin: allowedOrigins(),
     origin: parseAllowedOrigins(runtimeEnv().FRONTEND_URL),
     credentials: true,
   });
@@ -92,15 +94,7 @@ export function getBodyLimit(envVar: string, fallback: string): string {
   return value && value.length > 0 ? value : fallback;
 }
 
-/**
- * Parses FRONTEND_URL into a list of allowed origins.
- *
- * Supports a single origin or a comma-separated list, e.g.
- * "https://app.example.com,https://admin.example.com".
- */
+/** Backwards-compatible parser; app configuration uses the shared helper. */
 export function parseAllowedOrigins(frontendUrl?: string): string[] {
-  return (frontendUrl ?? '')
-    .split(',')
-    .map((origin) => origin.trim())
-    .filter((origin) => origin.length > 0);
+  return allowedOrigins(frontendUrl ?? '');
 }

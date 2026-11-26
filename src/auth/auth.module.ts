@@ -16,22 +16,41 @@ import { User } from '../users/entities/user.entity';
 import { RefreshToken } from './entities/refresh-token.entity';
 import { EmailToken } from './entities/email-token.entity';
 import { PasswordResetToken } from './entities/password-reset-token.entity';
+import { jwtKeyId } from './jwt-key.util';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([User, RefreshToken, EmailToken, PasswordResetToken]),
+    TypeOrmModule.forFeature([
+      User,
+      RefreshToken,
+      EmailToken,
+      PasswordResetToken,
+    ]),
     PassportModule.register({ defaultStrategy: 'jwt' }),
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
-      useFactory: (configService: ConfigService) => ({
-        secret: configService.get<string>('JWT_SECRET'),
-        signOptions: {
-          // Access tokens are short-lived now that a refresh token exists to
-          // renew them; a stolen access token stops working within minutes.
-          expiresIn: configService.get<string>('JWT_EXPIRES_IN', '15m'),
-        },
-      }),
+      useFactory: (configService: ConfigService) => {
+        const secret = configService.get<string>('JWT_SECRET');
+        if (!secret) {
+          throw new Error('JWT_SECRET is not set in environment variables');
+        }
+        return {
+          secret,
+          signOptions: {
+            algorithm: 'HS256' as const,
+            keyid: jwtKeyId(secret),
+            issuer: configService.get<string>('JWT_ISSUER', 'lyricsflip'),
+            audience: configService.get<string>(
+              'JWT_AUDIENCE',
+              'lyricsflip-api',
+            ),
+            // Access tokens are short-lived now that a refresh token exists to
+            // renew them; a stolen access token stops working within minutes.
+            expiresIn: configService.get<string>('JWT_EXPIRES_IN', '15m'),
+          },
+        };
+      },
     }),
   ],
   controllers: [AuthController],
@@ -45,6 +64,13 @@ import { PasswordResetToken } from './entities/password-reset-token.entity';
     SessionCleanupJob,
     JwtStrategy,
   ],
-  exports: [JwtStrategy, PassportModule, AuthService, StellarAuthService, EmailVerificationService, PasswordResetService],
+  exports: [
+    JwtStrategy,
+    PassportModule,
+    AuthService,
+    StellarAuthService,
+    EmailVerificationService,
+    PasswordResetService,
+  ],
 })
 export class AuthModule {}

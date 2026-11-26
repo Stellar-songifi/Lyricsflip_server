@@ -13,6 +13,10 @@ import { LoggerService } from './common/services/logger.service';
 import { configureApp } from './app.setup';
 import { RedisIoAdapter } from './realtime/redis-io.adapter';
 import { runProductionSafetyCheck } from './config/production-safety.check';
+import {
+  allowedOrigins,
+  allowsWebSocketWithoutOrigin,
+} from './common/security/cors';
 
 /**
  * Reads a positive integer of milliseconds from the environment, falling back
@@ -34,7 +38,9 @@ function readTimeoutMs(name: string, fallback: number): number {
   }
   const value = Number(raw);
   if (!Number.isInteger(value) || value <= 0) {
-    throw new Error(`${name} must be a positive integer (milliseconds), got "${raw}"`);
+    throw new Error(
+      `${name} must be a positive integer (milliseconds), got "${raw}"`,
+    );
   }
   return value;
 }
@@ -61,6 +67,12 @@ async function bootstrap() {
   // Instantiate the Winston logger before the app so bootstrap messages
   // also go through it.
   const winstonLogger = new LoggerService();
+  winstonLogger.log(
+    `WebSocket connections without an Origin header are ${
+      allowsWebSocketWithoutOrigin() ? 'allowed' : 'rejected'
+    }`,
+    'Bootstrap',
+  );
 
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     // Suppress Nest's default console logger; our Winston instance takes over.
@@ -134,13 +146,8 @@ async function bootstrap() {
   // CORS must be registered before the server starts listening, otherwise the
   // configuration is not applied to the running HTTP adapter. FRONTEND_URL may
   // hold a comma-separated list of allowed origins.
-  const allowedOrigins = (process.env.FRONTEND_URL || 'http://localhost:3000')
-    .split(',')
-    .map((origin) => origin.trim())
-    .filter((origin) => origin.length > 0);
-
   app.enableCors({
-    origin: allowedOrigins,
+    origin: allowedOrigins(),
     credentials: true,
   });
 
