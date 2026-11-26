@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, LessThan } from 'typeorm';
@@ -15,6 +15,8 @@ import {
   CreateAchievementNotificationDto 
 } from './dto/create-notification.dto';
 import { Notification } from './entities/notification.entity';
+import { RealtimeRoomsService } from '../realtime/realtime-rooms.service';
+import { PushService } from '../push/push.service';
 import { RealtimePublisher } from '../realtime/realtime.publisher';
 
 const RETENTION_DAYS = 90;
@@ -40,6 +42,8 @@ export class NotificationsService {
     private eventEmitter: EventEmitter2,
     @InjectRepository(Notification)
     private readonly notificationRepository: Repository<Notification>,
+    private readonly realtimeRooms: RealtimeRoomsService,
+    @Optional() private readonly pushService?: PushService,
     private readonly realtimePublisher: RealtimePublisher,
   ) {}
 
@@ -126,7 +130,46 @@ export class NotificationsService {
 
     this.realtimePublisher.toUser(notification.userId, 'notification', saved);
 
+    // Deliver a push notification when the app is closed. PushService enforces
+    // per-type preferences and quiet hours, and prunes dead subscriptions.
+    if (this.pushService) {
+      try {
+        await this.pushService.sendToUser(notification.userId, type, {
+          title: this.pushTitleFor(type),
+          body: notification.message,
+          data: { type, notificationId: saved.id },
+        });
+      } catch (error) {
+        this.logger.warn(
+          `Failed to send push for notification ${saved.id}: ${(error as Error).message}`,
+        );
+      }
+    }
+
     return saved;
+  }
+
+  private pushTitleFor(type: string): string {
+    switch (type) {
+      case 'level_up':
+        return 'Level up!';
+      case 'challenge_completed':
+        return 'Challenge completed';
+      case 'achievement_unlocked':
+        return 'Achievement unlocked';
+      case 'invitation':
+        return 'Match invitation';
+      case 'match_found':
+        return 'Match found';
+      case 'your_turn':
+        return 'Your turn';
+      case 'wager_settled':
+        return 'Wager settled';
+      case 'wager_refunded':
+        return 'Wager refunded';
+      default:
+        return 'New notification';
+    }
   }
 
   // Retrieval methods
