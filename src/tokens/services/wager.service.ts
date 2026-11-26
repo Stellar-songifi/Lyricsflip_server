@@ -1,3 +1,10 @@
+import { EscrowContractService } from '../../stellar/services/escrow-contract.service';
+import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
+import {
+  DEFAULT_PAGE_SIZE,
+  toPaginated,
+} from '../../common/dto/paginated-response.dto';
+import { WagerViewDto } from '../dto/wager-view.dto';
 import { ErrorCode } from '../../common/exceptions/domain.exception';
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -80,6 +87,7 @@ export class WagerService {
     private readonly tokenService: ITokenService,
     private readonly configService: ConfigService,
     private readonly settlementTracker: InFlightSettlementTracker,
+    @Optional() private readonly escrow?: EscrowContractService,
     @Optional() private readonly eventEmitter?: EventEmitter2,
   ) {}
 
@@ -362,6 +370,134 @@ export class WagerService {
    * Conditionally transitions a wager to `settled` using a single UPDATE so
    * concurrent callers cannot double-settle. Emits `wager.settled` after commit.
    */
+  async resolveWagerWithWinner(
+    sessionId: string,
+    winnerId: string,
+  ): Promise<WagerResult> {
+    const wager = await this.requireWager(sessionId);
+
+    if (
+      wager.status === WagerStatus.WON ||
+      wager.status === WagerStatus.REFUNDED
+    ) {
+      return {
+        success: true,
+        wager,
+        message: 'Wager already settled',
+      };
+    }
+
+    if (wager.status !== WagerStatus.STAKED) {
+      return {
+        success: false,
+        wager,
+        message: `Cannot settle a wager in status ${wager.status}`,
+      };
+    }
+
+    if (winnerId !== wager.playerAId && winnerId !== wager.playerBId) {
+      throw new BadRequestException('Winner is not a player in this wager');
+    }
+
+    if (this.settlementTracker.isInFlight(sessionId)) {
+      return {
+        success: false,
+        wager,
+        message: 'A settlement for this wager is already in progress',
+      };
+    }
+
+    this.settlementTracker.begin(sessionId);
+
+    try {
+      // Step 1 — commit the intent before touching the network.
+      wager.status = WagerStatus.SETTLING;
+      wager.winnerId = winnerId;
+      wager.settledAt = new Date();
+      wager = await this.wagerRepository.save(wager);
+
+      // Step 2 — pay out, outside any database transaction.
+      const payout = await this.tokenService.payout(
+        winnerId,
+        wager.totalPotStroops,
+        this.contextFor(wager),
+      );
+
+      wager.settlementTxHash = payout.txHash ?? null;
+
+      if (payout.status === SettlementStatus.PENDING_SIGNATURE) {
+        // The payout has not landed yet. Leave the wager in SETTLING so
+        // reconcileWager can confirm it once the signature is submitted.
+        wager.resultMessage =
+          'Payout transaction is awaiting a wallet signature.';
+        wager = await this.wagerRepository.save(wager);
+
+        return {
+          success: true,
+          wager,
+          message: wager.resultMessage,
+          pendingSignatures: payout.unsignedTransaction
+            ? [
+                {
+                  userId: winnerId,
+                  transaction: payout.unsignedTransaction,
+                },
+              ]
+            : undefined,
+        };
+      }
+
+      if (!payout.success) {
+        // The payout failed outright. Put the wager back so an operator can
+        // retry rather than leaving it stuck in SETTLING.
+        wager.status = WagerStatus.STAKED;
+        wager.resultMessage = `Payout failed: ${payout.message}`;
+        wager = await this.wagerRepository.save(wager);
+
+        return { success: false, wager, message: wager.resultMessage };
+      }
+
+      // Step 3 — commit the observed outcome.
+      wager.status = WagerStatus.WON;
+      wager.resultMessage = `Winner paid ${fromStroops(wager.totalPotStroops)} LYRIC`;
+      wager = await this.wagerRepository.save(wager);
+
+      return { success: true, wager, message: wager.resultMessage };
+    } finally {
+      this.settlementTracker.end(sessionId);
+    }
+  }
+
+  /**
+   * Refunds both stakes and records the match as a draw.
+   */
+  async resolveWagerAsDraw(sessionId: string): Promise<WagerResult> {
+    const wager = await this.requireWager(sessionId);
+
+    if (
+      wager.status === WagerStatus.REFUNDED ||
+      wager.status === WagerStatus.WON
+    ) {
+      return { success: true, wager, message: 'Wager already settled' };
+    }
+
+    if (wager.status !== WagerStatus.STAKED) {
+      return {
+        success: false,
+        wager,
+        message: `Cannot settle a wager in status ${wager.status}`,
+      };
+    }
+
+    if (this.settlementTracker.isInFlight(sessionId)) {
+      return {
+        success: false,
+        wager,
+        message: 'A settlement for this wager is already in progress',
+      };
+    }
+
+    this.settlementTracker.begin(sessionId);
   async settle(id: string): Promise<WagerTransitionResult> {
     return this.transition(id, 'staked', 'settled', 'wager.settled');
   }
@@ -397,6 +533,179 @@ export class WagerService {
         return { ok: false, reason: 'not_found' };
       }
 
+      wager.status = WagerStatus.REFUNDED;
+      wager.resultMessage = 'Draw — both stakes refunded';
+      wager = await this.wagerRepository.save(wager);
+
+      return { success: true, wager, message: wager.resultMessage };
+    } finally {
+      this.settlementTracker.end(sessionId);
+    }
+  }
+
+  /**
+   * Resolves a wager left in `SETTLING` by a crash or an unconfirmed payout.
+   *
+   * Looks the recorded settlement transaction up on-chain: if it landed the
+   * wager is finalised, if it did not the wager is returned to `STAKED` so it
+   * can be settled again.
+   */
+  async reconcileWager(sessionId: string): Promise<WagerResult> {
+    const wager = await this.requireWager(sessionId);
+
+    if (wager.status !== WagerStatus.SETTLING) {
+      return {
+        success: true,
+        wager,
+        message: `Nothing to reconcile (status: ${wager.status})`,
+      };
+    }
+
+    if (!wager.settlementTxHash) {
+      // No transaction was ever recorded, so nothing can have landed.
+      wager.status = WagerStatus.STAKED;
+      wager.resultMessage = 'Settlement was never submitted; retry settlement.';
+      const saved = await this.wagerRepository.save(wager);
+
+      return { success: false, wager: saved, message: saved.resultMessage };
+    }
+
+    const confirmed = await this.tokenService.isTransactionConfirmed(
+      wager.settlementTxHash,
+    );
+
+    if (!confirmed) {
+      wager.status = WagerStatus.STAKED;
+      wager.resultMessage =
+        'Settlement transaction did not land; wager returned for retry.';
+      const saved = await this.wagerRepository.save(wager);
+
+      return { success: false, wager: saved, message: saved.resultMessage };
+    }
+
+    wager.status = wager.winnerId ? WagerStatus.WON : WagerStatus.REFUNDED;
+    wager.resultMessage = wager.winnerId
+      ? `Winner paid ${fromStroops(wager.totalPotStroops)} LYRIC`
+      : 'Draw — both stakes refunded';
+    const saved = await this.wagerRepository.save(wager);
+
+    return { success: true, wager: saved, message: saved.resultMessage };
+  }
+
+  /**
+   * Settles a wager from a match outcome: a winner, or a draw when
+   * `winnerId` is null.
+   */
+  async settle(sessionId: string, winnerId: string | null): Promise<WagerResult> {
+    return winnerId
+      ? this.resolveWagerWithWinner(sessionId, winnerId)
+      : this.resolveWagerAsDraw(sessionId);
+  }
+
+  async getWagerBySessionId(sessionId: string): Promise<Wager | null> {
+    return this.wagerRepository.findOne({
+      where: { sessionId },
+      relations: { playerA: true, playerB: true },
+      select: { playerA: { username: true }, playerB: { username: true } },
+    });
+  }
+
+  async getUserWagers(userId: string): Promise<Wager[]> {
+    return this.findUserWagers(userId);
+  }
+
+  async findUserWagers(
+    userId: string,
+    limit?: number,
+    offset?: number,
+  ): Promise<Wager[]> {
+    return this.wagerRepository.find(
+      this.historyOptions(userId, limit, offset),
+    );
+  }
+
+  async getUserWagerPage(userId: string, query: PaginationQueryDto) {
+    const limit = query.limit ?? DEFAULT_PAGE_SIZE;
+    const offset = query.offset ?? 0;
+    const [wagers, total] = await this.wagerRepository.findAndCount(
+      this.historyOptions(userId, limit, offset),
+    );
+    const data = await Promise.all(
+      wagers.map((wager) => this.toView(wager, userId)),
+    );
+    return toPaginated(data, total, limit, offset);
+  }
+
+  private historyOptions(userId: string, limit?: number, offset?: number) {
+    return {
+      where: [{ playerAId: userId }, { playerBId: userId }],
+      relations: { playerA: true, playerB: true },
+      select: { playerA: { username: true }, playerB: { username: true } },
+      order: { createdAt: 'DESC', id: 'DESC' } as const,
+      take: limit,
+      skip: offset,
+    };
+  }
+
+  async toView(wager: Wager, userId: string): Promise<WagerViewDto> {
+    const isStellar = wager.settlementMode === 'stellar';
+    const network = this.configService.get<string>(
+      'STELLAR_NETWORK',
+      'testnet',
+    );
+    const transaction = (hash: string | null | undefined) =>
+      hash
+        ? {
+            hash,
+            explorerUrl:
+              isStellar && (network === 'public' || network === 'testnet')
+                ? `https://stellar.expert/explorer/${network}/tx/${encodeURIComponent(hash)}`
+                : null,
+          }
+        : null;
+
+    const pot =
+      isStellar && wager.escrowTxHash
+        ? await this.escrow?.getPot(wager.sessionId)
+        : null;
+    const opponent =
+      wager.playerAId === userId
+        ? wager.playerB
+        : wager.playerBId === userId
+          ? wager.playerA
+          : null;
+
+    return {
+      id: wager.id,
+      sessionId: wager.sessionId,
+      stake: {
+        stroops: wager.stakeStroops,
+        display: fromStroops(wager.stakeStroops),
+      },
+      totalPot: {
+        stroops: wager.totalPotStroops,
+        display: fromStroops(wager.totalPotStroops),
+      },
+      opponentUsername: opponent?.username ?? null,
+      status: wager.status,
+      escrow: transaction(wager.escrowTxHash),
+      playerAStake: transaction(wager.playerAStakeTxHash),
+      playerBStake: transaction(wager.playerBStakeTxHash),
+      settlement: transaction(wager.settlementTxHash),
+      claimDeadlineLedger: pot?.deadlineLedger || null,
+      stakeDeadline: wager.stakeDeadline ?? null,
+    };
+  }
+
+  /**
+   * Records a wager as failed with an operator-visible reason.
+   */
+  private async markFailed(wager: Wager, message: string): Promise<Wager> {
+    wager.status = WagerStatus.FAILED;
+    wager.resultMessage = message;
+    this.logger.warn(`Wager ${wager.sessionId} failed: ${message}`);
+    return this.wagerRepository.save(wager);
+  }
       DomainEvents.queue(queryRunner, eventName, {
         id: wager.id,
         status: wager.status,

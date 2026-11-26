@@ -117,7 +117,7 @@ export class GameSessionsService {
     createGameSessionDto: CreateGameSessionDto,
     player: User,
   ): Promise<CreateGameSessionResponse> {
-    const { mode, playerTwoId, wagerAmount, hasWager } = createGameSessionDto;
+    const { mode, playerTwoId, wagerAmount } = createGameSessionDto;
 
     // Validate multiplayer/wagered game requirements
     if (mode === GameMode.MULTIPLAYER || mode === GameMode.WAGERED) {
@@ -147,7 +147,7 @@ export class GameSessionsService {
     // row is written, and every downstream call works in stroops.
     let stake: Stroops | undefined;
 
-    if (mode === GameMode.WAGERED || hasWager) {
+    if (mode === GameMode.WAGERED) {
       if (!wagerAmount || !isPositive((stake = toStroops(wagerAmount)))) {
         throw new BadRequestException(
           'Wager amount must be greater than 0 for wagered games',
@@ -195,7 +195,7 @@ export class GameSessionsService {
 
     const gameSession = this.gameSessionRepository.create({
       ...sessionFields,
-      hasWager: mode === GameMode.WAGERED || Boolean(hasWager),
+      hasWager: mode === GameMode.WAGERED,
       player,
       wagerStroops: stake ?? null,
       status:
@@ -207,7 +207,7 @@ export class GameSessionsService {
     const savedGameSession = await this.gameSessionRepository.save(gameSession);
 
     // Create wager if this is a wagered game
-    if ((mode === GameMode.WAGERED || hasWager) && stake && playerTwoId) {
+    if (mode === GameMode.WAGERED && stake && playerTwoId) {
       const wagerResult = await this.wagerService.createWager({
         sessionId: savedGameSession.id,
         playerAId: player.id,
@@ -493,4 +493,107 @@ export class GameSessionsService {
       );
     } 
 
+    const updatedGameSession =
+      await this.gameSessionRepository.save(gameSession);
+
+    this.auditLogger.log(
+      JSON.stringify({
+        event: 'wager.settlement',
+        sessionId,
+        triggeredBy: { id: triggeredBy.id, role: triggeredBy.role },
+        playerOneScore,
+        playerTwoScore,
+        winnerId: gameSession.winnerId ?? null,
+        success: wagerResult.success,
+        wagerStatus: wagerResult.wager?.status ?? null,
+        settlementTxHash: wagerResult.wager?.settlementTxHash ?? null,
+      }),
+    );
+
+    return {
+      gameSession: updatedGameSession,
+      wagerResult,
+      message,
+      // Structured fields alongside the human-readable message, so clients
+      // do not have to parse the winner's name back out of prose.
+      winnerId,
+      winnerUsername,
+    };
+  }
+
+  /**
+   * Gets the user's token balance, in stroops alongside a display rendering.
+   *
+   * Both are returned because callers need different ones: the display string
+   * is what a UI shows, the stroop string is what has to be echoed back as a
+   * stake without losing precision.
+   */
+  async getUserTokenBalance(
+    userId: string,
+  ): Promise<{ stroops: Stroops; display: string }> {
+    const stroops = await this.tokenService.getUserBalance(userId);
+    return { stroops, display: fromStroops(stroops) };
+  }
+
+  /**
+   * Submits a stake transaction the player signed in their wallet.
+   *
+   * This is the other half of the `pendingSignatures` returned by
+   * {@link create}: the client signs that XDR and posts it back here, and the
+   * wager becomes `STAKED` once both players have done so.
+   */
+  async confirmStake(
+    sessionId: string,
+    userId: string,
+    signedTransaction: string,
+  ): Promise<WagerResult> {
+    return this.wagerService.confirmStake(sessionId, userId, signedTransaction);
+  }
+
+  /**
+   * Rebuilds the caller's stake transaction after the first one expired —
+   * either its 180-second-plus timeout ran out, or another transaction from
+   * that account moved the sequence number it was built against.
+   */
+  async requestFreshStakeTransaction(
+    sessionId: string,
+    userId: string,
+  ): Promise<WagerResult> {
+    return this.wagerService.requestFreshStakeTransaction(sessionId, userId);
+  }
+
+  /**
+   * Re-checks a wager left mid-settlement against the ledger.
+   *
+   * Operator tooling rather than gameplay: a crash between submitting a payout
+   * and recording it leaves a row in `SETTLING`, and this decides what really
+   * happened rather than guessing.
+   */
+  async reconcileWager(sessionId: string): Promise<WagerResult> {
+    return this.wagerService.reconcileWager(sessionId);
+  }
+
+  /**
+   * Gets wager information for a session the user plays in
+   */
+  async getSessionWager(sessionId: string, user: User): Promise<Wager | null> {
+    await this.findOne(sessionId, user);
+    return this.wagerService.getWagerBySessionId(sessionId);
+  }
+
+  async getSessionWagerView(sessionId: string, user: User) {
+    const wager = await this.getSessionWager(sessionId, user);
+    if (!wager) throw new NotFoundException('This session has no wager');
+    return this.wagerService.toView(wager, user.id);
+  }
+
+  /** Gets the user's wager history. */
+  async getUserWagers(
+    userId: string,
+    limit: number = 10,
+    offset: number = 0,
+  ): Promise<Wager[]> {
+    return this.wagerService.findUserWagers(userId, limit, offset);
+  }
+}
 /* … truncated 13639 chars — edit only what you need near the top … */

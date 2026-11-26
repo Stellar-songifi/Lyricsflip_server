@@ -1,3 +1,4 @@
+import { WagerViewDto } from '../tokens/dto/wager-view.dto';
 import {
   Controller,
   Get,
@@ -5,6 +6,7 @@ import {
   Body,
   Patch,
   Param,
+  ParseUUIDPipe,
   Delete,
   Query,
   Put,
@@ -88,6 +90,13 @@ export class GameSessionsController {
     @Query() { limit, offset }: PaginationQueryDto,
   ) {
     return this.gameSessionsService.getRecentGames(user.id, limit, offset);
+  }
+
+  @Get(':id/wager')
+  @ApiOperation({ summary: 'Get a session wager as a participant or admin' })
+  @ApiResponse({ status: 200, type: WagerViewDto })
+  getWager(@Param('id', ParseUUIDPipe) id: string, @GetUser() user: User) {
+    return this.gameSessionsService.getSessionWagerView(id, user);
   }
 
   @Get(':id')
