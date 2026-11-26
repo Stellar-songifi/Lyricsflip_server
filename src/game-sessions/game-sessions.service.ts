@@ -36,6 +36,7 @@ import type { WagerResult } from '../tokens/services/wager.service';
 import type { UnsignedTransaction } from '../stellar/services/stellar-rpc.service';
 import { sanitizeForDisplay } from '../common/utils/sanitize.util';
 import { JobLockService } from '../jobs/job-lock.service';
+import { assertEmailVerified } from '../auth/verified-email.util';
 
 /**
  * A created session, plus the wager handshake when there is one.
@@ -134,6 +135,8 @@ export class GameSessionsService {
         );
       }
 
+      assertEmailVerified(player, 'create a wager');
+
       // Check if both players have sufficient tokens
       const [playerOneBalance, playerTwoBalance] = await Promise.all([
         this.tokenService.hasSufficientTokens(player.id, stake),
@@ -163,6 +166,7 @@ export class GameSessionsService {
 
     const gameSession = this.gameSessionRepository.create({
       ...sessionFields,
+      hasWager: mode === GameMode.WAGERED || Boolean(hasWager),
       player,
       wagerStroops: stake ?? null,
       status:
@@ -463,7 +467,7 @@ export class GameSessionsService {
     offset: number = 0,
   ): Promise<GameSession[]> {
     return this.gameSessionRepository.find({
-      where: { player: { id: userId } },
+      where: [{ player: { id: userId } }, { playerTwoId: userId }],
       order: { createdAt: 'DESC' },
       take: limit,
       skip: offset,

@@ -537,8 +537,9 @@ export class RoomsService {
     const guessType = guessDto.guessType ?? GuessType.SONG_TITLE;
     const guess = guessDto.guess;
 
-    const isCorrect = matchGuess(guess, lyric, guessType);
-    const score = isCorrect ? this.calculateScore(lyric, guessType) : 0;
+    const matchResult = matchGuess(guess, lyric, guessType);
+    const isCorrect = typeof matchResult === "boolean" ? matchResult : matchResult.isCorrect;
+    const score = isCorrect ? (matchResult.points ?? this.calculateScore(lyric, guessType)) : 0;
 
     // Persist the score now that the guess is claimed.
     await this.roomUserRepository.update(roomUser.id, { score });
