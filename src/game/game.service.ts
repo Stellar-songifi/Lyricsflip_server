@@ -1,3 +1,4 @@
+import { recordReferralRound } from '../referrals/referral-rewards.service';
 import {
   DomainException,
   ErrorCode,
@@ -16,7 +17,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import { JobLockService } from '../jobs/job-lock.service';
 import { Lyrics } from '../lyrics/entities/lyrics.entity';
-import { matchGuess, normalizeAnswer } from './guess-matcher';
+import { matchGuess } from './guess-matcher';
 import { Genre, isGenre, toGenre } from '../lyrics/entities/genre.enum';
 import {
   In,
@@ -325,8 +326,8 @@ export class GameLogicService {
   /**
    * Scores a guess against a round served to this player, and closes it.
    *
-   * The round is closed with a conditional update before the answer is looked
-   * at, so two concurrent guesses cannot both be scored and the answer the
+   * The round is closed with a conditional update before the answer is revealed,
+   * so two concurrent guesses cannot both be scored and the answer the
    * first one reveals cannot be replayed.
    *
    * A guess that arrives after the answer window is still evaluated, but earns
@@ -398,6 +399,27 @@ export class GameLogicService {
       windowMs: round.answerWindowSeconds * 1000,
       hintsUsed: round.hintsUsed,
       difficulty: lyric?.difficulty ?? 1,
+    });
+
+    await this.roundRepository.manager.transaction(async (manager) => {
+      const closed = await manager.update(
+        GameRound,
+        { id: round.id, closedAt: IsNull() },
+        { closedAt: now },
+      );
+      if (!closed.affected) {
+        throw new ConflictException('This round has already been guessed');
+      }
+      if (lyric) {
+        await recordReferralRound(manager, {
+          roundId: round.id,
+          userId,
+          lyricId: round.lyricId,
+          correctInTime: result.isCorrect && !score.timedOut,
+          elapsedMs: now.getTime() - round.issuedAt.getTime(),
+          snippet: lyric.lyricSnippet,
+        });
+      }
     });
 
     const scored: GuessResult = {
@@ -525,7 +547,7 @@ export class GameLogicService {
 
     const correctAnswer =
       dto.guessType === 'artist' ? lyric.artist : lyric.songTitle;
-    const isCorrect = matchGuess(dto.guessValue, correctAnswer);
+    const { isCorrect, points } = matchGuess(dto.guessValue, correctAnswer);
 
     return {
       isCorrect,
@@ -533,7 +555,7 @@ export class GameLogicService {
       explanation: isCorrect
         ? 'Correct!'
         : `The correct answer was "${correctAnswer}".`,
-      points: isCorrect ? GAME_CONSTANTS.SCORING.BASE_POINTS : 0,
+      points,
     };
   }
 

@@ -42,6 +42,7 @@ import type { WagerResult } from '../tokens/services/wager.service';
 import type { UnsignedTransaction } from '../stellar/services/stellar-rpc.service';
 import { sanitizeForDisplay } from '../common/utils/sanitize.util';
 import { JobLockService } from '../jobs/job-lock.service';
+import { assertPlayersCanInteract } from '../moderation/player-blocks';
 import { assertEmailVerified } from '../auth/verified-email.util';
 
 /**
@@ -140,6 +141,14 @@ export class GameSessionsService {
       if (player.id === playerTwoId) {
         throw new BadRequestException('Cannot play against yourself');
       }
+    }
+
+    if (playerTwoId) {
+      await assertPlayersCanInteract(
+        this.userRepository.manager,
+        player.id,
+        playerTwoId,
+      );
     }
 
     // Validate wagered game requirements
@@ -274,6 +283,18 @@ export class GameSessionsService {
       throw new ForbiddenException('You are not a player in this session');
     }
 
+    if (!gameSession.player) {
+      throw new ForbiddenException('This interaction is unavailable');
+    }
+    await assertPlayersCanInteract(
+      this.userRepository.manager,
+      gameSession.player.id,
+      user.id,
+    );
+
+    if (!this.isWagered(gameSession)) {
+      gameSession.status = GameSessionStatus.IN_PROGRESS;
+      return this.gameSessionRepository.save(gameSession);
     if (original.status !== GameSessionStatus.COMPLETED) {
       throw new BadRequestException(
         'A rematch can only be offered after the game has finished',
@@ -330,6 +351,16 @@ export class GameSessionsService {
       }
     }
 
+    return expired.length;
+  }
+
+  private async requireInvitation(
+    sessionId: string,
+    user: User,
+  ): Promise<GameSession> {
+    const gameSession = await this.gameSessionRepository.findOne({
+      where: { id: sessionId },
+      relations: { player: true },
     const rematchSession = this.gameSessionRepository.create({
       mode: original.mode,
       player,
@@ -422,6 +453,15 @@ export class GameSessionsService {
     return this.seriesWinner(sessions, seriesLength) !== null;
   }
 
+  async remove(id: string, user: User): Promise<void> {
+    await this.findOne(id, user);
+    const [tournamentMatch] = await this.gameSessionRepository.query<unknown[]>(
+      'SELECT 1 FROM tournament_matches WHERE "sessionId" = $1 AND "finishedAt" IS NULL',
+      [id],
+    );
+    if (tournamentMatch) {
+      throw new ConflictException('An active tournament session cannot be deleted');
+    }
   /**
    * Returns the player who has clinched the series, or null while it is still
    * open. Wins are counted from completed sessions only.

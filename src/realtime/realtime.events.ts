@@ -10,6 +10,8 @@ export enum RealtimeEvent {
   ROUND_STARTED = 'round.started',
   ROUND_ENDED = 'round.ended',
   SESSION_COMPLETED = 'session.completed',
+  MATCH_FOUND = 'match.found',
+  TOURNAMENT_BRACKET_UPDATED = 'tournament.bracket_updated',
   WAGER_STAKED = 'wager.staked',
   WAGER_SETTLED = 'wager.settled',
 }

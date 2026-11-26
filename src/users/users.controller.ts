@@ -1,7 +1,10 @@
+import { CreatePlayerReportDto } from '../moderation/player-report.dto';
 import {
   Controller,
   Get,
   Post,
+  HttpCode,
+  HttpStatus,
   Body,
   Patch,
   Param,
@@ -52,6 +55,12 @@ export class UsersController {
   @ApiResponse({ status: 403, description: 'Not an admin.' })
   findAll(@Query() { limit, offset }: PaginationQueryDto) {
     return this.usersService.findAll(limit, offset);
+  }
+
+  @Get('me/referrals')
+  @ApiOperation({ summary: 'Get your referral code and signup count' })
+  getMyReferrals(@GetUser() user: User) {
+    return this.usersService.getReferrals(user.id);
   }
 
   /**
@@ -265,4 +274,79 @@ export class UsersController {
   })
   @ApiResponse({
     status: 404,
+    description: 'No active user with that username (case-insensitive).',
+  })
+  findPublicByUsername(
+    @Param('username') username: string,
+  ): Promise<PublicUserDto> {
+    return this.usersService.getPublicProfile(username);
+  }
+
+  @Get(':id')
+  @Roles(Role.Admin)
+  @ApiOperation({ summary: 'Get a user by ID (admin only)' })
+  @ApiResponse({ status: 200, description: 'Full user data.' })
+  @ApiResponse({ status: 403, description: 'Not an admin.' })
+  async findOne(@Param('id', ParseUUIDPipe) id: string): Promise<User> {
+    return this.usersService.findOne(id);
+  }
+
+  @Post(':id/report')
+  @UseInterceptors(AuditInterceptor)
+  @Audited({ action: 'user.player.report', targetType: 'user' })
+  reportPlayer(
+    @GetUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() report: CreatePlayerReportDto,
+  ) {
+    return this.usersService.reportPlayer(user.id, id, report);
+  }
+
+  @Post(':id/block')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  block(@GetUser() user: User, @Param('id', ParseUUIDPipe) id: string) {
+    return this.usersService.blockPlayer(user.id, id);
+  }
+
+  @Delete(':id/block')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  unblock(@GetUser() user: User, @Param('id', ParseUUIDPipe) id: string) {
+    return this.usersService.unblockPlayer(user.id, id);
+  }
+
+  @Patch(':id')
+  @Roles(Role.Admin)
+  @UseInterceptors(AuditInterceptor)
+  @SerializeOptions({ groups: [UserGroup.ADMIN] })
+  @ApiOperation({ summary: 'Update any user by ID (admin only)' })
+  @ApiResponse({ status: 200, description: 'User updated.' })
+  @ApiResponse({ status: 403, description: 'Not an admin.' })
+  @ApiResponse({
+    status: 409,
+    description: 'The last active admin cannot be demoted or deactivated.',
+  })
+  @Audited({ action: 'admin.user.update', targetType: 'user' })
+  update(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() updateUserDto: AdminUpdateUserDto,
+  ) {
+    return this.usersService.update(id, updateUserDto);
+  }
+
+  @Delete(':id')
+  @Roles(Role.Admin)
+  @UseInterceptors(AuditInterceptor)
+  @ApiOperation({ summary: 'Delete any user by ID (admin only)' })
+  @ApiResponse({ status: 200, description: 'User deleted.' })
+  @ApiResponse({ status: 403, description: 'Not an admin.' })
+  @ApiResponse({
+    status: 409,
+    description:
+      'The last active admin cannot be deleted or has an active wager.',
+  })
+  @Audited({ action: 'admin.user.delete', targetType: 'user' })
+  remove(@Param('id', ParseUUIDPipe) id: string) {
+    return this.usersService.remove(id);
+  }
+}
     description: 'No active user with that username (case-insensit

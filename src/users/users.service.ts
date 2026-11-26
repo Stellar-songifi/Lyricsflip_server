@@ -1,3 +1,6 @@
+import { lockPlayerPair, orderedPlayers } from '../social/player-pair';
+import { submitPlayerReport } from '../moderation/player-report.store';
+import { CreatePlayerReportDto } from '../moderation/player-report.dto';
 import {
   Injectable,
   BadRequestException,
@@ -27,6 +30,8 @@ import { currentDailyStreak } from '../challenges/daily-seed.util';
 import { Room } from '../rooms/entities/room.entity';
 import { RoomUser } from '../rooms/entities/room-user.entity';
 import { Lyrics } from '../lyrics/entities/lyrics.entity';
+import { Role } from '../auth/roles/role.enum';
+import { UserBlock } from '../moderation/user-block.entity';
 import { usernameRuleViolation } from '../common/validators/username.validator';
 
 // Wager states that have not yet reached a final outcome. A user involved in
@@ -154,6 +159,27 @@ export class UsersService {
     const profile = PublicUserDto.from(user, record, achievements);
     await this.cacheManager.set(cacheKey, profile, PUBLIC_PROFILE_CACHE_TTL_MS);
     return profile;
+  }
+
+  async getReferrals(userId: string) {
+    const [user, referredSignups, rewards] = await Promise.all([
+      this.userRepository.findOneOrFail({
+        where: { id: userId },
+        select: { referralCode: true },
+      }),
+      this.userRepository.countBy({ referredBy: userId }),
+      this.userRepository.query<Array<{ awardedAt: Date }>>(
+        `SELECT "awardedAt" FROM referral_rewards
+         WHERE "referrerId" = $1 OR "referredId" = $1
+         ORDER BY "awardedAt" DESC LIMIT 1`,
+        [userId],
+      ),
+    ]);
+    return {
+      referralCode: user.referralCode,
+      referredSignups,
+      referralBadge: rewards[0] ? { awardedAt: rewards[0].awardedAt } : null,
+    };
   }
 
   /**
@@ -373,6 +399,40 @@ export class UsersService {
     return 'Rookie';
   }
 
+  async reportPlayer(
+    reporterId: string,
+    playerId: string,
+    report: CreatePlayerReportDto,
+  ): Promise<void> {
+    await submitPlayerReport(this.userRepository.manager, reporterId, playerId, report);
+  }
+
+  async blockPlayer(blockerId: string, blockedId: string): Promise<void> {
+    if (blockerId === blockedId) {
+      throw new BadRequestException('Cannot block your own account');
+    }
+    if (!(await this.userRepository.existsBy({ id: blockedId }))) {
+      throw new NotFoundException('Player not found');
+    }
+    const [first, second] = orderedPlayers(blockerId, blockedId);
+    await this.userRepository.manager.transaction(async (manager) => {
+      await lockPlayerPair(manager, first, second);
+      await manager.createQueryBuilder().insert().into(UserBlock)
+        .values({ blockerId, blockedId }).orIgnore().execute();
+      await manager.query(
+        'DELETE FROM friendships WHERE "firstId" = $1 AND "secondId" = $2',
+        [first, second],
+      );
+    });
+  }
+
+  async unblockPlayer(blockerId: string, blockedId: string): Promise<void> {
+    await this.userRepository.manager.delete(UserBlock, {
+      blockerId,
+      blockedId,
+    });
+  }
+
   async update(
     id: string,
     updateUserDto: UpdateProfileDto | AdminUpdateUserDto,
@@ -387,10 +447,15 @@ export class UsersService {
         throw new NotFoundException(`User with ID ${id} not found`);
       }
 
+      const originalUsername = user.username;
       const before = { role: user.role, isActive: user.isActive };
       const { username } = updateUserDto;
       const email = 'email' in updateUserDto ? updateUserDto.email : undefined;
       if (username && username !== user.username) {
+        const violation = usernameRuleViolation(username);
+        if (violation) {
+          throw new BadRequestException(violation);
+        }
         await this.assertUnusedWithRepository(
           repository,
           { username },
@@ -435,7 +500,13 @@ export class UsersService {
       const saved = await repository.save(user);
       const after = { role: saved.role, isActive: saved.isActive };
       Object.defineProperty(saved, 'auditContext', {
-        value: { before, after },
+        value:
+          saved.username === originalUsername
+            ? { before, after }
+            : {
+                before: { ...before, username: originalUsername },
+                after: { ...after, username: saved.username },
+              },
         enumerable: false,
       });
       await this.cacheManager.del(`user:${id}`);

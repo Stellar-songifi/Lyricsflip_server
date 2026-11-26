@@ -1,3 +1,5 @@
+import { SocialPlayModule } from './social/social-play.module';
+import { ReferralRewardsService } from './referrals/referral-rewards.service';
 import { Module, MiddlewareConsumer, NestModule } from '@nestjs/common';
 import { AppController } from './app.controller';
 import { HealthModule } from './health/health.module';
@@ -138,6 +140,7 @@ import * as path from 'path';
         }),
     }),
     UsersModule,
+    SocialPlayModule,
     AuthModule,
     GameSessionsModule,
     LyricsModule,
@@ -158,6 +161,7 @@ import * as path from 'path';
   ],
   controllers: [AppController],
   providers: [
+    ReferralRewardsService,
     {
       provide: APP_FILTER,
       useClass: AllExceptionsFilter,

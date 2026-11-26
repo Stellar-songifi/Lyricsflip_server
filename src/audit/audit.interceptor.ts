@@ -13,7 +13,6 @@ import {
   AUDIT_ACTION_KEY,
   AuditedOptions,
 } from './decorators/audited.decorator';
-import { AUDIT_ACTION_KEY, AuditedOptions } from './decorators/audited.decorator';
 import { redact } from '../common/utils/redact.util';
 
 /** The parts of a call the audit row records. An Express request fits. */
@@ -134,8 +133,6 @@ export class AuditInterceptor implements NestInterceptor {
         ...(auditContext && typeof auditContext === 'object'
           ? (auditContext as Record<string, unknown>)
           : {}),
-      },
-        body: request.body,
       }) as Record<string, unknown>,
     });
   }

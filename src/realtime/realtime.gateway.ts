@@ -465,6 +465,29 @@ export class RealtimeGateway
       .emit(event, { ...payload });
   }
 
+  @OnEvent(RealtimeEvent.MATCH_FOUND)
+  onMatchFound(payload: { sessionId: string; players: string[] }): void {
+    this.deliver(payload.players.map(realtimeRooms.user), RealtimeEvent.MATCH_FOUND, {
+      sessionId: payload.sessionId,
+    });
+  }
+
+  @OnEvent(RealtimeEvent.TOURNAMENT_BRACKET_UPDATED)
+  onTournamentBracketUpdated(payload: { tournamentId: string; players: string[] }): void {
+    this.deliver(payload.players.map(realtimeRooms.user), RealtimeEvent.TOURNAMENT_BRACKET_UPDATED, {
+      tournamentId: payload.tournamentId,
+    });
+  }
+
+  @OnEvent(RealtimeEvent.PLAYER_JOINED)
+  onPlayerJoined(payload: PlayerJoinedPayload): void {
+    const rooms =
+      payload.scope === 'room' && payload.roomId
+        ? [realtimeRooms.room(payload.roomId)]
+        : payload.sessionId
+          ? [realtimeRooms.session(payload.sessionId)]
+          : [];
+    // The joining player may not have subscribed yet.
   /**
    * Delivers a scoreboard/round event to players and, when the channel is
    * spectatable, to its spectators too. Never used for answer payloads.

@@ -9,13 +9,13 @@
 import { GAME_CONSTANTS } from './constants/game.constants';
 
 /** Maximum number of aliases accepted per lyric (artist or title). */
-export const MAX_ALIASES = GAME_CONSTANTS.MATCHING.MAX_ALIASES;
+export const MAX_ALIASES = 20;
 
 /** Points awarded for an exact match. */
-export const EXACT_MATCH_POINTS = GAME_CONSTANTS.MATCHING.EXACT_MATCH_POINTS;
+export const EXACT_MATCH_POINTS = GAME_CONSTANTS.POINTS.CORRECT_GUESS;
 
 /** Points awarded for a non-exact (alias / normalised) match. */
-export const PARTIAL_MATCH_POINTS = GAME_CONSTANTS.MATCHING.PARTIAL_MATCH_POINTS;
+export const PARTIAL_MATCH_POINTS = GAME_CONSTANTS.POINTS.PARTIAL_MATCH;
 
 const LEADING_ARTICLES = /^(the|a|an)\s+/;
 
@@ -92,28 +92,15 @@ function levenshtein(a: string, b: string): number {
 }
 
 /**
- * Similarity ratio in [0, 1] between two strings, derived from edit distance.
- */
-function similarity(a: string, b: string): number {
-  const longest = Math.max(a.length, b.length);
-  if (longest === 0) {
-    return 1;
-  }
-  return 1 - levenshtein(a, b) / longest;
-}
-
-/**
- * Determine whether a guess is a close-enough typo of a target string.
+ * Compare edit distance against the configured length-scaled typo allowance.
  */
 function isTypoMatch(guess: string, target: string): boolean {
-  if (!guess || !target) {
-    return false;
-  }
-  const distance = levenshtein(guess, target);
-  if (distance > GAME_CONSTANTS.MATCHING.PARTIAL_MATCH_MAX_TYPO_DISTANCE) {
-    return false;
-  }
-  return similarity(guess, target) >= GAME_CONSTANTS.MATCHING.PARTIAL_MATCH_MIN_SIMILARITY;
+  const longest = Math.max(guess.length, target.length);
+  const allowance = Math.max(
+    GAME_CONSTANTS.MATCHING.MIN_LEVENSHTEIN_DISTANCE,
+    Math.floor(longest * GAME_CONSTANTS.MATCHING.MAX_LEVENSHTEIN_RATIO),
+  );
+  return levenshtein(guess, target) <= allowance;
 }
 
 /**
@@ -123,7 +110,10 @@ function isTypoMatch(guess: string, target: string): boolean {
  * target (token overlap ratio) or is a close typo of the target.
  */
 function isPartialMatch(guess: string, target: string): boolean {
-  if (!guess || !target) {
+  if (
+    !target ||
+    guess.length < GAME_CONSTANTS.VALIDATION.MIN_PARTIAL_MATCH_LENGTH
+  ) {
     return false;
   }
 
@@ -131,18 +121,22 @@ function isPartialMatch(guess: string, target: string): boolean {
     return true;
   }
 
-  const guessTokens = guess.split(' ').filter(Boolean);
-  const targetTokens = target.split(' ').filter(Boolean);
-
-  if (!guessTokens.length || !targetTokens.length) {
-    return false;
-  }
-
-  const targetSet = new Set(targetTokens);
-  const overlap = guessTokens.filter((token) => targetSet.has(token)).length;
-  const ratio = overlap / targetTokens.length;
-
-  return ratio >= GAME_CONSTANTS.MATCHING.PARTIAL_MATCH_TYPO_RATIO;
+  const stopWords: readonly string[] = GAME_CONSTANTS.MATCHING.STOP_WORDS;
+  const tokens = (value: string) =>
+    new Set(
+      value.split(' ').filter((token) => token && !stopWords.includes(token)),
+    );
+  const guessTokens = tokens(guess);
+  const targetTokens = tokens(target);
+  const overlap = [...guessTokens].filter((token) =>
+    targetTokens.has(token),
+  ).length;
+  const total = guessTokens.size + targetTokens.size;
+  return (
+    overlap > 0 &&
+    (overlap / (total - overlap) >= GAME_CONSTANTS.MATCHING.MIN_JACCARD ||
+      (2 * overlap) / total >= GAME_CONSTANTS.MATCHING.MIN_DICE)
+  );
 }
 
 /**
@@ -186,7 +180,9 @@ export function matchAnswer(
     };
   }
 
-  const candidates = [normalizedCanonical, ...normalizedAliases].filter(Boolean);
+  const candidates = [normalizedCanonical, ...normalizedAliases].filter(
+    Boolean,
+  );
 
   const partial = candidates.some((candidate) =>
     isPartialMatch(normalizedGuess, candidate),

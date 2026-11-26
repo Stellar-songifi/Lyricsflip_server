@@ -1,3 +1,5 @@
+import { listPlayerReports, resolvePlayerReport } from '../moderation/player-report.store';
+import { AdminPlayerReportQueryDto, ResolvePlayerReportDto } from '../moderation/player-report.dto';
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -86,6 +88,12 @@ export class AdminService {
     private readonly lyricsService: LyricsService,
   ) {}
 
+  async findAllReports(query: AdminPlayerReportQueryDto) {
+    return listPlayerReports(this.userRepository.manager, query);
+  }
+
+  async resolveReport(id: string, adminId: string, dto: ResolvePlayerReportDto) {
+    return resolvePlayerReport(this.userRepository.manager, id, adminId, dto);
   private async cached<T>(key: string, loader: () => Promise<T>): Promise<T> {
     const now = Date.now();
     const hit = this.analyticsCache.get(key);
