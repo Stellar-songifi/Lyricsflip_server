@@ -247,6 +247,73 @@ export class RealtimeGateway
     }));
   }
 
+  /**
+   * Removes every socket of `userId` from `channel` across all instances.
+   * Used when a subscription is no longer valid (room leave, session end,
+   * account deactivation) so stale channels stop delivering events.
+   */
+  private async revokeChannel(
+    userId: string,
+    channel: string,
+  ): Promise<void> {
+    if (!this.server || !userId || !channel) return;
+    try {
+      this.server.in(realtimeRooms.user(userId)).socketsLeave(channel);
+    } catch (error) {
+      this.logger.error(
+        `Failed to revoke ${channel} for user ${userId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  /** Revokes a user's sockets from a room channel (e.g. on room leave). */
+  async revokeRoomSubscription(userId: string, roomId: string): Promise<void> {
+    await this.revokeChannel(userId, realtimeRooms.room(roomId));
+  }
+
+  /** Revokes a user's sockets from a session channel (e.g. on session end). */
+  async revokeSessionSubscription(
+    userId: string,
+    sessionId: string,
+  ): Promise<void> {
+    await this.revokeChannel(userId, realtimeRooms.session(sessionId));
+  }
+
+  /**
+   * Rechecks membership for a sensitive channel before delivery. Sockets that
+   * are no longer members are removed from the channel so they stop receiving
+   * its events.
+   */
+  private async pruneStaleSubscribers(
+    channel: string,
+    type: 'session' | 'room',
+    id: string,
+  ): Promise<void> {
+    if (!this.server) return;
+    try {
+      const sockets = await this.server.in(channel).fetchSockets();
+      for (const socket of sockets) {
+        const userId: string | undefined = socket.data?.userId;
+        if (!userId) continue;
+        const allowed =
+          type === 'session'
+            ? await this.isSessionPlayer(userId, id)
+            : await this.isRoomMember(userId, id);
+        if (!allowed) {
+          socket.leave(channel);
+        }
+      }
+    } catch (error) {
+      this.logger.error(
+        `Failed to prune ${channel}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
   /** Delivers `event` to every room in `rooms`, once per socket. */
   private deliver(
     rooms: string[],
@@ -256,85 +323,66 @@ export class RealtimeGateway
     if (!this.server || rooms.length === 0) return;
     this.server
       .to(rooms)
-      .emit(event, { ...payload, at: new Date().toISOString() });
+      .emit(event, payload);
   }
 
-  @OnEvent(RealtimeEvent.PLAYER_JOINED)
-  onPlayerJoined(payload: PlayerJoinedPayload): void {
-    const rooms =
-      payload.scope === 'room' && payload.roomId
-        ? [realtimeRooms.room(payload.roomId)]
-        : payload.sessionId
-          ? [realtimeRooms.session(payload.sessionId)]
-          : [];
-    // The joining player may not have subscribed yet.
+  @OnEvent('player.joined')
+  handlePlayerJoined(payload: PlayerJoinedPayload): void {
+    this.deliver([realtimeRooms.room(payload.roomId)], 'player.joined', payload);
+  }
+
+  @OnEvent('round.started')
+  handleRoundStarted(payload: RoundStartedPayload): void {
     this.deliver(
-      [...rooms, realtimeRooms.user(payload.userId)],
-      RealtimeEvent.PLAYER_JOINED,
+      [realtimeRooms.session(payload.sessionId)],
+      'round.started',
       payload,
     );
   }
 
-  @OnEvent(RealtimeEvent.ROUND_STARTED)
-  onRoundStarted(payload: RoundStartedPayload): void {
+  @OnEvent('round.ended')
+  handleRoundEnded(payload: RoundEndedPayload): void {
     this.deliver(
-      this.roundRooms(payload),
-      RealtimeEvent.ROUND_STARTED,
+      [realtimeRooms.session(payload.sessionId)],
+      'round.ended',
       payload,
     );
   }
 
-  @OnEvent(RealtimeEvent.ROUND_ENDED)
-  onRoundEnded(payload: RoundEndedPayload): void {
-    this.deliver(this.roundRooms(payload), RealtimeEvent.ROUND_ENDED, payload);
-  }
-
-  @OnEvent(RealtimeEvent.SESSION_COMPLETED)
-  onSessionCompleted(payload: SessionCompletedPayload): void {
-    const players = [payload.playerId, payload.playerTwoId].filter(
-      (id): id is string => !!id,
-    );
+  @OnEvent('wager.staked')
+  handleWagerStaked(payload: WagerStakedPayload): void {
     this.deliver(
-      [
-        realtimeRooms.session(payload.sessionId),
-        ...players.map(realtimeRooms.user),
-      ],
-      RealtimeEvent.SESSION_COMPLETED,
+      [realtimeRooms.session(payload.sessionId)],
+      'wager.staked',
       payload,
     );
   }
 
-  @OnEvent(RealtimeEvent.WAGER_STAKED)
-  onWagerStaked(payload: WagerStakedPayload): void {
-    this.deliver(this.wagerRooms(payload), RealtimeEvent.WAGER_STAKED, payload);
-  }
-
-  @OnEvent(RealtimeEvent.WAGER_SETTLED)
-  onWagerSettled(payload: WagerSettledPayload): void {
+  @OnEvent('wager.settled')
+  handleWagerSettled(payload: WagerSettledPayload): void {
     this.deliver(
-      this.wagerRooms(payload),
-      RealtimeEvent.WAGER_SETTLED,
+      [realtimeRooms.session(payload.sessionId)],
+      'wager.settled',
       payload,
     );
   }
 
-  private roundRooms(payload: {
-    sessionId: string | null;
-    userId: string;
-  }): string[] {
-    return [
-      realtimeRooms.user(payload.userId),
-      ...(payload.sessionId ? [realtimeRooms.session(payload.sessionId)] : []),
-    ];
-  }
-
-  private wagerRooms(payload: {
-    sessionId: string | null;
-    userId: string;
-  }): string[] {
-    return [
-      realtimeRooms.user(payload.userId),
-      ...(payload.sessionId ? [realtimeRooms.session(payload.sessionId)] : []),
-    ];
+  @OnEvent('session.completed')
+  async handleSessionCompleted(
+    payload: SessionCompletedPayload,
+  ): Promise<void> {
+    const channel = realtimeRooms.session(payload.sessionId);
+    this.deliver([channel], 'session.completed', payload);
+    // Session is over: drop every socket from the channel across instances.
+    if (!this.server) return;
+    try {
+      this.server.in(channel).socketsLeave(channel);
+    } catch (error) {
+      this.logger.error(
+        `Failed to clear ${channel}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
   }
 }
