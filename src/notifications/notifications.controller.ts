@@ -65,13 +65,21 @@ export class NotificationsController {
     return { notifications };
   }
 
+  @Delete('me')
+  @ApiOperation({ summary: "Delete all of the caller's notifications" })
+  @ApiResponse({ status: 200, description: 'Notifications deleted' })
+  async clearMyNotifications(@GetUser() user: User): Promise<{ deleted: number }> {
+    const deleted = await this.notificationsService.clearNotificationsForUser(user.id);
+    return { deleted };
+  }
+
   @Roles(Role.Admin)
-  @Delete()
-  @ApiOperation({ summary: 'Clear all stored notifications' })
-  @ApiResponse({ status: 200, description: 'All notifications cleared' })
-  async clearNotifications(): Promise<{ message: string }> {
-    await this.notificationsService.clearNotifications();
-    return { message: 'All notifications cleared' };
+  @Delete('user/:userId')
+  @ApiOperation({ summary: 'Delete all notifications for a specific user' })
+  @ApiResponse({ status: 200, description: 'User notifications deleted' })
+  async clearUserNotifications(@Param('userId') userId: string): Promise<{ deleted: number }> {
+    const deleted = await this.notificationsService.clearNotificationsForUser(userId);
+    return { deleted };
   }
 }
 

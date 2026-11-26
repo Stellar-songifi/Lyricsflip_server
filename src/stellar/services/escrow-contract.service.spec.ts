@@ -240,6 +240,23 @@ describe('EscrowContractService', () => {
       expect(result).toEqual(confirmed);
     });
 
+    it('rejects a superseded stake without ever submitting it', async () => {
+      const superseded = signedEnvelope(stakeCall());
+      const latestHash = 'f'.repeat(64);
+
+      await expect(
+        service.submitSignedStake(
+          superseded,
+          SESSION_ID,
+          wallet.publicKey(),
+          latestHash,
+        ),
+      ).rejects.toThrow(BadRequestException);
+
+      expect(rpc.submit).not.toHaveBeenCalled();
+      expect(rpc.signAndSubmit).not.toHaveBeenCalled();
+    });
+
     it.each([
       [
         'a different session',

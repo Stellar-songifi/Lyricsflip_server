@@ -13,15 +13,40 @@ Implemented rules:
 - Draws and refunds are never charged a fee.
 - A `fee` event is emitted when a fee is taken.
 - The configured fee and receiver are surfaced by `get_config` and by the backend `GET /stellar/info` health check.
-This document outlines the design and status of platform fees in Lyricsflip escrow settlement.
 
-## Current On-Chain Escrow Settlement
+## Escrow Entry Points
 
-In the current deployed escrow contract (`contracts/lyricsflip-escrow/src/lib.rs`):
+The fee logic is layered on top of the full escrow interface. The contract exports:
 
-- **No Platform Fee Deduction**: 100% of the total wager pot is paid out directly to the winning player via `resolve`.
-- **Drawn Matches**: If a match concludes as a draw, `refund` returns exactly each player's original stake without any administrative or fee deduction.
-- **Unclaimed Pots**: If a match is abandoned or a player fails to stake before the deadline, `refund_unfunded` or `claim_refund` returns stakes directly to their depositors.
+- `__constructor` — initializes `Config` (admin, fee, receiver).
+- `open_pot` — creates a pot for a match and records the expected stake.
+- `stake` — deposits a player's stake into an open pot.
+- `resolve` — settles a funded pot to the winner, deducting the platform fee (see above).
+- `refund` — returns each stake on a drawn match, with no fee.
+- `claim_refund` — lets a player reclaim a stuck stake from an unfunded or abandoned pot.
+- `get_pot` — reads the current pot state.
+- `set_resolver` — rotates the resolver address (admin-only).
+- `set_admin` — rotates the admin address.
+- `set_fee` — updates the fee and receiver (admin-only).
+- `get_config` — reads the current `Config`.
+- `upgrade` — upgrades the contract WASM (admin-only).
+- `migrate` — runs storage migration after an upgrade.
+- `get_version` — reads the stored contract version.
+
+## Settlement Invariants
+
+- `claim_refund` and `refund` share the same record of what has already been returned, so a stake can never be returned twice.
+- Once a player has claimed a refund, `resolve` is blocked for that pot; a settled pot cannot be refunded and a refunded pot cannot be settled.
+- Draws and refunds are never charged a fee; only a winning `resolve` deducts the platform fee.
+
+## Testing
+
+The contract test suite (`contracts/lyricsflip-escrow/src/test.rs`) is compiled via `#[cfg(test)] mod test;` in `lib.rs` and covers the fee rules, including:
+
+- zero fee (winner receives the full pot, no `fee` event),
+- maximum fee (exactly `max_fee_bps`),
+- rounding (integer division rounds down, remainder to the winner),
+- the receiver payout (fee transferred to `fee_receiver`).
 
 ## Proposed Platform Fee Architecture (Future Enhancement)
 

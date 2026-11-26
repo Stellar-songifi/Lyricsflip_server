@@ -1,3 +1,4 @@
+import { runtimeEnv } from './config/runtime-env';
 import {
   DomainException,
   ErrorCode,
@@ -54,6 +55,10 @@ export function configureApp(app: INestApplication): void {
           message,
         );
       },
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      transform: true,
+      disableErrorMessages: runtimeEnv().NODE_ENV === 'production',
     }),
   );
 
@@ -74,7 +79,7 @@ export function configureApp(app: INestApplication): void {
   // CORS must be registered before the HTTP adapter starts listening,
   // otherwise the configuration is never applied to the running server.
   app.enableCors({
-    origin: parseAllowedOrigins(process.env.FRONTEND_URL),
+    origin: parseAllowedOrigins(runtimeEnv().FRONTEND_URL),
     credentials: true,
   });
 }
@@ -83,7 +88,7 @@ export function configureApp(app: INestApplication): void {
  * Resolves a body limit from the environment, falling back to a default.
  */
 export function getBodyLimit(envVar: string, fallback: string): string {
-  const value = process.env[envVar]?.trim();
+  const value = runtimeEnv()[envVar]?.trim();
   return value && value.length > 0 ? value : fallback;
 }
 

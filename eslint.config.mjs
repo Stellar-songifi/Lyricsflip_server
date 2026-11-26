@@ -47,6 +47,21 @@ export default tseslint.config(
     },
   },
   {
+    files: ['src/**/*.ts', 'test/**/*.ts'],
+    ignores: ['src/config/**', 'src/main.ts', 'src/tracing.ts'],
+    rules: {
+      'no-restricted-properties': [
+        'error',
+        {
+          object: 'process',
+          property: 'env',
+          message:
+            'Read application settings through ConfigService or src/config.',
+        },
+      ],
+    },
+  },
+  {
     // Nest reads constructor and handler parameter types from the emitted
     // decorator metadata. A type-only import erases the class, so services
     // can no longer be injected and DTOs are no longer validated.

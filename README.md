@@ -1072,3 +1072,20 @@ Do not run stellar mode with real value until the P0 issues are closed.
 
 <!-- handsoff-issue-459 -->
 - #459: [R3-37] Refresh-token rotation can be raced, and token reuse goes undetected
+
+<!-- handsoff-issue-540 -->
+- #540: [R3-118] Anti-cheat signals: impossible answer speed and lookup patterns
+
+<!-- handsoff-issue-542 -->
+- #542: [R3-120] Themed lyric packs
+<!-- handsoff-issue-532 -->
+- #532: [R3-110] Quick match: a matchmaking queue for head-to-head
+
+<!-- handsoff-issue-533 -->
+- #533: [R3-111] Ranked and casual modes
+
+<!-- handsoff-issue-534 -->
+- #534: [R3-112] Seasons, with seasonal leaderboards and rewards
+
+<!-- handsoff-issue-535 -->
+- #535: [R3-113] Multi-round rooms with a host-controlled round loop

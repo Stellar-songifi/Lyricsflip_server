@@ -1,3 +1,4 @@
+import { runtimeEnv } from '../../config/runtime-env';
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Cron, CronExpression } from '@nestjs/schedule';
@@ -78,7 +79,7 @@ export class WagerReconcileJob {
   ) {}
 
   private envInt(name: string, fallback: number): number {
-    const parsed = Number.parseInt(process.env[name] ?? '', 10);
+    const parsed = Number.parseInt(runtimeEnv()[name] ?? '', 10);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
   }
 

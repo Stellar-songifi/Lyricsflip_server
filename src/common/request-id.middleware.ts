@@ -13,10 +13,27 @@ import { requestContext } from './request-context';
  */
 @Injectable()
 export class RequestIdMiddleware implements NestMiddleware {
+  private readonly VALID_REQUEST_ID = /^[A-Za-z0-9._-]{8,64}$/;
+
   use(req: Request, res: Response, next: NextFunction): void {
     const incoming = req.headers['x-request-id'];
-    const requestId =
-      (Array.isArray(incoming) ? incoming[0] : incoming) || randomUUID();
+    const incomingId = Array.isArray(incoming) ? incoming[0] : incoming;
+
+    // Accept incoming ID only if it matches the allowed pattern and we trust
+    // the proxy (when TRUST_PROXY is set). Otherwise generate a new one.
+    const trustProxy = process.env.TRUST_PROXY === 'true';
+    const isValidId =
+      incomingId && this.VALID_REQUEST_ID.test(incomingId) && trustProxy;
+
+    const requestId = isValidId ? incomingId : randomUUID();
+
+    // Store client-provided value for logging (escaped by Winston JSON formatter)
+    const contextData: { requestId: string; clientRequestId?: string } = {
+      requestId,
+    };
+    if (incomingId && !isValidId) {
+      contextData.clientRequestId = incomingId;
+    }
 
     // Echo it back so clients can correlate
     res.setHeader('x-request-id', requestId);
@@ -28,6 +45,6 @@ export class RequestIdMiddleware implements NestMiddleware {
 
     // Run the rest of the pipeline inside the AsyncLocalStorage context so
     // Winston's custom format can pick it up without needing an explicit arg.
-    requestContext.run({ requestId }, next);
+    requestContext.run(contextData, next);
   }
 }

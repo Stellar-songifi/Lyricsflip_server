@@ -6,7 +6,7 @@
   "private": true,
   "license": "MIT",
   "engines": {
-    "node": ">=20 <23"
+    "node": ">=22 <25"
   },
   "scripts": {
     "build": "nest build",
@@ -45,6 +45,7 @@
   },
   "dependencies": {
     "@keyv/redis": "^5.1.6",
+    "@nest-lab/throttler-storage-redis": "^0.6.0",
     "@nestjs/cache-manager": "^3.0.1",
     "@nestjs/common": "^11.0.1",
     "@nestjs/config": "^4.0.2",

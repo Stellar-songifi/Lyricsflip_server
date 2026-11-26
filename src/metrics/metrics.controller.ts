@@ -1,3 +1,4 @@
+import { runtimeEnv } from '../config/runtime-env';
 import {
   Controller,
   Get,
@@ -37,12 +38,11 @@ export class MetricsController {
   @Get()
   async getMetrics(@Req() req: Request, @Res() res: Response): Promise<void> {
     // --- IP allowlist ---
-    const allowlist = process.env.METRICS_IP_ALLOWLIST;
+    const allowlist = runtimeEnv().METRICS_IP_ALLOWLIST;
     if (allowlist) {
       const allowed = allowlist.split(',').map((ip) => ip.trim());
-      const forwarded = req.headers['x-forwarded-for'] as string | undefined;
-      const clientIp =
-        forwarded?.split(',')[0]?.trim() ?? req.ip ?? '127.0.0.1';
+      // Use req.ip which respects Express trust proxy (set via TRUST_PROXY)
+      const clientIp = req.ip ?? '127.0.0.1';
 
       if (!allowed.includes(clientIp)) {
         this.logger.warn(`Metrics scrape denied for IP ${clientIp}`);
@@ -51,7 +51,7 @@ export class MetricsController {
     }
 
     // --- Basic auth ---
-    const expectedCredentials = process.env.METRICS_BASIC_AUTH;
+    const expectedCredentials = runtimeEnv().METRICS_BASIC_AUTH;
     if (expectedCredentials) {
       const authHeader = req.headers['authorization'];
       if (!authHeader?.startsWith('Basic ')) {
@@ -62,13 +62,39 @@ export class MetricsController {
         authHeader.slice('Basic '.length),
         'base64',
       ).toString('utf-8');
-      if (presented !== expectedCredentials) {
+      // Constant-time comparison to prevent timing attacks
+      if (!this.timingSafeEqual(presented, expectedCredentials)) {
         throw new UnauthorizedException('Invalid credentials');
       }
+    }
+
+    // Require at least one protection in production (R3-15)
+    if (process.env.NODE_ENV === 'production' && !allowlist && !expectedCredentials) {
+      this.logger.error('Metrics endpoint requires METRICS_IP_ALLOWLIST or METRICS_BASIC_AUTH in production');
+      throw new ForbiddenException('Access denied');
     }
 
     const metrics = await this.metricsService.getMetrics();
     res.setHeader('Content-Type', this.metricsService.getContentType());
     res.end(metrics);
+  }
+
+  /**
+   * Compare two strings in constant time to prevent timing attacks.
+   */
+  private timingSafeEqual(a: string, b: string): boolean {
+    const bufA = Buffer.from(a, 'utf-8');
+    const bufB = Buffer.from(b, 'utf-8');
+    // If lengths differ, compare against a dummy buffer of the expected length
+    // to keep timing constant regardless of the difference.
+    if (bufA.length !== bufB.length) {
+      const dummy = Buffer.alloc(bufB.length);
+      // Perform the comparison anyway to keep timing constant
+      const crypto = require('crypto');
+      crypto.timingSafeEqual(dummy, bufB);
+      return false;
+    }
+    const crypto = require('crypto');
+    return crypto.timingSafeEqual(bufA, bufB);
   }
 }

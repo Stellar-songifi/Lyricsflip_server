@@ -21,17 +21,23 @@ import {
   UsePipes,
   ValidationPipe,
 } from '@nestjs/common';
+import { Logger, NotFoundException, UsePipes } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import { GameLogicService } from './game.service';
 import { RandomLyricOptionsDto } from './dto/random-lyrics-option.dto';
 import { GuessDto } from './dto/guess.dto';
-import { authenticateSocket } from '../auth/socket-auth.util';
 import { RealtimeEvent } from '../realtime/realtime.events';
 import { WsRateLimiter } from '../common/websocket/ws-rate-limiter';
+import { WsConnectionLimiter } from '../common/websocket/ws-connection-limiter';
 import {
   WsConnectionLimiter,
   WS_MAX_HTTP_BUFFER_SIZE,
 } from '../common/websocket/ws-connection-limiter';
+import { registerSocketAuth } from '../realtime/socket-auth';
+import {
+  socketCorsOptions,
+  socketValidationPipe,
+} from '../realtime/socket-config';
 
 interface GameSession {
   playerId: string;
@@ -58,20 +64,10 @@ interface GameSession {
       ),
   }),
 )
+@UsePipes(socketValidationPipe)
 @WebSocketGateway({
-  cors: {
-    // Same allow-list as the HTTP API (FRONTEND_URL), evaluated per request.
-    origin: (
-      origin: string | undefined,
-      callback: (err: Error | null, allow?: boolean) => void,
-    ) => {
-      const allowed = process.env.FRONTEND_URL || 'http://localhost:3000';
-      callback(null, !origin || origin === allowed);
-    },
-    credentials: true,
-  },
+  cors: socketCorsOptions,
   namespace: '/game',
-  maxHttpBufferSize: WS_MAX_HTTP_BUFFER_SIZE,
 })
 export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()
@@ -116,6 +112,11 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       userId = authenticated.userId;
       user = authenticated.user;
     } catch (error) {
+    // Authentication is handled by the shared io.use middleware, which sets
+    // client.data.user/userId or rejects the handshake before we get here.
+    registerSocketAuth(this.server);
+    const userId: string | undefined = client.data?.userId;
+    if (!userId) {
       this.logger.warn(`Rejected unauthenticated connection: ${client.id}`);
       client.emit('error', {
         code:
@@ -137,9 +138,6 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       return;
     }
 
-    client.data.userId = userId;
-    // Read by @GetUser, RolesGuard and JwtAuthGuard in handlers (#362).
-    client.data.user = user;
     // Join a per-user room so revocation can target every socket of the user.
     await client.join(`user:${userId}`);
     this.logger.log(`Client connected: ${client.id} (user ${userId})`);
@@ -300,15 +298,23 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         });
         return;
       }
+    const session = this.sessions.get(client.id);
+    if (!session) {
+      client.emit('error', { message: 'Session not found' });
+      return;
+    }
+    if (!session.currentRoundId) {
+      client.emit('error', { message: 'No active round' });
+      return;
+    }
+
+    try {
+      const result = await this.gameLogicService.submitGuess(
+        session.playerId,
+        session.currentRoundId,
+        guessDto.guess,
+      );
       session.currentRoundId = undefined;
-
-      // Emits the HTTP response shape (GuessResultResponse).
-      const result = await this.gameLogicService.guessRound(session.playerId, {
-        roundId,
-        guessType: guessDto.guessType,
-        guessValue: guessDto.guessValue,
-      });
-
       client.emit('guessResult', result);
     } catch (error) {
       if (error instanceof DomainException) throw error;
@@ -381,6 +387,12 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         code: ErrorCode.NOT_FOUND,
         message: 'Session not found',
       });
+      if (error instanceof WsException) {
+        client.emit('error', error.getError());
+        return;
+      }
+      this.logger.error('Error handling guess submission', error.stack);
+      client.emit('error', { message: 'Failed to submit guess' });
     }
   }
 }
