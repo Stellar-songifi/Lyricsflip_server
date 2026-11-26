@@ -50,6 +50,10 @@ export const envValidationSchema = Joi.object({
   //   the load balancer's idle timeout (AWS ALB default 60 s) to avoid 502s.
   HTTP_JSON_BODY_LIMIT: Joi.string().default('100kb'),
   HTTP_URLENCODED_BODY_LIMIT: Joi.string().default('100kb'),
+  // Alias for HTTP_JSON_BODY_LIMIT; validated as a size string (e.g. 100kb).
+  HTTP_BODY_LIMIT: Joi.string()
+    .pattern(/^\d+(\.\d+)?(b|kb|mb|gb)$/i)
+    .default('100kb'),
   HTTP_REQUEST_TIMEOUT_MS: Joi.number().integer().min(0).default(30000),
   HTTP_HEADERS_TIMEOUT_MS: Joi.number()
     .integer()
@@ -60,6 +64,9 @@ export const envValidationSchema = Joi.object({
       then: Joi.number().integer().min(0).max(Joi.ref('HTTP_REQUEST_TIMEOUT_MS')),
     }),
   HTTP_KEEP_ALIVE_TIMEOUT_MS: Joi.number().integer().min(1000).default(65000),
+
+  // WebSocket. Maximum number of concurrent sockets a single user may hold.
+  WS_MAX_SOCKETS_PER_USER: Joi.number().integer().min(1).default(5),
 
   // Auth
   // Auth. JWT_SECRET must be at least 32 characters in every environment
@@ -86,9 +93,11 @@ export const envValidationSchema = Joi.object({
 
   // Misc. SEED_ADMIN_* are read by ProductionSafetyCheck to refuse booting
   // production with the seed's default admin credentials still in place.
-  INVITATION_TTL_MINUTES: Joi.number().positive().default(30),
+  INVITATION_TTL_MINUTES: Joi.number().integer().min(1).default(30),
   SEED_ADMIN_EMAIL: Joi.string().email().optional(),
   SEED_ADMIN_PASSWORD: Joi.string().optional(),
+  // Opt-in: when 'true', `npm run seed` also inserts the load-test lyric set.
+  LOAD_SEED_LYRICS: Joi.string().valid('true', 'false').default('false'),
 
   // Database (src/config/database.config.ts). Either DATABASE_URL, which
   // takes precedence, or the discrete DB_* variables.
@@ -129,7 +138,8 @@ export const envValidationSchema = Joi.object({
   MAIL_FROM: Joi.string().email().default('no-reply@lyricsflip.local'),
   MAIL_SECURE: Joi.string().valid('true', 'false').default('false'),
 
-  // Redis cache (#201). Optional: when unset the app falls back to memory cache.
+  // Redis cache (#201). Optional: when unset the app falls back to memory
+  // cache. Required in production when INSTANCE_COUNT > 1 (R3-46, R3-47).
   REDIS_URL: Joi.string().uri().optional(),
 
   // Winston file logging (#200). Set to 'true' to write rotating log files.
@@ -165,6 +175,9 @@ export const envValidationSchema = Joi.object({
   STELLAR_VAULT_TOKEN: Joi.string().optional(),
   STELLAR_VAULT_TRANSIT_KEY: Joi.string().optional(),
   // Server / networking
+  // TRUST_PROXY: Express `trust proxy` setting (e.g. "1", "true", a subnet).
+  // Required when METRICS_IP_ALLOWLIST is used behind a proxy so the client
+  // IP is read from X-Forwarded-For (see ProductionSafetyCheck).
   TRUST_PROXY: Joi.string().optional().allow(''),
   SETTLEMENT_DRAIN_TIMEOUT_MS: Joi.number().integer().min(1).default(30000),
   CACHE_MAX_ITEMS: Joi.number().integer().min(1).default(5000),
@@ -178,12 +191,71 @@ export const envValidationSchema = Joi.object({
     then: Joi.string().min(16).required(),
     otherwise: Joi.string().optional().allow(''),
   }),
+  // Salt for the daily challenge derivation (R3-51). Required in production
+  // (see ProductionSafetyCheck).
+  DAILY_CHALLENGE_SALT: Joi.string().optional().allow(''),
+  // Number of app instances expected to run behind the load balancer. When
+  // greater than 1, REDIS_URL is required so caches/rate limits are shared
+  // (R3-46, R3-47; see ProductionSafetyCheck).
+  INSTANCE_COUNT: Joi.number().integer().min(1).default(1),
+  // Graceful-shutdown drain window for in-flight HTTP requests.
+  SHUTDOWN_DRAIN_TIMEOUT_MS: Joi.number().integer().min(1).default(30000),
+  // Body-parser aliases kept for callers that read the shorter names.
+  JSON_BODY_LIMIT: Joi.string().default('100kb'),
+  URLENCODED_BODY_LIMIT: Joi.string().default('100kb'),
+  // Round scoring multiplier applied to every round's points.
+  ROUND_SCORE_MULTIPLIER: Joi.number().min(0).default(1),
+  // Pagination defaults for list endpoints.
+  DEFAULT_PAGE_SIZE: Joi.number().integer().min(1).default(20),
+  MAX_PAGE_SIZE: Joi.number().integer().min(1).default(100),
+  // Feature flags read by gameplay services.
+  DAILY_CHALLENGE_ENABLED: Joi.string().valid('true', 'false').default('false'),
+  LEADERBOARD_ENABLED: Joi.string().valid('true', 'false').default('true'),
+  // Cache tuning.
+  CACHE_TTL_MS: Joi.number().integer().min(0).default(60000),
+  REDIS_TTL_SECONDS: Joi.number().integer().min(0).default(60),
+  // Logging.
+  LOG_DIR: Joi.string().optional().allow(''),
+  LOG_MAX_FILES: Joi.string().optional().allow(''),
+  LOG_MAX_SIZE: Joi.string().optional().allow(''),
+  // Mail tuning.
+  MAIL_POOL_SIZE: Joi.number().integer().min(1).default(5),
+  MAIL_TIMEOUT_MS: Joi.number().integer().min(0).default(10000),
+  // Stellar / Soroban additional tuning.
+  STELLAR_TIMEOUT_MS: Joi.number().integer().min(0).default(30000),
+  STELLAR_MAX_RETRIES: Joi.number().integer().min(0).default(3),
+  STELLAR_RETRY_DELAY_MS: Joi.number().integer().min(0).default(1000),
+  STELLAR_CONFIRMATION_TIMEOUT_MS: Joi.number().integer().min(0).default(60000),
+  STELLAR_FEE_BUMP_MULTIPLIER: Joi.number().min(1).default(1.5),
+  // Wager / settlement extras.
+  WAGER_MIN_AMOUNT: Joi.number().min(0).optional(),
+  WAGER_MAX_AMOUNT: Joi.number().min(0).optional(),
+  SETTLEMENT_BATCH_SIZE: Joi.number().integer().min(1).default(100),
+  SETTLEMENT_POLL_INTERVAL_MS: Joi.number().integer().min(1).default(5000),
+  // Rate limiting extras.
+  THROTTLE_WINDOW_MS: Joi.number().integer().min(1).default(60000),
+  THROTTLE_MAX_REQUESTS: Joi.number().integer().min(1).default(100),
+  // Observability extras.
+  OTEL_TRACES_SAMPLER_ARG: Joi.string().optional().allow(''),
+  OTEL_EXPORTER_OTLP_HEADERS: Joi.string().optional().allow(''),
+  METRICS_ENABLED: Joi.string().valid('true', 'false').default('true'),
+  METRICS_PATH: Joi.string().default('/metrics'),
+  // Security / auth extras.
+  BCRYPT_ROUNDS: Joi.number().integer().min(4).max(31).default(10),
+  PASSWORD_RESET_TTL_MINUTES: Joi.number().integer().min(1).default(60),
+  REFRESH_TOKEN_TTL_DAYS: Joi.number().integer().min(1).default(7),
+  CORS_ORIGINS: Joi.string().optional().allow(''),
+  // Misc.
+  APP_NAME: Joi.string().default('lyricsflip'),
+  APP_VERSION: Joi.string().optional().allow(''),
+  TIMEZONE: Joi.string().default('UTC'),
 
   // Observability
   OTEL_EXPORTER_OTLP_ENDPOINT: Joi.string().uri().optional().allow(''),
   OTEL_SERVICE_NAME: Joi.string().optional().allow(''),
   // Either an IP allowlist or basic auth must be configured in production
-  // (see ProductionSafetyCheck).
+  // (see ProductionSafetyCheck). When METRICS_IP_ALLOWLIST is set behind a
+  // proxy, TRUST_PROXY must also be set.
   METRICS_IP_ALLOWLIST: Joi.string().optional().allow(''),
   METRICS_BASIC_AUTH: Joi.string().optional().allow(''),
 
@@ -214,4 +286,6 @@ export const envValidationSchema = Joi.object({
   THROTTLE_STELLAR_LIMIT: Joi.number().integer().min(1).default(10),
   THROTTLE_GUESS_TTL_MS: Joi.number().integer().min(1).default(60000),
   THROTTLE_GUESS_LIMIT: Joi.number().integer().min(1).default(30),
+  THROTTLE_EXPORT_TTL_MS: Joi.number().integer().min(1).default(60000),
+  THROTTLE_EXPORT_LIMIT: Joi.number().integer().min(1).default(10),
 }).unknown(true);

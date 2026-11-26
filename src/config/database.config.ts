@@ -1,5 +1,5 @@
 import { readFileSync } from 'fs';
-import type { LoggingOptions } from 'typeorm';
+import type { LoggerOptions } from 'typeorm';
 import type { PostgresConnectionOptions } from 'typeorm/driver/postgres/PostgresConnectionOptions';
 
 /**
@@ -154,7 +154,7 @@ export function resolveConnectionTarget(
  * schema, warn, info, log, slow. Default 'error' in production, otherwise
  * 'error,warn,slow'.
  */
-export function parseLogging(env: EnvReader): LoggingOptions {
+export function parseLogging(env: EnvReader): LoggerOptions {
   const isProduction = read(env, 'NODE_ENV') === 'production';
   const raw =
     read(env, 'DB_LOGGING') ?? (isProduction ? 'error' : 'error,warn,slow');
@@ -164,7 +164,7 @@ export function parseLogging(env: EnvReader): LoggingOptions {
   if (raw === 'false') {
     return false;
   }
-  return raw.split(',').map((level) => level.trim()) as LoggingOptions;
+  return raw.split(',').map((level) => level.trim()) as LoggerOptions;
 }
 
 export function buildDataSourceOptions(

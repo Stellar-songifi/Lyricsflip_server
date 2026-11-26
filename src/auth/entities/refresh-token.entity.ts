@@ -28,6 +28,15 @@ export class RefreshToken {
   @Column({ type: 'varchar', length: 64 })
   tokenHash: string;
 
+  /**
+   * Identifier shared by every token in a rotation chain. Replaying a rotated
+   * token revokes the whole family. Nullable for rows created before the
+   * column existed.
+   */
+  @Index('IDX_refresh_tokens_familyId')
+  @Column({ type: 'uuid', nullable: true })
+  familyId: string | null;
+
   @Index('IDX_refresh_tokens_expiresAt')
   @Column({ type: 'timestamptz' })
   expiresAt: Date;

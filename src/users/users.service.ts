@@ -11,7 +11,6 @@ import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Not, Raw, Repository } from 'typeorm';
 import * as bcrypt from 'bcrypt';
-import { UpdateUserDto } from './dto/update-user.dto';
 import { UpdateUserPreferencesDto } from './dto/update-user-preferences.dto';
 import { User } from './entities/user.entity';
 import { Cache } from 'cache-manager';
@@ -40,7 +39,6 @@ const NON_TERMINAL_WAGER_STATUSES = [
 ];
 import { AdminUpdateUserDto, UpdateProfileDto } from './dto/update-user.dto';
 import { MAX_PAGE_SIZE } from '../common/dto/pagination-query.dto';
-import { cacheConfig } from '../config/cache.config';
 import { Optional } from '@nestjs/common';
 import { PublicUserDto } from './dto/public-user.dto';
 import { AchievementsService } from '../achievements/achievements.service';
@@ -64,6 +62,12 @@ const TOKEN_SYMBOL = 'LYRIC';
 export type LeaderboardPeriod = 'weekly' | 'monthly' | 'all';
 
 const LEADERBOARD_PERIODS: LeaderboardPeriod[] = ['weekly', 'monthly', 'all'];
+
+export interface LeaderboardOptions {
+  limit?: number;
+  offset?: number;
+  period?: LeaderboardPeriod;
+}
 
 @Injectable()
 export class UsersService {
@@ -147,6 +151,13 @@ export class UsersService {
     const profile = PublicUserDto.from(user, record, achievements);
     await this.cacheManager.set(cacheKey, profile, PUBLIC_PROFILE_CACHE_TTL_MS);
     return profile;
+  }
+
+  /**
+   * Alias used by the controller for the public profile lookup.
+   */
+  async getPublicProfile(username: string): Promise<PublicUserDto> {
+    return this.findPublicProfile(username);
   }
 
   /**
@@ -246,7 +257,11 @@ export class UsersService {
     try {
       const stroops = await this.tokenService.getUserBalance(userId);
       return {
-        balance: { stroops, display: fromStroops(stroops), symbol: TOKEN_SYMBOL },
+        balance: {
+          stroops,
+          display: fromStroops(stroops),
+          symbol: TOKEN_SYMBOL,
+        },
       };
     } catch (error) {
       this.logger.warn(
@@ -347,21 +362,96 @@ export class UsersService {
     return 'Rookie';
   }
 
-  async update(id: string, updateUserDto: UpdateProfileDto | AdminUpdateUserDto) {
+  async update(
+    id: string,
+    updateUserDto: UpdateProfileDto | AdminUpdateUserDto,
+  ) {
+    return this.userRepository.manager.transaction(async (manager) => {
+      const repository = manager.getRepository(User);
+      const user = await repository.findOne({
+        where: { id },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!user) {
+        throw new NotFoundException(`User with ID ${id} not found`);
+      }
     const user = await this.findOne(id);
 
-    // Report taken usernames/emails as 409 rather than a unique-index 500
-    const { username } = updateUserDto;
-    const email = 'email' in updateUserDto ? updateUserDto.email : undefined;
-    if (username && username !== user.username) {
-      await this.assertUnused({ username }, id, 'Username already exists');
-    }
-    if (email && email !== user.email) {
-      await this.assertUnused({ email }, id, 'Email already exists');
-    }
+      const before = { role: user.role, isActive: user.isActive };
+      const { username } = updateUserDto;
+      const email = 'email' in updateUserDto ? updateUserDto.email : undefined;
+      if (username && username !== user.username) {
+        await this.assertUnusedWithRepository(
+          repository,
+          { username },
+          id,
+          'Username already exists',
+        );
+      }
+      if (email && email !== user.email) {
+        await this.assertUnusedWithRepository(
+          repository,
+          { email },
+          id,
+          'Email already exists',
+        );
+      }
 
-    Object.assign(user, updateUserDto);
-    return this.userRepository.save(user);
+      const nextRole =
+        'role' in updateUserDto && updateUserDto.role !== undefined
+          ? updateUserDto.role
+          : user.role;
+      const nextIsActive =
+        'isActive' in updateUserDto && updateUserDto.isActive !== undefined
+          ? updateUserDto.isActive
+          : user.isActive;
+
+      if (
+        before.role === Role.Admin &&
+        before.isActive &&
+        (nextRole !== Role.Admin || !nextIsActive)
+      ) {
+        const activeAdminCount = await repository.count({
+          where: { role: Role.Admin, isActive: true },
+        });
+        if (activeAdminCount <= 1) {
+          throw new ConflictException(
+            'The last active admin cannot be demoted or deactivated',
+          );
+        }
+      }
+
+      Object.assign(user, updateUserDto);
+      const saved = await repository.save(user);
+      const after = { role: saved.role, isActive: saved.isActive };
+      Object.defineProperty(saved, 'auditContext', {
+        value: { before, after },
+        enumerable: false,
+      });
+      await this.cacheManager.del(`user:${id}`);
+      return saved;
+    });
+  }
+
+  private async assertUnusedWithRepository(
+    repository: Repository<User>,
+    where: { username: string } | { email: string },
+    ownId: string,
+    message: string,
+  ): Promise<void> {
+    const [column, value] =
+      'username' in where
+        ? ['username', where.username]
+        : ['email', where.email];
+    const taken = await repository.exists({
+      where: {
+        [column]: Raw((alias) => `LOWER(${alias}) = LOWER(:value)`, { value }),
+        id: Not(ownId),
+      },
+    });
+    if (taken) {
+      throw new ConflictException(message);
+    }
   }
 
   /**
@@ -397,8 +487,6 @@ export class UsersService {
    * every row that references the user id is preserved.
    */
   async remove(id: string) {
-    const user = await this.findOne(id);
-
     const activeWager = await this.wagerRepository.findOne({
       where: [
         { playerAId: id, status: In(NON_TERMINAL_WAGER_STATUSES) },
@@ -411,26 +499,56 @@ export class UsersService {
       );
     }
 
-    await this.userRepository.manager.transaction(async (manager) => {
-      // Revoke every refresh token and bump tokenVersion so any access token
-      // already issued stops validating immediately (R2-28).
-      await manager.delete(RefreshToken, { userId: id });
-      user.tokenVersion = (user.tokenVersion ?? 0) + 1;
+    const auditResult = await this.userRepository.manager.transaction(
+      async (manager) => {
+        const repository = manager.getRepository(User);
+        const user = await repository.findOne({
+          where: { id },
+          lock: { mode: 'pessimistic_write' },
+        });
+        if (!user) {
+          throw new NotFoundException(`User with ID ${id} not found`);
+        }
 
-      user.isActive = false;
-      user.email = `deleted-${user.id}@deleted.lyricsflip.local`;
-      user.username = `deleted_${user.id}`;
-      user.name = null;
-      user.stellarAddress = null;
-      user.stellarAddressVerifiedAt = null;
+        const before = { role: user.role, isActive: user.isActive };
+        if (before.role === Role.Admin && before.isActive) {
+          const activeAdminCount = await repository.count({
+            where: { role: Role.Admin, isActive: true },
+          });
+          if (activeAdminCount <= 1) {
+            throw new ConflictException(
+              'The last active admin cannot be deleted',
+            );
+          }
+        }
 
-      await manager.save(user);
-    });
+        // Revoke every refresh token and bump tokenVersion so any access token
+        // already issued stops validating immediately (R2-28).
+        await manager.delete(RefreshToken, { userId: id });
+        user.tokenVersion = (user.tokenVersion ?? 0) + 1;
+
+        user.isActive = false;
+        user.email = `deleted-${user.id}@deleted.lyricsflip.local`;
+        user.username = `deleted_${user.id}`;
+        user.name = null;
+        user.stellarAddress = null;
+        user.stellarAddressVerifiedAt = null;
+
+        const saved = await manager.save(user);
+        const after = { role: saved.role, isActive: saved.isActive };
+        return { before, after };
+      },
+    );
 
     await this.erasePersonalData(id);
     await this.cacheManager.del(`user:${id}`);
 
-    return { message: 'User deactivated successfully' };
+    const result = { message: 'User deactivated successfully' };
+    Object.defineProperty(result, 'auditContext', {
+      value: auditResult,
+      enumerable: false,
+    });
+    return result;
   }
 
   /**
@@ -646,19 +764,43 @@ export class UsersService {
    * Leaderboard page. Ranks are computed with competition ranking
    * (`RANK() OVER (ORDER BY xp DESC)`) so tied users share the same rank,
    * matching the rank reported by `getMyRank`.
+   *
+   * Accepts either an options object (`{ limit, offset, period }`) or the
+   * legacy positional `(limit, offset, period)` arguments.
    */
   async getLeaderboard(
-    limit: number = 20,
-    offset: number = 0,
-    period: LeaderboardPeriod = 'all',
+    optionsOrLimit: LeaderboardOptions | number = {},
+    offsetArg: number = 0,
+    periodArg: LeaderboardPeriod = 'all',
   ) {
+    let limit: number;
+    let offset: number;
+    let period: LeaderboardPeriod;
+
+    if (typeof optionsOrLimit === 'number') {
+      limit = optionsOrLimit;
+      offset = offsetArg;
+      period = periodArg;
+    } else {
+      limit = optionsOrLimit.limit ?? 20;
+      offset = optionsOrLimit.offset ?? 0;
+      period = optionsOrLimit.period ?? 'all';
+    }
+
+    if (!LEADERBOARD_PERIODS.includes(period)) {
+      throw new BadRequestException(
+        `Invalid leaderboard period: ${period}. Expected one of ${LEADERBOARD_PERIODS.join(', ')}`,
+      );
+    }
+
     const safeLimit = Math.min(Math.max(limit, 1), MAX_PAGE_SIZE);
     const safeOffset = Math.max(offset, 0);
 
     const rows = await this.userRepository.query(
-      `SELECT id, username, xp, level, level_title AS "levelTitle",
+      `SELECT id, username, xp, level, "levelTitle",
               RANK() OVER (ORDER BY xp DESC) AS rank
          FROM users
+        WHERE "isActive" = true
         ORDER BY xp DESC, id ASC
         LIMIT $1 OFFSET $2`,
       [safeLimit, safeOffset],

@@ -74,17 +74,62 @@ INSERT INTO "migrations" ("timestamp", "name") VALUES
   (1794000000003, 'AlignAuthTokenTables1794000000003'),
   (1794000000004, 'AddResponsiblePlayColumnsToUsers1794000000004'),
   (1794000000005, 'CreateNotificationsTable1794000000005'),
-  (1794000000006, 'AlignIndexNames1794000000006');
+  (1794000000006, 'AlignIndexNames1794000000006'),
+  (1794000000007, 'AddSourceAndRightsToLyrics1794000000007'),
+  (1794000000008, 'ConvertTimestampsToTimestamptz1794000000008'),
+  (1794000000009, 'AuditLogsAppendOnlyTrigger1794000000009'),
+  (1794000000010, 'RenumberCollidingMigrations1794000000010');
 ```
 
 Every migration has its own timestamp. TypeORM orders migrations by it, so
 two sharing one ran in file-system order and were recorded ambiguously.
-`scripts/check-migration-location.sh` (the `Migration location` workflow) and
-`src/migration-chain.spec.ts` fail when a timestamp is reused or a filename
-prefix disagrees with its class name. Pick a timestamp later than every
-existing one; `migration:generate` does this for you.
+`scripts/check-migration-location.sh` (the `Migration location` workflow),
+`npm run lint:migrations` and `src/migration-chain.spec.ts` fail when a
+timestamp is reused or a filename prefix disagrees with its class name. Pick a
+timestamp later than every existing one; `migration:generate` does this for
+you.
 
-## Entity drift repaired in 1794000000000–1794000000006
+### Renumbered migrations (R3-25)
+
+Five migrations used to share a timestamp with another one, so their order
+depended on the class name rather than on intent. They were renumbered in the
+order they have to run:
+
+| Old timestamp | New timestamp | Migration |
+|---|---|---|
+| `1794000000000` | `1794000000007` | `AddSourceAndRightsToLyrics` |
+| `1794000000000` | `1794000000008` | `ConvertTimestampsToTimestamptz` |
+| `1794000000001` | `1794000000009` | `AuditLogsAppendOnlyTrigger` |
+
+`AddRoomCodeHostAndLifecycle` keeps `1794000000000` and
+`AddAliasesAndFixLyricsCreatedBy` keeps `1794000000001`, so the room columns
+exist before `ConvertTimestampsToTimestamptz` touches them and the lyrics
+columns exist before the append-only trigger is installed.
+
+On a database that already ran the old files, `migration:run` would see the
+new names as pending and run them again. They are guarded, but the one-off
+`RenumberCollidingMigrations1794000000010` migration runs first and renames the
+existing rows instead, so the new names are recorded as already applied:
+
+```sql
+UPDATE "migrations"
+SET "timestamp" = 1794000000007, "name" = 'AddSourceAndRightsToLyrics1794000000007'
+WHERE "name" = 'AddSourceAndRightsToLyrics1794000000000';
+
+UPDATE "migrations"
+SET "timestamp" = 1794000000008, "name" = 'ConvertTimestampsToTimestamptz1794000000008'
+WHERE "name" = 'ConvertTimestampsToTimestamptz1794000000000';
+
+UPDATE "migrations"
+SET "timestamp" = 1794000000009, "name" = 'AuditLogsAppendOnlyTrigger1794000000009'
+WHERE "name" = 'AuditLogsAppendOnlyTrigger1794000000001';
+```
+
+The repair migration is idempotent: on a fresh database the rows do not exist
+yet and it does nothing. Do not edit the `migrations` table by hand; let
+`migration:run` apply the repair.
+
+## Entity drift repaired in 1794000000000–1794000000009
 
 Several entity changes were merged without migrations, so a database built
 from the chain failed at the first query touching them (#358). Each of these
@@ -95,6 +140,9 @@ name), so it also brings a database built with `synchronize` in line:
 |---|---|
 | `AddRoomCodeHostAndLifecycle` | `rooms.code` (unique; existing rooms get a code), `hostId`, `maxPlayers`, `status` (closed rooms become `finished`), `startedAt`, `roundCount` |
 | `AddAliasesAndFixLyricsCreatedBy` | `lyrics.artistAliases`, `titleAliases`; `createdById` nullable with ON DELETE SET NULL; the difficulty check under TypeORM's name |
+| `AddSourceAndRightsToLyrics` | `lyrics.source`, `rightsHolder`, `license` |
+| `ConvertTimestampsToTimestamptz` | `timestamp with time zone` on every `timestamp` column |
+| `AuditLogsAppendOnlyTrigger` | the append-only trigger on `audit_logs` |
 | `AddWagerSettlementIntent` | `wagers.settlementKind`, `intendedWinnerId` |
 | `AlignAuthTokenTables` | `refresh_tokens`, `email_tokens`, `password_reset_tokens`: `timestamptz`, TypeORM index and key names, `email_tokens.purpose` rewritten to `verify_email` |
 | `AddResponsiblePlayColumnsToUsers` | `users.dailyStakeLimit`, `dailyStakeLimitEffectiveAt`, `selfExclusionEndsAt` |
@@ -122,7 +170,8 @@ to give them unique timestamps. On a database that already ran them under the
 old name, `migration:run` sees the new name as pending and runs it again.
 Both are idempotent, so this only records the new name next to the old one.
 To keep the `migrations` table tidy instead, update the rows before running
-the new migrations:
+the new migrations (the R3-25 renumbering above is handled automatically by
+`RenumberCollidingMigrations1794000000010`):
 
 ```sql
 UPDATE "migrations"

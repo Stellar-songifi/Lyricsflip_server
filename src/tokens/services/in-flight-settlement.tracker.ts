@@ -51,7 +51,12 @@ export class InFlightSettlementTracker implements OnApplicationShutdown {
 
     this.pending.set(label, promise);
 
+    let settled = false;
     return () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
       this.pending.delete(label);
       resolveFn();
     };

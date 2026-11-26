@@ -42,3 +42,19 @@ export function resolveLogLevel(
     return value as WinstonLogLevel;
   return defaultLogLevel(nodeEnv);
 }
+
+/**
+ * Formats a log message as a single string. Nest passes either a string or an
+ * array of arguments (e.g. `logger.error('msg', 'stack')`); joining them keeps
+ * `info.message` a string instead of leaking an array into the log output.
+ */
+export function formatLogMessage(message: unknown): string {
+  if (Array.isArray(message)) {
+    return message
+      .map((part) => (typeof part === 'string' ? part : String(part)))
+      .join(' ');
+  }
+  if (typeof message === 'string') return message;
+  if (message === undefined || message === null) return '';
+  return String(message);
+}

@@ -40,6 +40,11 @@ What actually happened. Include the full error response body or stack trace if a
 Paste any relevant server logs here (redact secrets and passwords).
 ```
 
+## Acceptance criteria
+
+- [ ] The bug is fixed and covered by a test (or a documented reason why a test is not feasible)
+- [ ] Verified on main at `<sha>` <!-- replace <sha> with the commit on main that verifies the fix -->
+
 ## Additional context
 
 Any other context, screenshots, or links that help explain the problem.

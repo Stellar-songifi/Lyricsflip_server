@@ -1,7 +1,17 @@
 {
-  "entry": ["src/main.ts", "src/seeds/seed.ts", "src/tracing.ts", "src/migrations/*.ts"],
+  "entry": [
+    "src/main.ts",
+    "src/app.module.ts",
+    "src/seeds/seed.ts",
+    "src/tracing.ts",
+    "src/migrations/*.ts",
+    "scripts/*.ts",
+    "test/**/*.ts",
+    "jest.config.ts",
+    "jest-e2e.config.ts"
+  ],
   "project": ["src/**/*.ts"],
-  "ignore": ["**/*.spec.ts"],
+  "ignore": ["**/*.spec.ts", "**/*.e2e-spec.ts"],
   "include": ["unlisted"],
   "ignoreDependencies": ["nodemailer"]
 }

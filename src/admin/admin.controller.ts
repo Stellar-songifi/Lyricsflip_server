@@ -35,9 +35,10 @@ import {
   GrantMockBalanceMode,
 } from './dto/grant-mock-balance.dto';
 import { AdminLyricQueryDto, AdminUserQueryDto } from './dto/admin-query.dto';
+import { GetUser } from '../auth/decorators/get-user.decorator';
 import { AdminReportQueryDto } from './dto/admin-report-query.dto';
 import { ResolveReportDto } from './dto/resolve-report.dto';
-import { GetUser } from '../auth/decorators/get-user.decorator';
+import { GetUser } from '../auth/decorators/user.decorator';
 import { User } from '../users/entities/user.entity';
 
 @ApiTags('admin')
@@ -175,37 +176,4 @@ export class AdminController {
     return this.adminService.deleteLyric(id);
   }
 
-  // --- Lyric Reports ---
-  @Get('reports')
-  @ApiOperation({ summary: 'List lyric reports for admin review' })
-  @ApiQuery({ name: 'limit', required: false, type: Number })
-  @ApiQuery({ name: 'offset', required: false, type: Number })
-  @ApiQuery({
-    name: 'status',
-    required: false,
-    enum: ['open', 'resolved', 'dismissed', 'all'],
-  })
-  @ApiQuery({
-    name: 'reason',
-    required: false,
-    enum: ['wrong_lyrics', 'wrong_answer', 'typo', 'offensive', 'other'],
-  })
-  @ApiQuery({ name: 'lyricId', required: false, type: Number })
-  @ApiResponse({ status: 200, description: 'List of reports.', type: [Object] })
-  findAllReports(@Query() query: AdminReportQueryDto) {
-    return this.adminService.findAllReports(query);
-  }
-
-  @Post('reports/:id/resolve')
-  @ApiOperation({ summary: 'Resolve a lyric report' })
-  @ApiBody({ type: ResolveReportDto })
-  @ApiResponse({ status: 200, description: 'Report resolved.' })
-  @Audited({ action: 'admin.report.resolve', targetType: 'lyric_report' })
-  resolveReport(
-    @Param('id', ParseUUIDPipe) id: string,
-    @Body() dto: ResolveReportDto,
-    @GetUser() user: User,
-  ) {
-    return this.adminService.resolveReport(id, dto, user);
-  }
 }

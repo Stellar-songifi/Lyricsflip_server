@@ -7,6 +7,7 @@ import {
   Delete,
   Query,
   UseGuards,
+  UseInterceptors,
   ParseUUIDPipe,
   SerializeOptions,
 } from '@nestjs/common';
@@ -27,6 +28,8 @@ import { Public } from '../auth/decorators/public.decorator';
 import { Roles } from '../auth/roles/roles.decorator';
 import { Role } from '../auth/roles/role.enum';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
+import { AuditInterceptor } from '../audit/audit.interceptor';
+import { Audited } from '../audit/decorators/audited.decorator';
 
 // Accounts are created through POST /auth/signup; there is no POST /users.
 @ApiTags('users')
@@ -52,7 +55,10 @@ export class UsersController {
    */
   @Get('me')
   @ApiOperation({ summary: 'Get your own rich profile' })
-  @ApiResponse({ status: 200, description: 'Profile with level, wallet, balance and stats.' })
+  @ApiResponse({
+    status: 200,
+    description: 'Profile with level, wallet, balance and stats.',
+  })
   @ApiResponse({ status: 401, description: 'Unauthorized.' })
   getMe(@GetUser() user: User) {
     return this.usersService.getSelfProfile(user.id);
@@ -60,7 +66,10 @@ export class UsersController {
 
   @Get('profile')
   @ApiOperation({ summary: 'Get user profile (alias of /users/me)' })
-  @ApiResponse({ status: 200, description: 'Profile with level, wallet, balance and stats.' })
+  @ApiResponse({
+    status: 200,
+    description: 'Profile with level, wallet, balance and stats.',
+  })
   @ApiResponse({ status: 401, description: 'Unauthorized.' })
   getProfile(@GetUser() user: User) {
     return this.usersService.getSelfProfile(user.id);
@@ -109,7 +118,10 @@ export class UsersController {
       'Profile, game history, game sessions and rounds, wagers, daily challenge attempts, rooms, login sessions, notifications, audit entries and lyrics added.',
   })
   @ApiResponse({ status: 429, description: 'Too many export requests.' })
-  @ApiResponse({ status: 500, description: 'Export failed; no partial data is returned.' })
+  @ApiResponse({
+    status: 500,
+    description: 'Export failed; no partial data is returned.',
+  })
   exportMe(@GetUser() user: User) {
     return this.usersService.exportData(user.id);
   }
@@ -120,14 +132,20 @@ export class UsersController {
    */
   @Patch('preferences')
   @ApiOperation({ summary: 'Update user preferences' })
-  @ApiResponse({ status: 200, description: 'User preferences updated successfully.' })
+  @ApiResponse({
+    status: 200,
+    description: 'User preferences updated successfully.',
+  })
   @ApiResponse({ status: 400, description: 'Invalid preference data.' })
   @ApiResponse({ status: 401, description: 'Unauthorized.' })
   async updatePreferences(
     @GetUser() user: User,
     @Body() updatePreferencesDto: UpdateUserPreferencesDto,
   ) {
-    const updatedUser = await this.usersService.updatePreferences(user.id, updatePreferencesDto);
+    const updatedUser = await this.usersService.updatePreferences(
+      user.id,
+      updatePreferencesDto,
+    );
     return {
       message: 'Preferences updated successfully',
       preferences: {
@@ -143,7 +161,10 @@ export class UsersController {
    */
   @Get('preferences')
   @ApiOperation({ summary: 'Get user preferences' })
-  @ApiResponse({ status: 200, description: 'User preferences retrieved successfully.' })
+  @ApiResponse({
+    status: 200,
+    description: 'User preferences retrieved successfully.',
+  })
   @ApiResponse({ status: 401, description: 'Unauthorized.' })
   async getUserPreferences(@GetUser() user: User) {
     const preferences = await this.usersService.getUserPreferences(user.id);
@@ -163,18 +184,20 @@ export class UsersController {
   @UseGuards(OptionalJwtAuthGuard)
   @Get('leaderboard')
   @ApiOperation({ summary: 'Get the public user leaderboard' })
-  @ApiResponse({ status: 200, description: 'Ranked users with pagination meta and caller rank.' })
-  @ApiResponse({ status: 400, description: 'Invalid pagination, sort, order, period or genre.' })
+  @ApiResponse({
+    status: 200,
+    description: 'Ranked users with pagination meta and caller rank.',
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Invalid pagination, sort, order, period or genre.',
+  })
   getLeaderboard(@Query() query: LeaderboardQueryDto, @GetUser() user?: User) {
-    return this.usersService.getLeaderboard({
-      limit: query.limit ?? 10,
-      offset: query.offset ?? 0,
-      sort: query.sort ?? 'xp',
-      order: query.order ?? 'DESC',
-      period: query.period ?? 'all',
-      genre: query.genre,
-      currentUserId: user?.id,
-    });
+    return this.usersService.getLeaderboard(
+      query.limit ?? 10,
+      query.offset ?? 0,
+      query.period ?? 'all',
+    );
   }
 
   /**
@@ -186,7 +209,11 @@ export class UsersController {
   @Public()
   @Get(':username/public')
   @ApiOperation({ summary: 'Get a user’s public profile by username' })
-  @ApiResponse({ status: 200, description: 'Public user data.', type: PublicUserDto })
+  @ApiResponse({
+    status: 200,
+    description: 'Public user data.',
+    type: PublicUserDto,
+  })
   @ApiResponse({
     status: 404,
     description: 'No active user with that username (case-insensitive).',
@@ -194,7 +221,7 @@ export class UsersController {
   findPublicByUsername(
     @Param('username') username: string,
   ): Promise<PublicUserDto> {
-    return this.usersService.findPublicProfile(username);
+    return this.usersService.getPublicProfile(username);
   }
 
   @Get(':id')
@@ -208,10 +235,16 @@ export class UsersController {
 
   @Patch(':id')
   @Roles(Role.Admin)
+  @UseInterceptors(AuditInterceptor)
   @SerializeOptions({ groups: [UserGroup.ADMIN] })
   @ApiOperation({ summary: 'Update any user by ID (admin only)' })
   @ApiResponse({ status: 200, description: 'User updated.' })
   @ApiResponse({ status: 403, description: 'Not an admin.' })
+  @ApiResponse({
+    status: 409,
+    description: 'The last active admin cannot be demoted or deactivated.',
+  })
+  @Audited({ action: 'admin.user.update', targetType: 'user' })
   update(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() updateUserDto: AdminUpdateUserDto,
@@ -221,9 +254,16 @@ export class UsersController {
 
   @Delete(':id')
   @Roles(Role.Admin)
+  @UseInterceptors(AuditInterceptor)
   @ApiOperation({ summary: 'Delete any user by ID (admin only)' })
   @ApiResponse({ status: 200, description: 'User deleted.' })
   @ApiResponse({ status: 403, description: 'Not an admin.' })
+  @ApiResponse({
+    status: 409,
+    description:
+      'The last active admin cannot be deleted or has an active wager.',
+  })
+  @Audited({ action: 'admin.user.delete', targetType: 'user' })
   remove(@Param('id', ParseUUIDPipe) id: string) {
     return this.usersService.remove(id);
   }

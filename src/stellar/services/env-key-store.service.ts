@@ -5,6 +5,7 @@ import { Keypair, StrKey } from '@stellar/stellar-sdk';
 import { IKeyStore } from '../interfaces/key-store.interface';
 import { STELLAR_CONFIG } from '../stellar.constants';
 import type { StellarConfig } from '../stellar.config';
+import { KeypairSigner, TransactionSigner } from './transaction-signer';
 
 /**
  * Key store backed by environment variables.
@@ -70,12 +71,16 @@ export class EnvKeyStore implements IKeyStore {
     return this.resolverKeypair;
   }
 
-  async getPlayerSigner(userId: string): Promise<Keypair | null> {
+  getResolverSigner(): TransactionSigner {
+    return new KeypairSigner(this.getResolverKeypair());
+  }
+
+  async getPlayerSigner(userId: string): Promise<TransactionSigner | null> {
     if (!this.custodial) {
       return null;
     }
 
-    return this.deriveKeypair(userId);
+    return new KeypairSigner(this.deriveKeypair(userId));
   }
 
   async getPlayerAddress(userId: string): Promise<string | null> {
@@ -139,7 +144,11 @@ export class NonCustodialKeyStore implements IKeyStore {
     return this.resolverKeypair;
   }
 
-  async getPlayerSigner(): Promise<Keypair | null> {
+  getResolverSigner(): TransactionSigner {
+    return new KeypairSigner(this.getResolverKeypair());
+  }
+
+  async getPlayerSigner(): Promise<TransactionSigner | null> {
     return null;
   }
 

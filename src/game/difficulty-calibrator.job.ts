@@ -3,6 +3,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Lyrics } from '../lyrics/entities/lyrics.entity';
+import { JobLockService } from '../jobs/job-lock.service';
 
 /**
  * Nightly difficulty calibration job.
@@ -22,6 +23,7 @@ export class DifficultyCalibratorJob {
   constructor(
     @InjectRepository(Lyrics)
     private readonly lyricsRepository: Repository<Lyrics>,
+    private readonly jobLockService: JobLockService,
   ) {}
 
   @Cron(CronExpression.EVERY_DAY_AT_3AM)
@@ -33,29 +35,36 @@ export class DifficultyCalibratorJob {
       return;
     }
 
-    // Single statement: derive a per-lyric success rate from game_history and
-    // map it onto the 1–5 difficulty range, clamped to stay within bounds.
-    const result = await this.lyricsRepository.query(`
-      UPDATE "lyrics" AS l
-      SET "difficulty" = GREATEST(
-        1,
-        LEAST(5, ROUND(5 - (stats.rate * 4))::int)
-      )
-      FROM (
-        SELECT
-          gh."lyricId" AS "lyricId",
-          AVG(CASE WHEN gh."success" THEN 1.0 ELSE 0.0 END) AS rate
-        FROM "game_history" gh
-        GROUP BY gh."lyricId"
-      ) AS stats
-      WHERE l."id" = stats."lyricId"
-        AND l."difficulty" IS DISTINCT FROM GREATEST(
+    await this.jobLockService.runExclusive('difficulty-calibrator', async () => {
+      // Single statement: derive a per-lyric success rate from game_history and
+      // map it onto the 1–5 difficulty range, clamped to stay within bounds.
+      const result: unknown = await this.lyricsRepository.query(`
+        UPDATE "lyrics" AS l
+        SET "difficulty" = GREATEST(
           1,
           LEAST(5, ROUND(5 - (stats.rate * 4))::int)
         )
-    `);
+        FROM (
+          SELECT
+            gh."lyricId" AS "lyricId",
+            AVG(CASE WHEN gh."success" THEN 1.0 ELSE 0.0 END) AS rate
+          FROM "game_history" gh
+          GROUP BY gh."lyricId"
+          HAVING COUNT(*) >= 30
+        ) AS stats
+        WHERE l."id" = stats."lyricId"
+          AND l."difficulty" IS DISTINCT FROM GREATEST(
+            1,
+            LEAST(5, ROUND(5 - (stats.rate * 4))::int)
+          )
+      `);
 
-    const changed = Array.isArray(result) ? result.length : (result ?? 0);
-    this.logger.log(`Difficulty calibration updated ${changed} lyric(s)`);
+      const changed = Array.isArray(result)
+        ? result.length
+        : typeof result === 'number'
+          ? result
+          : 0;
+      this.logger.log(`Difficulty calibration updated ${changed} lyric(s)`);
+    });
   }
 }

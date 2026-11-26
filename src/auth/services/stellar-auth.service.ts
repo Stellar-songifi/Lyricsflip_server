@@ -17,7 +17,11 @@ import { Keypair, StrKey, WebAuth } from '@stellar/stellar-sdk';
 import { User } from '../../users/entities/user.entity';
 import { Wager, WagerStatus } from '../../tokens/entities/wager.entity';
 import { Role } from '../roles/role.enum';
-import { AuthResult, AuthTokenService } from './auth-token.service';
+import {
+  AuthResult,
+  AuthTokenService,
+  TokenIssueContext,
+} from './auth-token.service';
 import {
   STELLAR_CONFIG,
   CHALLENGE_TIMEOUT_SECONDS,
@@ -244,11 +248,13 @@ export class StellarAuthService {
   }
 
   /**
-   * Authenticates with a wallet alone and issues the same JWT the password
-   * flow does, so every downstream guard behaves identically.
+   * Authenticates with a wallet alone and issues the same token pair the
+   * password flow does, so every downstream guard behaves identically and the
+   * session shows up in the device list.
    */
   async loginWithWallet(
     signedTransaction: string,
+    context: TokenIssueContext = {},
   ): Promise<AuthResult> {
     const address = this.verifyChallenge(signedTransaction);
     await this.consumeChallenge(signedTransaction);
@@ -270,7 +276,7 @@ export class StellarAuthService {
     user.stellarAddressVerifiedAt = new Date();
     await this.userRepository.save(user);
 
-    return this.authTokenService.issueToken(user);
+    return this.authTokenService.issueTokenPair(user, context);
   }
 
   /** Removes the wallet link, e.g. when a player rotates keys. */

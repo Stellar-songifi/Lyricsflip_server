@@ -10,7 +10,7 @@ import {
   MaxLength,
   Min,
 } from 'class-validator';
-import { Genre } from '../../common/enums/genre.enum';
+import { Genre } from '../entities/genre.enum';
 
 export class CreateLyricDto {
   @IsString()

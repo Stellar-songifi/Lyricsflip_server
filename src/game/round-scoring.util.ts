@@ -8,7 +8,11 @@ export interface RoundScoreInput {
   elapsedMs: number;
   windowMs: number;
   hintsUsed: number;
-  /** Difficulty of the round, stored as 1–5. */
+  /**
+   * Difficulty of the round, stored as 1–5. The difficulty multiplier is only
+   * applied when this is explicitly provided; otherwise the round scores its
+   * base points plus speed bonus unscaled.
+   */
   difficulty?: number;
   /** Consecutive correct rounds before this one. */
   streak?: number;
@@ -73,9 +77,10 @@ export function maxRoundPoints(hintsUsed: number): number {
 
 /**
  * Turns a matched guess into the points a round awards. Order of operations:
- * base points plus the speed bonus, scaled by the difficulty multiplier, plus
- * the streak bonus, then reduced by the hint penalty. Nothing is awarded once
- * the window is closed or the guess is wrong.
+ * base points plus the speed bonus, scaled by the difficulty multiplier when a
+ * difficulty is explicitly supplied, plus the streak bonus, then reduced by
+ * the hint penalty. Nothing is awarded once the window is closed or the guess
+ * is wrong.
  */
 export function scoreRound(input: RoundScoreInput): RoundScore {
   const {
@@ -84,11 +89,12 @@ export function scoreRound(input: RoundScoreInput): RoundScore {
     elapsedMs,
     windowMs,
     hintsUsed,
-    difficulty = 3,
+    difficulty,
     streak = 0,
   } = input;
 
-  const multiplier = difficultyMultiplier(difficulty);
+  const multiplier =
+    difficulty === undefined ? 1 : difficultyMultiplier(difficulty);
 
   if (elapsedMs > windowMs) {
     return {
@@ -115,7 +121,8 @@ export function scoreRound(input: RoundScoreInput): RoundScore {
   const speedBonus = computeSpeedBonus(basePoints, elapsedMs, windowMs);
   const streakBonus =
     streak > 0 ? GAME_CONSTANTS.POINTS.STREAK_BONUS * streak : 0;
-  const gross = Math.round((basePoints + speedBonus) * multiplier) + streakBonus;
+  const gross =
+    Math.round((basePoints + speedBonus) * multiplier) + streakBonus;
   const points = Math.round(gross * hintMultiplier(hintsUsed));
   const hintPenalty = gross - points;
 

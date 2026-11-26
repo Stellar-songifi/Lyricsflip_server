@@ -1,4 +1,4 @@
-import { Controller, Get, Redirect } from '@nestjs/common';
+import { Controller, Get, Redirect, VERSION_NEUTRAL } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { Public } from './auth/decorators/public.decorator';
 
@@ -8,9 +8,12 @@ import { Public } from './auth/decorators/public.decorator';
  * GET / previously returned "Hello World!" and required auth.
  * It now redirects to /health/live so probes that hit the root still get a
  * useful response.  The real probe paths are /health/live and /health/ready.
+ *
+ * The controller is VERSION_NEUTRAL so the root route stays unversioned
+ * (served at `/`, not `/v1/`) while the global URI versioning is enabled.
  */
 @ApiTags('app')
-@Controller()
+@Controller({ version: VERSION_NEUTRAL })
 export class AppController {
   @Public()
   @Get()

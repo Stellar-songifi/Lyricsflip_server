@@ -12,8 +12,8 @@ import {
 // Value imports: `import type` erases these classes from the decorator
 // metadata, so Nest could neither inject the service nor validate the DTOs.
 import { LyricsService } from './lyrics.service';
-import { CreateLyricsDto } from './dto/create-lyrics.dto';
-import { UpdateLyricsDto } from './dto/update-lyrics.dto';
+import { CreateLyricDto } from './dto/create-lyric.dto';
+import { UpdateLyricDto } from './dto/update-lyric.dto';
 import { SearchLyricsQueryDto } from './dto/search-lyrics-query.dto';
 import {
   ApiTags,
@@ -52,17 +52,17 @@ export class LyricsController {
 
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Create new lyrics' })
-  @ApiBody({ type: CreateLyricsDto })
+  @ApiBody({ type: CreateLyricDto })
   @ApiCreatedResponse({ description: 'Lyrics created.', type: AdminLyricDto })
   @ApiBadRequestResponse({ description: 'The payload failed validation.' })
   @Roles(Role.Admin)
   @Post()
   async create(
-    @Body() createLyricsDto: CreateLyricsDto,
+    @Body() createLyricDto: CreateLyricDto,
     @GetUser() user: User,
   ): Promise<AdminLyricDto> {
     return AdminLyricDto.from(
-      await this.lyricsService.create(createLyricsDto, user),
+      await this.lyricsService.create(createLyricDto, user),
     );
   }
 
@@ -176,14 +176,14 @@ export class LyricsController {
     description: 'Search term matched against lyric fields',
   })
   @ApiQuery({
-    name: 'page',
-    required: false,
-    description: 'Page number (default: 1)',
-  })
-  @ApiQuery({
     name: 'limit',
     required: false,
     description: 'Results per page (default: 20)',
+  })
+  @ApiQuery({
+    name: 'offset',
+    required: false,
+    description: 'Number of results to skip (default: 0)',
   })
   @ApiOkResponse({ description: 'Matching lyrics.', type: [AdminLyricDto] })
   @ApiBadRequestResponse({ description: 'The query failed validation.' })
@@ -192,8 +192,8 @@ export class LyricsController {
   async search(@Query() query: SearchLyricsQueryDto): Promise<AdminLyricDto[]> {
     const lyrics = await this.lyricsService.searchLyrics(
       query.q,
-      query.page,
       query.limit,
+      query.offset,
     );
     return lyrics.map((lyric) => AdminLyricDto.from(lyric));
   }
@@ -208,7 +208,7 @@ export class LyricsController {
 
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Update lyrics' })
-  @ApiBody({ type: UpdateLyricsDto })
+  @ApiBody({ type: UpdateLyricDto })
   @ApiOkResponse({ description: 'Lyrics updated.', type: AdminLyricDto })
   @ApiBadRequestResponse({ description: 'The payload failed validation.' })
   @ApiResponse({ status: 404, description: 'Lyrics not found.' })
@@ -216,11 +216,11 @@ export class LyricsController {
   @Patch(':id')
   async update(
     @Param('id', ParseIntPipe) id: number,
-    @Body() updateLyricsDto: UpdateLyricsDto,
+    @Body() updateLyricDto: UpdateLyricDto,
     @GetUser() user: User,
   ): Promise<AdminLyricDto> {
     return AdminLyricDto.from(
-      await this.lyricsService.update(id, updateLyricsDto, user),
+      await this.lyricsService.update(id, updateLyricDto, user),
     );
   }
 
