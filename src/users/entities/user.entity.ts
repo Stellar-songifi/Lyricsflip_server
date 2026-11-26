@@ -106,6 +106,34 @@ export class User {
   })
   levelTitle: UserLevel; // human-readable title
 
+  /**
+   * Consecutive correct answers in the current run. Incremented on a correct
+   * guess and reset to 0 on a wrong answer or a timeout. Drives the live
+   * streak bonus in round scoring.
+   */
+  @Column({ type: 'int', default: 0 })
+  currentStreak: number;
+
+  /** Highest `currentStreak` ever reached by this user. */
+  @Column({ type: 'int', default: 0 })
+  bestStreak: number;
+
+  /** When the user last submitted a guess (correct or not). */
+  @Column({ type: 'timestamptz', nullable: true })
+  lastPlayedAt?: Date | null;
+
+  /**
+   * Consecutive days the user has completed the daily challenge. Incremented
+   * when the daily challenge is played on a new calendar day and reset when a
+   * day is skipped.
+   */
+  @Column({ type: 'int', default: 0 })
+  dailyStreak: number;
+
+  /** The last calendar day (UTC) the daily challenge was completed. */
+  @Column({ type: 'date', nullable: true })
+  lastDailyPlayedAt?: string | null;
+
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;
 
