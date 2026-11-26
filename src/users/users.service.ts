@@ -23,6 +23,7 @@ import { fromStroops } from '../stellar/amount.util';
 import { GameHistory } from '../game-history/entities/game-history.entity';
 import { GameRound } from '../game/entities/game-round.entity';
 import { DailyChallengeAttempt } from '../challenges/entities/daily-challenge-attempt.entity';
+import { currentDailyStreak } from '../challenges/daily-seed.util';
 import { Room } from '../rooms/entities/room.entity';
 import { RoomUser } from '../rooms/entities/room-user.entity';
 import { Lyrics } from '../lyrics/entities/lyrics.entity';
@@ -231,7 +232,10 @@ export class UsersService {
       ...wagerStats,
     };
 
+    const { lastDailyAttemptDate, ...profile } = user;
     return {
+      ...profile,
+      dailyStreak: currentDailyStreak(user.dailyStreak, lastDailyAttemptDate),
       ...user,
       emailVerified: Boolean(user.emailVerifiedAt),
       levelTitle: this.getLevelTitle(level),
