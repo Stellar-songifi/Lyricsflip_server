@@ -1,3 +1,4 @@
+import { runtimeEnv } from '../../config/runtime-env';
 import { WagerReconcileJob } from './wager-reconcile.job';
 import { WagerStatus } from '../entities/wager.entity';
 
@@ -28,10 +29,10 @@ describe('WagerReconcileJob', () => {
   });
 
   it('marks FAILED after max attempts', async () => {
-    process.env.WAGER_RECONCILE_MAX_ATTEMPTS = '1';
+    runtimeEnv().WAGER_RECONCILE_MAX_ATTEMPTS = '1';
     wagers.reconcileWager.mockResolvedValue({ success: false });
     await job.reconcileStuckWagers();
-    delete process.env.WAGER_RECONCILE_MAX_ATTEMPTS;
+    delete runtimeEnv().WAGER_RECONCILE_MAX_ATTEMPTS;
     expect(repo.update).toHaveBeenCalledWith(
       { id: 'w1', status: WagerStatus.SETTLING },
       expect.objectContaining({ status: WagerStatus.FAILED }),

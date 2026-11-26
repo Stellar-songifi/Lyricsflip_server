@@ -1,7 +1,15 @@
+import { runtimeEnv } from './config/runtime-env';
+import {
+  DomainException,
+  ErrorCode,
+} from './common/exceptions/domain.exception';
 import {
   ClassSerializerInterceptor,
   INestApplication,
+  HttpStatus,
+  HttpException,
   ValidationPipe,
+  type ValidationError,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { json, urlencoded } from 'express';
@@ -23,12 +31,35 @@ export const API_GLOBAL_PREFIX = 'api';
  * production does.
  */
 export function configureApp(app: INestApplication): void {
+  const validationOptions = {
+    whitelist: true,
+    forbidNonWhitelisted: true,
+    transform: true,
+    disableErrorMessages: process.env.NODE_ENV === 'production',
+  };
+  const defaultExceptionFactory = new ValidationPipe(
+    validationOptions,
+  ).createExceptionFactory() as (errors: ValidationError[]) => HttpException;
   app.useGlobalPipes(
     new ValidationPipe({
+      ...validationOptions,
+      exceptionFactory: (errors) => {
+        const exception = defaultExceptionFactory(errors);
+        const body = exception.getResponse();
+        const message =
+          typeof body === 'string'
+            ? body
+            : (body as { message: string | string[] }).message;
+        return new DomainException(
+          ErrorCode.VALIDATION_ERROR,
+          HttpStatus.BAD_REQUEST,
+          message,
+        );
+      },
       whitelist: true,
       forbidNonWhitelisted: true,
       transform: true,
-      disableErrorMessages: process.env.NODE_ENV === 'production',
+      disableErrorMessages: runtimeEnv().NODE_ENV === 'production',
     }),
   );
 
@@ -50,6 +81,7 @@ export function configureApp(app: INestApplication): void {
   // otherwise the configuration is never applied to the running server.
   app.enableCors({
     origin: allowedOrigins(),
+    origin: parseAllowedOrigins(runtimeEnv().FRONTEND_URL),
     credentials: true,
   });
 }
@@ -58,7 +90,7 @@ export function configureApp(app: INestApplication): void {
  * Resolves a body limit from the environment, falling back to a default.
  */
 export function getBodyLimit(envVar: string, fallback: string): string {
-  const value = process.env[envVar]?.trim();
+  const value = runtimeEnv()[envVar]?.trim();
   return value && value.length > 0 ? value : fallback;
 }
 

@@ -1,3 +1,5 @@
+import { DomainException, ErrorCode } from '../exceptions/domain.exception';
+import { runtimeEnv } from '../../config/runtime-env';
 import { ArgumentsHost, HttpException, HttpStatus } from '@nestjs/common';
 import { QueryFailedError } from 'typeorm';
 import { AllExceptionsFilter } from './all-exceptions.filter';
@@ -48,6 +50,34 @@ describe('AllExceptionsFilter', () => {
     );
   });
 
+  it('writes the domain code and details without inspecting the message', () => {
+    filter.catch(
+      new DomainException(ErrorCode.ROUND_EXPIRED, HttpStatus.GONE, 'Expired', {
+        retry: false,
+      }),
+      mockHost,
+    );
+    expect(statusMock).toHaveBeenCalledWith(410);
+    expect(jsonMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: 'ROUND_EXPIRED',
+        message: 'Expired',
+        details: { retry: false },
+      }),
+    );
+  });
+
+  it('keeps the status of HTTP body parser errors', () => {
+    const error = Object.assign(new Error('request entity too large'), {
+      status: 413,
+    });
+    filter.catch(error, mockHost);
+    expect(statusMock).toHaveBeenCalledWith(413);
+    expect(jsonMock).toHaveBeenCalledWith(
+      expect.objectContaining({ code: 'PAYLOAD_TOO_LARGE' }),
+    );
+  });
+
   it('maps a Postgres unique-violation QueryFailedError to 409', () => {
     const error = new QueryFailedError('query', [], new Error('duplicate key'));
     (error as unknown as { code: string }).code = '23505';
@@ -88,7 +118,8 @@ describe('AllExceptionsFilter', () => {
     expect(jsonMock).toHaveBeenCalledWith(
       expect.objectContaining({
         statusCode: HttpStatus.BAD_REQUEST,
-        message: 'Value too long',
+        message: 'Value is too long',
+        code: 'BAD_REQUEST',
       }),
     );
   });
@@ -139,7 +170,7 @@ describe('AllExceptionsFilter', () => {
   });
 
   it('uses production-safe messages for mapped database errors', () => {
-    process.env.NODE_ENV = 'production';
+    runtimeEnv().NODE_ENV = 'production';
     const prodFilter = new AllExceptionsFilter();
 
     const error = new QueryFailedError('query', [], new Error('raw detail'));
@@ -154,7 +185,7 @@ describe('AllExceptionsFilter', () => {
       }),
     );
 
-    process.env.NODE_ENV = 'test';
+    runtimeEnv().NODE_ENV = 'test';
   });
 
   it('names a 429 response "Too Many Requests"', () => {
@@ -185,7 +216,7 @@ describe('AllExceptionsFilter', () => {
   });
 
   it('hides an unknown error message in production', () => {
-    process.env.NODE_ENV = 'production';
+    runtimeEnv().NODE_ENV = 'production';
     const prodFilter = new AllExceptionsFilter();
 
     prodFilter.catch(new Error('table "users" violates constraint'), mockHost);
@@ -197,7 +228,7 @@ describe('AllExceptionsFilter', () => {
       }),
     );
 
-    process.env.NODE_ENV = 'test';
+    runtimeEnv().NODE_ENV = 'test';
   });
 
   it('echoes back an incoming x-request-id', () => {

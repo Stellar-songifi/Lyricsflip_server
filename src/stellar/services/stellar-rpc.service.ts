@@ -1,3 +1,4 @@
+import { runtimeEnv } from '../../config/runtime-env';
 import {
   Inject,
   Injectable,
@@ -27,7 +28,7 @@ import { getTracer } from '../../tracing';
 
 /** Reads a non-negative integer from the environment, with a default. */
 function envInt(name: string, fallback: number): number {
-  const parsed = Number.parseInt(process.env[name] ?? '', 10);
+  const parsed = Number.parseInt(runtimeEnv()[name] ?? '', 10);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
@@ -145,7 +146,7 @@ export class StellarRpcService {
 
   /** Fee ceiling in stroops, from `STELLAR_MAX_FEE` (default 0.1 XLM). */
   get maxFee(): bigint {
-    const raw = process.env.STELLAR_MAX_FEE;
+    const raw = runtimeEnv().STELLAR_MAX_FEE;
     return raw && /^\d+$/.test(raw) && BigInt(raw) > 0n
       ? BigInt(raw)
       : BigInt(DEFAULT_MAX_FEE);

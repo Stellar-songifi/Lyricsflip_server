@@ -1,3 +1,8 @@
+import { WsExceptionFilter } from '../common/filters/ws-exception.filter';
+import {
+  DomainException,
+  ErrorCode,
+} from '../common/exceptions/domain.exception';
 import {
   WebSocketGateway,
   SubscribeMessage,
@@ -6,7 +11,6 @@ import {
   WebSocketServer,
   OnGatewayConnection,
   OnGatewayDisconnect,
-  WsException,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import {
@@ -15,6 +19,14 @@ import {
   UsePipes,
   ValidationPipe,
 } from '@nestjs/common';
+  HttpStatus,
+  Logger,
+  NotFoundException,
+  UseFilters,
+  UsePipes,
+  ValidationPipe,
+} from '@nestjs/common';
+import { Logger, NotFoundException, UsePipes } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import { GameLogicService } from './game.service';
 import { RandomLyricOptionsDto } from './dto/random-lyrics-option.dto';
@@ -26,10 +38,16 @@ import { ConfigService } from '@nestjs/config';
 import { allowsWebSocketOrigin } from '../common/security/cors';
 import { RealtimeEvent } from '../realtime/realtime.events';
 import { WsRateLimiter } from '../common/websocket/ws-rate-limiter';
+import { WsConnectionLimiter } from '../common/websocket/ws-connection-limiter';
 import {
   WsConnectionLimiter,
   WS_MAX_HTTP_BUFFER_SIZE,
 } from '../common/websocket/ws-connection-limiter';
+import { registerSocketAuth } from '../realtime/socket-auth';
+import {
+  socketCorsOptions,
+  socketValidationPipe,
+} from '../realtime/socket-config';
 
 interface GameSession {
   playerId: string;
@@ -39,21 +57,24 @@ interface GameSession {
   seenLyricIds: Set<number>;
 }
 
+@UseFilters(WsExceptionFilter)
 @UsePipes(
   new ValidationPipe({
     whitelist: true,
     transform: true,
     exceptionFactory: (errors) =>
-      new WsException({
-        code: 'VALIDATION_ERROR',
-        message: 'Validation failed',
-        details: errors.map((error) => ({
+      new DomainException(
+        ErrorCode.VALIDATION_ERROR,
+        HttpStatus.BAD_REQUEST,
+        'Validation failed',
+        errors.map((error) => ({
           field: error.property,
           messages: Object.values(error.constraints ?? {}),
         })),
-      }),
+      ),
   }),
 )
+@UsePipes(socketValidationPipe)
 @WebSocketGateway({
   cors: {
     // Same allow-list as the HTTP API (FRONTEND_URL), evaluated per request.
@@ -65,8 +86,8 @@ interface GameSession {
     },
     credentials: true,
   },
+  cors: socketCorsOptions,
   namespace: '/game',
-  maxHttpBufferSize: WS_MAX_HTTP_BUFFER_SIZE,
 })
 export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()
@@ -94,7 +115,7 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const result = this.rateLimiter.consume(client, event);
     if (!result.allowed) {
       client.emit('error', {
-        code: 'RATE_LIMITED',
+        code: ErrorCode.RATE_LIMITED,
         message: `Rate limit exceeded for ${event}`,
         event,
         retryAfterMs: result.retryAfterMs,
@@ -118,24 +139,36 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       );
       userId = user.id;
     } catch {
+      const authenticated = await authenticateSocket(client);
+      userId = authenticated.userId;
+      user = authenticated.user;
+    } catch (error) {
+    // Authentication is handled by the shared io.use middleware, which sets
+    // client.data.user/userId or rejects the handshake before we get here.
+    registerSocketAuth(this.server);
+    const userId: string | undefined = client.data?.userId;
+    if (!userId) {
       this.logger.warn(`Rejected unauthenticated connection: ${client.id}`);
-      client.emit('error', { message: 'Unauthorized' });
+      client.emit('error', {
+        code:
+          error instanceof DomainException
+            ? error.code
+            : ErrorCode.UNAUTHORIZED,
+        message: 'Unauthorized',
+      });
       client.disconnect(true);
       return;
     }
 
     if (!(await this.connectionLimiter.acquire(userId, client.id))) {
       client.emit('error', {
-        code: 'RATE_LIMITED',
+        code: ErrorCode.RATE_LIMITED,
         message: 'Too many concurrent connections',
       });
       client.disconnect(true);
       return;
     }
 
-    client.data.userId = userId;
-    // Read by @GetUser, RolesGuard and JwtAuthGuard in handlers (#362).
-    client.data.user = user;
     // Join a per-user room so revocation can target every socket of the user.
     await client.join(`user:${userId}`);
     this.logger.log(`Client connected: ${client.id} (user ${userId})`);
@@ -172,7 +205,10 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         .in(`user:${payload.userId}`)
         .fetchSockets();
       for (const socket of sockets) {
-        socket.emit('error', { message: 'Session revoked' });
+        socket.emit('error', {
+          code: ErrorCode.TOKEN_REVOKED,
+          message: 'Session revoked',
+        });
         socket.disconnect(true);
       }
       if (sockets.length > 0) {
@@ -199,7 +235,10 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     try {
       const session = this.sessions.get(client.id);
       if (!session) {
-        client.emit('error', { message: 'Session not found' });
+        client.emit('error', {
+          code: ErrorCode.NOT_FOUND,
+          message: 'Session not found',
+        });
         return;
       }
 
@@ -244,11 +283,21 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       });
     } catch (error) {
       if (error instanceof NotFoundException) {
-        client.emit('error', { message: 'No lyrics available' });
+        client.emit('error', {
+          code: ErrorCode.NOT_FOUND,
+          message: 'No lyrics available',
+        });
         return;
       }
-      this.logger.error('Error handling lyric request', error.stack);
-      client.emit('error', { message: 'Failed to fetch lyric' });
+      if (error instanceof DomainException) throw error;
+      this.logger.error(
+        'Error handling lyric request',
+        error instanceof Error ? error.stack : undefined,
+      );
+      client.emit('error', {
+        code: ErrorCode.INTERNAL_ERROR,
+        message: 'Failed to fetch lyric',
+      });
     }
   }
 
@@ -263,7 +312,10 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     try {
       const session = this.sessions.get(client.id);
       if (!session) {
-        client.emit('error', { message: 'Session not found' });
+        client.emit('error', {
+          code: ErrorCode.NOT_FOUND,
+          message: 'Session not found',
+        });
         return;
       }
 
@@ -271,22 +323,40 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
       // client-supplied ID that could be replayed after the answer is shown.
       const roundId = session.currentRoundId;
       if (!roundId) {
-        client.emit('error', { message: 'Request a lyric before guessing' });
+        client.emit('error', {
+          code: ErrorCode.ROUND_REQUIRED,
+          message: 'Request a lyric before guessing',
+        });
         return;
       }
+    const session = this.sessions.get(client.id);
+    if (!session) {
+      client.emit('error', { message: 'Session not found' });
+      return;
+    }
+    if (!session.currentRoundId) {
+      client.emit('error', { message: 'No active round' });
+      return;
+    }
+
+    try {
+      const result = await this.gameLogicService.submitGuess(
+        session.playerId,
+        session.currentRoundId,
+        guessDto.guess,
+      );
       session.currentRoundId = undefined;
-
-      // Emits the HTTP response shape (GuessResultResponse).
-      const result = await this.gameLogicService.guessRound(session.playerId, {
-        roundId,
-        guessType: guessDto.guessType,
-        guessValue: guessDto.guessValue,
-      });
-
       client.emit('guessResult', result);
     } catch (error) {
-      this.logger.error('Error handling guess submission', error.stack);
-      client.emit('error', { message: 'Failed to process guess' });
+      if (error instanceof DomainException) throw error;
+      this.logger.error(
+        'Error handling guess submission',
+        error instanceof Error ? error.stack : undefined,
+      );
+      client.emit('error', {
+        code: ErrorCode.INTERNAL_ERROR,
+        message: 'Failed to process guess',
+      });
     }
   }
 
@@ -298,13 +368,19 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
     try {
       const session = this.sessions.get(client.id);
       if (!session) {
-        client.emit('error', { message: 'Session not found' });
+        client.emit('error', {
+          code: ErrorCode.NOT_FOUND,
+          message: 'Session not found',
+        });
         return;
       }
 
       const roundId = session.currentRoundId;
       if (!roundId) {
-        client.emit('error', { message: 'Request a lyric before a hint' });
+        client.emit('error', {
+          code: ErrorCode.ROUND_REQUIRED,
+          message: 'Request a lyric before a hint',
+        });
         return;
       }
 
@@ -315,8 +391,15 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
       client.emit('hintResult', hint);
     } catch (error) {
-      this.logger.error('Error handling hint request', error.stack);
-      client.emit('error', { message: 'Failed to fetch hint' });
+      if (error instanceof DomainException) throw error;
+      this.logger.error(
+        'Error handling hint request',
+        error instanceof Error ? error.stack : undefined,
+      );
+      client.emit('error', {
+        code: ErrorCode.INTERNAL_ERROR,
+        message: 'Failed to fetch hint',
+      });
     }
   }
 
@@ -331,7 +414,16 @@ export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
         currentRoundId: session.currentRoundId,
       });
     } else {
-      client.emit('error', { message: 'Session not found' });
+      client.emit('error', {
+        code: ErrorCode.NOT_FOUND,
+        message: 'Session not found',
+      });
+      if (error instanceof WsException) {
+        client.emit('error', error.getError());
+        return;
+      }
+      this.logger.error('Error handling guess submission', error.stack);
+      client.emit('error', { message: 'Failed to submit guess' });
     }
   }
 }

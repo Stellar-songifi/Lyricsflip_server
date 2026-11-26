@@ -49,6 +49,37 @@ export function isReservedUsername(username: string): boolean {
   );
 }
 
+const DEFAULT_DENIED_USERNAME_TERMS = ['asshole', 'bitch', 'fuck', 'shit'];
+const LEET_LETTERS: Record<string, string> = {
+  '0': 'o',
+  '1': 'i',
+  '2': 'z',
+  '3': 'e',
+  '4': 'a',
+  '5': 's',
+  '6': 'g',
+  '7': 't',
+  '8': 'b',
+  '9': 'g',
+};
+
+function normalizeUsernameForModeration(username: string): string {
+  return username
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '')
+    .replace(/\d/g, (digit) => LEET_LETTERS[digit]);
+}
+
+function isDeniedUsername(username: string): boolean {
+  const normalized = normalizeUsernameForModeration(username);
+  const terms =
+    process.env.USERNAME_DENY_LIST?.split(',') ?? DEFAULT_DENIED_USERNAME_TERMS;
+  return terms.some((term) => {
+    const denied = normalizeUsernameForModeration(term);
+    return denied.length > 0 && normalized.includes(denied);
+  });
+}
+
 /** Why `username` breaks the rule, or null if it is acceptable. */
 export function usernameRuleViolation(username: unknown): string | null {
   if (typeof username !== 'string' || !USERNAME_RULE.pattern.test(username)) {
@@ -57,15 +88,20 @@ export function usernameRuleViolation(username: unknown): string | null {
   if (isReservedUsername(username)) {
     return 'This username is reserved';
   }
+  if (isDeniedUsername(username)) {
+    return 'This username is unavailable';
+  }
   return null;
 }
 
-function IsUsernameConstraint(validationOptions?: ValidationOptions) {
-  return function (object: object, propertyName: string) {
+function IsUsernameConstraint(
+  validationOptions?: ValidationOptions,
+): PropertyDecorator {
+  return function (object, propertyName) {
     registerDecorator({
       name: 'isUsername',
       target: object.constructor,
-      propertyName,
+      propertyName: String(propertyName),
       options: validationOptions,
       validator: {
         validate: (value: unknown) => usernameRuleViolation(value) === null,

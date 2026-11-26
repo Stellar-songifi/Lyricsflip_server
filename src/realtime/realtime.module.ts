@@ -6,6 +6,7 @@ import { RoomUser } from '../rooms/entities/room-user.entity';
 import { EntityEventsSubscriber } from './entity-events.subscriber';
 import { RealtimeGateway } from './realtime.gateway';
 import { SocketAuthenticator } from '../auth/socket-authenticator';
+import { SubscriptionRevoker } from './subscription-revoker.service';
 
 @Module({
   imports: [
@@ -14,5 +15,7 @@ import { SocketAuthenticator } from '../auth/socket-authenticator';
   ],
   providers: [RealtimeGateway, EntityEventsSubscriber, SocketAuthenticator],
   exports: [RealtimeGateway],
+  providers: [RealtimeGateway, EntityEventsSubscriber, SubscriptionRevoker],
+  exports: [RealtimeGateway, SubscriptionRevoker],
 })
 export class RealtimeModule {}

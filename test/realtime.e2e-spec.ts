@@ -141,6 +141,7 @@ describe('Realtime (e2e)', () => {
     ).resolves.toEqual({
       ok: false,
       error: 'Not found',
+      code: 'NOT_FOUND',
     });
 
     const carolHears = jest.fn();

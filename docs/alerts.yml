@@ -40,3 +40,25 @@ groups:
         annotations:
           summary: "Automated wager refund failed"
           description: "An automated refund during wager creation or expiry sweep failed to execute cleanly."
+
+  - name: lyricsflip_scheduled_job_alerts
+    rules:
+      - alert: ScheduledJobNotSuccessful
+        expr: time() - job_last_success_timestamp_seconds{job=~"wager-refund|reconcile"} > 600
+        for: 0m
+        labels:
+          severity: critical
+          component: scheduled-jobs
+        annotations:
+          summary: "Scheduled job {{ $labels.job }} has not succeeded in 10 minutes"
+          description: "The {{ $labels.job }} job has not recorded a successful run for over 10 minutes (last success {{ $value }}s ago). Check for a stuck lock or crash loop."
+
+      - alert: ScheduledJobRepeatedFailures
+        expr: increase(job_failures_total[15m]) >= 3
+        for: 0m
+        labels:
+          severity: warning
+          component: scheduled-jobs
+        annotations:
+          summary: "Scheduled job {{ $labels.job }} is failing repeatedly"
+          description: "The {{ $labels.job }} job has failed {{ $value }} times in the last 15 minutes. Investigate logs for the underlying error."

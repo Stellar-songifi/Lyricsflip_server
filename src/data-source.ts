@@ -1,3 +1,4 @@
+import { runtimeEnv } from './config/runtime-env';
 import 'reflect-metadata';
 import { join } from 'path';
 import { config } from 'dotenv';
@@ -17,7 +18,7 @@ config(); // Load .env when present; the container passes real env vars.
  */
 
 function getEnv(key: string): string {
-  const value = process.env[key];
+  const value = runtimeEnv()[key];
   if (typeof value === 'undefined' || value === '') {
     throw new Error(`Environment variable ${key} not set`);
   }
@@ -29,13 +30,13 @@ export function connectionOptions(): Pick<
   DataSourceOptions & { type: 'postgres' },
   'type' | 'url' | 'host' | 'port' | 'username' | 'password' | 'database'
 > {
-  if (process.env.DATABASE_URL) {
-    return { type: 'postgres', url: process.env.DATABASE_URL };
+  if (runtimeEnv().DATABASE_URL) {
+    return { type: 'postgres', url: runtimeEnv().DATABASE_URL };
   }
   return {
     type: 'postgres',
     host: getEnv('DB_HOST'),
-    port: parseInt(process.env.DB_PORT ?? '5432', 10),
+    port: parseInt(runtimeEnv().DB_PORT ?? '5432', 10),
     username: getEnv('DB_USERNAME'),
     password: getEnv('DB_PASSWORD'),
     database: getEnv('DB_NAME'),

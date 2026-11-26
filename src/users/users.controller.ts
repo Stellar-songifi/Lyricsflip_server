@@ -1,6 +1,10 @@
+import { CreatePlayerReportDto } from '../moderation/player-report.dto';
 import {
   Controller,
   Get,
+  Post,
+  HttpCode,
+  HttpStatus,
   Body,
   Patch,
   Param,
@@ -30,12 +34,17 @@ import { Role } from '../auth/roles/role.enum';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { AuditInterceptor } from '../audit/audit.interceptor';
 import { Audited } from '../audit/decorators/audited.decorator';
+import { PushService } from '../push/push.service';
+import { CreatePushSubscriptionDto } from '../push/dto/create-push-subscription.dto';
 
 // Accounts are created through POST /auth/signup; there is no POST /users.
 @ApiTags('users')
 @Controller('users')
 export class UsersController {
-  constructor(private readonly usersService: UsersService) {}
+  constructor(
+    private readonly usersService: UsersService,
+    private readonly pushService: PushService,
+  ) {}
 
   @Get()
   @Roles(Role.Admin)
@@ -46,6 +55,12 @@ export class UsersController {
   @ApiResponse({ status: 403, description: 'Not an admin.' })
   findAll(@Query() { limit, offset }: PaginationQueryDto) {
     return this.usersService.findAll(limit, offset);
+  }
+
+  @Get('me/referrals')
+  @ApiOperation({ summary: 'Get your referral code and signup count' })
+  getMyReferrals(@GetUser() user: User) {
+    return this.usersService.getReferrals(user.id);
   }
 
   /**
@@ -62,6 +77,49 @@ export class UsersController {
   @ApiResponse({ status: 401, description: 'Unauthorized.' })
   getMe(@GetUser() user: User) {
     return this.usersService.getSelfProfile(user.id);
+  }
+
+  @Get('me/balance')
+  @ApiOperation({ summary: 'Get your current LYRIC balance' })
+  @ApiResponse({
+    status: 200,
+    schema: {
+      type: 'object',
+      required: ['stroops', 'display'],
+      properties: { stroops: { type: 'string' }, display: { type: 'string' } },
+    },
+  })
+  getBalance(@GetUser() user: User) {
+    return this.usersService.getUserTokenBalance(user.id);
+  }
+
+  @Get('me/rank')
+  @ApiOperation({ summary: 'Get your current leaderboard rank' })
+  @ApiResponse({
+    status: 200,
+    schema: {
+      type: 'object',
+      required: ['rank'],
+      properties: { rank: { type: 'integer' } },
+    },
+  })
+  getRank(@GetUser() user: User) {
+    return this.usersService.getMyRank(user.id);
+  /**
+   * POST /users/me/push-subscriptions - Register a Web Push subscription
+   * (VAPID) and/or an FCM/APNs device token for mobile push. Declared before
+   * `:id` so `me` is not treated as an ID.
+   */
+  @Post('me/push-subscriptions')
+  @ApiOperation({ summary: 'Register a push subscription' })
+  @ApiResponse({ status: 201, description: 'Subscription registered.' })
+  @ApiResponse({ status: 400, description: 'Invalid subscription payload.' })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  registerPushSubscription(
+    @GetUser() user: User,
+    @Body() dto: CreatePushSubscriptionDto,
+  ) {
+    return this.pushService.registerSubscription(user.id, dto);
   }
 
   @Get('profile')
@@ -233,6 +291,29 @@ export class UsersController {
     return this.usersService.findOne(id);
   }
 
+  @Post(':id/report')
+  @UseInterceptors(AuditInterceptor)
+  @Audited({ action: 'user.player.report', targetType: 'user' })
+  reportPlayer(
+    @GetUser() user: User,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() report: CreatePlayerReportDto,
+  ) {
+    return this.usersService.reportPlayer(user.id, id, report);
+  }
+
+  @Post(':id/block')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  block(@GetUser() user: User, @Param('id', ParseUUIDPipe) id: string) {
+    return this.usersService.blockPlayer(user.id, id);
+  }
+
+  @Delete(':id/block')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  unblock(@GetUser() user: User, @Param('id', ParseUUIDPipe) id: string) {
+    return this.usersService.unblockPlayer(user.id, id);
+  }
+
   @Patch(':id')
   @Roles(Role.Admin)
   @UseInterceptors(AuditInterceptor)
@@ -268,3 +349,4 @@ export class UsersController {
     return this.usersService.remove(id);
   }
 }
+    description: 'No active user with that username (case-insensit

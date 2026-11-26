@@ -1,3 +1,6 @@
+import { lockPlayerPair, orderedPlayers } from '../social/player-pair';
+import { submitPlayerReport } from '../moderation/player-report.store';
+import { CreatePlayerReportDto } from '../moderation/player-report.dto';
 import {
   Injectable,
   BadRequestException,
@@ -23,9 +26,12 @@ import { fromStroops } from '../stellar/amount.util';
 import { GameHistory } from '../game-history/entities/game-history.entity';
 import { GameRound } from '../game/entities/game-round.entity';
 import { DailyChallengeAttempt } from '../challenges/entities/daily-challenge-attempt.entity';
+import { currentDailyStreak } from '../challenges/daily-seed.util';
 import { Room } from '../rooms/entities/room.entity';
 import { RoomUser } from '../rooms/entities/room-user.entity';
 import { Lyrics } from '../lyrics/entities/lyrics.entity';
+import { Role } from '../auth/roles/role.enum';
+import { UserBlock } from '../moderation/user-block.entity';
 import { usernameRuleViolation } from '../common/validators/username.validator';
 
 // Wager states that have not yet reached a final outcome. A user involved in
@@ -52,7 +58,9 @@ import { PasswordResetToken } from '../auth/entities/password-reset-token.entity
 import { Notification } from '../notifications/entities/notification.entity';
 import { AuditLog } from '../audit/entities/audit-log.entity';
 import { DeleteAccountDto } from './dto/delete-account.dto';
+import { StellarAuthService } from '../auth/services/stellar-auth.service';
 import { StellarAuthService } from '../auth/stellar-auth.service';
+import { isVerifiedEmailRequired } from '../auth/verified-email.util';
 
 /** Public profiles are cached briefly; they change only after a match. */
 const PUBLIC_PROFILE_CACHE_TTL_MS = 60_000;
@@ -153,6 +161,27 @@ export class UsersService {
     return profile;
   }
 
+  async getReferrals(userId: string) {
+    const [user, referredSignups, rewards] = await Promise.all([
+      this.userRepository.findOneOrFail({
+        where: { id: userId },
+        select: { referralCode: true },
+      }),
+      this.userRepository.countBy({ referredBy: userId }),
+      this.userRepository.query<Array<{ awardedAt: Date }>>(
+        `SELECT "awardedAt" FROM referral_rewards
+         WHERE "referrerId" = $1 OR "referredId" = $1
+         ORDER BY "awardedAt" DESC LIMIT 1`,
+        [userId],
+      ),
+    ]);
+    return {
+      referralCode: user.referralCode,
+      referredSignups,
+      referralBadge: rewards[0] ? { awardedAt: rewards[0].awardedAt } : null,
+    };
+  }
+
   /**
    * Alias used by the controller for the public profile lookup.
    */
@@ -230,8 +259,12 @@ export class UsersService {
       ...wagerStats,
     };
 
+    const { lastDailyAttemptDate, ...profile } = user;
     return {
+      ...profile,
+      dailyStreak: currentDailyStreak(user.dailyStreak, lastDailyAttemptDate),
       ...user,
+      emailVerified: Boolean(user.emailVerifiedAt),
       levelTitle: this.getLevelTitle(level),
       wallet: user.stellarAddress
         ? {
@@ -244,8 +277,13 @@ export class UsersService {
     };
   }
 
+  async getUserTokenBalance(userId: string) {
+    const stroops = await this.tokenService.getUserBalance(userId);
+    return { stroops, display: fromStroops(stroops) };
+  }
+
   /**
-   * The same balance /game-sessions/tokens/balance reports: the mock balance
+   * The same balance /users/me/balance reports: the mock balance
    * in mock mode, the token contract in stellar mode. A failed RPC call must
    * not take the whole profile down, so it yields `balance: null` and a
    * reason instead.
@@ -255,11 +293,10 @@ export class UsersService {
     balanceUnavailableReason?: string;
   }> {
     try {
-      const stroops = await this.tokenService.getUserBalance(userId);
+      const balance = await this.getUserTokenBalance(userId);
       return {
         balance: {
-          stroops,
-          display: fromStroops(stroops),
+          ...balance,
           symbol: TOKEN_SYMBOL,
         },
       };
@@ -362,6 +399,40 @@ export class UsersService {
     return 'Rookie';
   }
 
+  async reportPlayer(
+    reporterId: string,
+    playerId: string,
+    report: CreatePlayerReportDto,
+  ): Promise<void> {
+    await submitPlayerReport(this.userRepository.manager, reporterId, playerId, report);
+  }
+
+  async blockPlayer(blockerId: string, blockedId: string): Promise<void> {
+    if (blockerId === blockedId) {
+      throw new BadRequestException('Cannot block your own account');
+    }
+    if (!(await this.userRepository.existsBy({ id: blockedId }))) {
+      throw new NotFoundException('Player not found');
+    }
+    const [first, second] = orderedPlayers(blockerId, blockedId);
+    await this.userRepository.manager.transaction(async (manager) => {
+      await lockPlayerPair(manager, first, second);
+      await manager.createQueryBuilder().insert().into(UserBlock)
+        .values({ blockerId, blockedId }).orIgnore().execute();
+      await manager.query(
+        'DELETE FROM friendships WHERE "firstId" = $1 AND "secondId" = $2',
+        [first, second],
+      );
+    });
+  }
+
+  async unblockPlayer(blockerId: string, blockedId: string): Promise<void> {
+    await this.userRepository.manager.delete(UserBlock, {
+      blockerId,
+      blockedId,
+    });
+  }
+
   async update(
     id: string,
     updateUserDto: UpdateProfileDto | AdminUpdateUserDto,
@@ -375,12 +446,16 @@ export class UsersService {
       if (!user) {
         throw new NotFoundException(`User with ID ${id} not found`);
       }
-    const user = await this.findOne(id);
 
+      const originalUsername = user.username;
       const before = { role: user.role, isActive: user.isActive };
       const { username } = updateUserDto;
       const email = 'email' in updateUserDto ? updateUserDto.email : undefined;
       if (username && username !== user.username) {
+        const violation = usernameRuleViolation(username);
+        if (violation) {
+          throw new BadRequestException(violation);
+        }
         await this.assertUnusedWithRepository(
           repository,
           { username },
@@ -425,7 +500,13 @@ export class UsersService {
       const saved = await repository.save(user);
       const after = { role: saved.role, isActive: saved.isActive };
       Object.defineProperty(saved, 'auditContext', {
-        value: { before, after },
+        value:
+          saved.username === originalUsername
+            ? { before, after }
+            : {
+                before: { ...before, username: originalUsername },
+                after: { ...after, username: saved.username },
+              },
         enumerable: false,
       });
       await this.cacheManager.del(`user:${id}`);
@@ -796,10 +877,16 @@ export class UsersService {
     const safeLimit = Math.min(Math.max(limit, 1), MAX_PAGE_SIZE);
     const safeOffset = Math.max(offset, 0);
 
+    // With AUTH_REQUIRE_VERIFIED_EMAIL on, unverified accounts are not listed.
+    const verifiedOnly = isVerifiedEmailRequired()
+      ? 'WHERE "emailVerifiedAt" IS NOT NULL'
+      : '';
+
     const rows = await this.userRepository.query(
       `SELECT id, username, xp, level, "levelTitle",
               RANK() OVER (ORDER BY xp DESC) AS rank
          FROM users
+        ${verifiedOnly}
         WHERE "isActive" = true
         ORDER BY xp DESC, id ASC
         LIMIT $1 OFFSET $2`,
@@ -821,6 +908,7 @@ export class UsersService {
       `SELECT rank FROM (
          SELECT id, RANK() OVER (ORDER BY xp DESC) AS rank
            FROM users
+           WHERE "isActive" = true
        ) ranked
        WHERE id = $1`,
       [userId],

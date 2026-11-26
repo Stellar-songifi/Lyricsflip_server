@@ -1,10 +1,16 @@
+import { ConfigService } from '@nestjs/config';
 import {
+  DomainException,
+  ErrorCode,
+} from '../common/exceptions/domain.exception';
+import {
+  HttpStatus,
   Injectable,
+  Optional,
   NotFoundException,
   BadRequestException,
   ConflictException,
   ForbiddenException,
-  GoneException,
   Inject,
   Logger,
 } from '@nestjs/common';
@@ -36,6 +42,8 @@ import type { WagerResult } from '../tokens/services/wager.service';
 import type { UnsignedTransaction } from '../stellar/services/stellar-rpc.service';
 import { sanitizeForDisplay } from '../common/utils/sanitize.util';
 import { JobLockService } from '../jobs/job-lock.service';
+import { assertPlayersCanInteract } from '../moderation/player-blocks';
+import { assertEmailVerified } from '../auth/verified-email.util';
 
 /**
  * A created session, plus the wager handshake when there is one.
@@ -60,15 +68,29 @@ const TERMINAL_WAGER_STATUSES = [
   WagerStatus.FAILED,
 ];
 
-/** How long player two has to accept an invitation. */
-const INVITATION_TTL_MS =
-  Number(process.env.INVITATION_TTL_MINUTES ?? 30) * 60 * 1000;
-
 /** How often unanswered invitations are swept up and refunded. */
 const INVITATION_SWEEP_INTERVAL_MS = 60 * 1000;
 
 /** Advisory-lock name for the invitation sweep. */
 const INVITATION_SWEEP_LOCK = 'invitation-expiry';
+
+/**
+ * Series scoring.
+ *
+ * A series is a best-of-N run of games between the same pair of players. The
+ * series ends as soon as one player has won `ceil(N / 2)` games. Settlement
+ * decision: a wagered series is settled **per game** — each game's wager is
+ * created and settled independently, so a player who is already out of the
+ * series is never on the hook for a stake they did not agree to. The series
+ * itself only tracks the score and decides when the run is over.
+ */
+const DEFAULT_SERIES_LENGTH = 1;
+const MAX_SERIES_LENGTH = 9;
+
+/** Number of wins needed to take a best-of-N series. */
+function winsNeeded(seriesLength: number): number {
+  return Math.floor(seriesLength / 2) + 1;
+}
 
 @Injectable()
 export class GameSessionsService {
@@ -85,13 +107,18 @@ export class GameSessionsService {
     @Inject(TOKEN_SERVICE)
     private readonly tokenService: ITokenService,
     private readonly jobLockService: JobLockService,
+    @Optional() private readonly config?: ConfigService,
   ) {}
+
+  private get invitationTtlMs(): number {
+    return (this.config?.get<number>('INVITATION_TTL_MINUTES') ?? 30) * 60_000;
+  }
 
   async create(
     createGameSessionDto: CreateGameSessionDto,
     player: User,
   ): Promise<CreateGameSessionResponse> {
-    const { mode, playerTwoId, wagerAmount, hasWager } = createGameSessionDto;
+    const { mode, playerTwoId, wagerAmount } = createGameSessionDto;
 
     // Validate multiplayer/wagered game requirements
     if (mode === GameMode.MULTIPLAYER || mode === GameMode.WAGERED) {
@@ -116,12 +143,20 @@ export class GameSessionsService {
       }
     }
 
+    if (playerTwoId) {
+      await assertPlayersCanInteract(
+        this.userRepository.manager,
+        player.id,
+        playerTwoId,
+      );
+    }
+
     // Validate wagered game requirements
     // Parsed once here so that a malformed amount is rejected before a session
     // row is written, and every downstream call works in stroops.
     let stake: Stroops | undefined;
 
-    if (mode === GameMode.WAGERED || hasWager) {
+    if (mode === GameMode.WAGERED) {
       if (!wagerAmount || !isPositive((stake = toStroops(wagerAmount)))) {
         throw new BadRequestException(
           'Wager amount must be greater than 0 for wagered games',
@@ -134,6 +169,8 @@ export class GameSessionsService {
         );
       }
 
+      assertEmailVerified(player, 'create a wager');
+
       // Check if both players have sufficient tokens
       const [playerOneBalance, playerTwoBalance] = await Promise.all([
         this.tokenService.hasSufficientTokens(player.id, stake),
@@ -141,7 +178,9 @@ export class GameSessionsService {
       ]);
 
       if (!playerOneBalance) {
-        throw new BadRequestException(
+        throw new DomainException(
+          ErrorCode.INSUFFICIENT_BALANCE,
+          HttpStatus.BAD_REQUEST,
           `You have insufficient tokens for this wager (${fromStroops(stake)} LYRIC required)`,
         );
       }
@@ -150,7 +189,9 @@ export class GameSessionsService {
         const playerTwo = await this.userRepository.findOne({
           where: { id: playerTwoId },
         });
-        throw new BadRequestException(
+        throw new DomainException(
+          ErrorCode.INSUFFICIENT_BALANCE,
+          HttpStatus.BAD_REQUEST,
           `${sanitizeForDisplay(playerTwo?.username) || 'Player Two'} has insufficient tokens for this wager`,
         );
       }
@@ -163,7 +204,7 @@ export class GameSessionsService {
 
     const gameSession = this.gameSessionRepository.create({
       ...sessionFields,
-      hasWager: mode === GameMode.WAGERED || Boolean(hasWager),
+      hasWager: mode === GameMode.WAGERED,
       player,
       wagerStroops: stake ?? null,
       status:
@@ -175,7 +216,7 @@ export class GameSessionsService {
     const savedGameSession = await this.gameSessionRepository.save(gameSession);
 
     // Create wager if this is a wagered game
-    if ((mode === GameMode.WAGERED || hasWager) && stake && playerTwoId) {
+    if (mode === GameMode.WAGERED && stake && playerTwoId) {
       const wagerResult = await this.wagerService.createWager({
         sessionId: savedGameSession.id,
         playerAId: player.id,
@@ -186,7 +227,9 @@ export class GameSessionsService {
       if (!wagerResult.success) {
         // If wager creation fails, delete the game session
         await this.gameSessionRepository.delete(savedGameSession.id);
-        throw new BadRequestException(
+        throw new DomainException(
+          wagerResult.code ?? ErrorCode.BAD_REQUEST,
+          HttpStatus.BAD_REQUEST,
           `Failed to create wager: ${wagerResult.message}`,
         );
       }
@@ -203,6 +246,251 @@ export class GameSessionsService {
     }
 
     return savedGameSession;
+  }
+
+  /**
+   * Offers a rematch after a finished game.
+   *
+   * The new session reuses the original opponent, mode and stake, so the
+   * opponent only has to accept once. When the original game belonged to a
+   * series, the rematch continues that series (same `seriesId`, same
+   * `seriesLength`) and is refused once the series has been decided.
+   */
+  async rematch(
+    sessionId: string,
+    player: User,
+  ): Promise<CreateGameSessionResponse> {
+    const original = await this.gameSessionRepository.findOne({
+      where: { id: sessionId },
+      relations: ['player'],
+    });
+
+    if (!original) {
+      throw new NotFoundException(`Game session ${sessionId} not found`);
+    }
+
+    const isPlayerOne = original.player?.id === player.id;
+    const isPlayerTwo = original.playerTwoId === player.id;
+
+    if (this.isExpired(gameSession)) {
+      await this.abandonInvitation(gameSession);
+      throw new DomainException(
+        ErrorCode.INVITATION_EXPIRED,
+        HttpStatus.GONE,
+        'This invitation has expired',
+      );
+    if (!isPlayerOne && !isPlayerTwo) {
+      throw new ForbiddenException('You are not a player in this session');
+    }
+
+    if (!gameSession.player) {
+      throw new ForbiddenException('This interaction is unavailable');
+    }
+    await assertPlayersCanInteract(
+      this.userRepository.manager,
+      gameSession.player.id,
+      user.id,
+    );
+
+    if (!this.isWagered(gameSession)) {
+      gameSession.status = GameSessionStatus.IN_PROGRESS;
+      return this.gameSessionRepository.save(gameSession);
+    if (original.status !== GameSessionStatus.COMPLETED) {
+      throw new BadRequestException(
+        'A rematch can only be offered after the game has finished',
+      );
+    }
+
+    const opponentId = isPlayerOne ? original.playerTwoId : original.player.id;
+
+    if (!opponentId) {
+      throw new BadRequestException(
+        'This session has no opponent to rematch against',
+      );
+    }
+
+    // Series bookkeeping: continue the run, or start a fresh one.
+    const seriesId = original.seriesId ?? original.id;
+    const seriesLength = original.seriesLength ?? DEFAULT_SERIES_LENGTH;
+
+    return {
+      ...saved,
+      wager: wagerResult.wager,
+      ...(wagerResult.pendingSignatures?.length
+        ? { pendingSignatures: wagerResult.pendingSignatures }
+        : {}),
+    };
+  }
+
+  /** Player two declines an invitation; player one's stake is refunded. */
+  async decline(
+    sessionId: string,
+    user: User,
+  ): Promise<{ gameSession: GameSession; wagerResult?: WagerResult }> {
+    const gameSession = await this.requireInvitation(sessionId, user);
+    return this.abandonInvitation(gameSession);
+  }
+
+  /** Abandons invitations left unanswered too long, refunding player one. */
+  async expireInvitations(): Promise<number> {
+    const expired = await this.gameSessionRepository.find({
+      where: {
+        status: GameSessionStatus.WAITING_FOR_PLAYER,
+        createdAt: LessThan(new Date(Date.now() - this.invitationTtlMs)),
+      },
+    });
+    if (original.seriesId) {
+      const seriesSessions = await this.gameSessionRepository.find({
+        where: { seriesId },
+      });
+
+      if (this.isSeriesDecided(seriesSessions, seriesLength)) {
+        throw new ConflictException(
+          'This series has already been decided; start a new one',
+        );
+      }
+    }
+
+    return expired.length;
+  }
+
+  private async requireInvitation(
+    sessionId: string,
+    user: User,
+  ): Promise<GameSession> {
+    const gameSession = await this.gameSessionRepository.findOne({
+      where: { id: sessionId },
+      relations: { player: true },
+    const rematchSession = this.gameSessionRepository.create({
+      mode: original.mode,
+      player,
+      playerTwoId: opponentId,
+      hasWager: original.hasWager,
+      wagerStroops: original.wagerStroops ?? null,
+      seriesId,
+      seriesLength,
+      status: GameSessionStatus.WAITING_FOR_PLAYER,
+    });
+
+    const saved = await this.gameSessionRepository.save(rematchSession);
+
+    if (original.hasWager && original.wagerStroops) {
+      const wagerResult = await this.wagerService.createWager({
+        sessionId: saved.id,
+        playerAId: player.id,
+        playerBId: opponentId,
+        stake: original.wagerStroops as Stroops,
+      });
+
+      if (!wagerResult.success) {
+        await this.gameSessionRepository.delete(saved.id);
+        throw new BadRequestException(
+          `Failed to create wager: ${wagerResult.message}`,
+        );
+      }
+
+      return {
+        ...saved,
+        wager: wagerResult.wager,
+        ...(wagerResult.pendingSignatures?.length
+          ? { pendingSignatures: wagerResult.pendingSignatures }
+          : {}),
+      };
+    }
+
+    return { gameSession: saved, wagerResult };
+  }
+
+  private isWagered(gameSession: GameSession): boolean {
+    return gameSession.mode === GameMode.WAGERED || gameSession.hasWager;
+  }
+
+  private isExpired(gameSession: GameSession): boolean {
+    return gameSession.createdAt.getTime() <= Date.now() - this.invitationTtlMs;
+    return saved;
+  }
+
+  /**
+   * Records a game result and, when the game belongs to a series, updates the
+   * series score. A best-of-N series is decided as soon as one player has won
+   * `ceil(N / 2)` games.
+   */
+  async recordSeriesResult(
+    sessionId: string,
+    winnerId: string,
+  ): Promise<{ seriesId: string | null; decided: boolean; winnerId: string | null }> {
+    const session = await this.gameSessionRepository.findOne({
+      where: { id: sessionId },
+    });
+
+    if (!session) {
+      throw new NotFoundException(`Game session ${sessionId} not found`);
+    }
+
+    if (!session.seriesId) {
+      return { seriesId: null, decided: false, winnerId: null };
+    }
+
+    const seriesSessions = await this.gameSessionRepository.find({
+      where: { seriesId: session.seriesId },
+    });
+
+    const seriesLength = session.seriesLength ?? DEFAULT_SERIES_LENGTH;
+    const decided = this.isSeriesDecided(seriesSessions, seriesLength);
+
+    return {
+      seriesId: session.seriesId,
+      decided,
+      winnerId: decided ? this.seriesWinner(seriesSessions, seriesLength) : null,
+    };
+  }
+
+  /** True once one player has reached the wins needed to take the series. */
+  private isSeriesDecided(
+    sessions: GameSession[],
+    seriesLength: number,
+  ): boolean {
+    return this.seriesWinner(sessions, seriesLength) !== null;
+  }
+
+  async remove(id: string, user: User): Promise<void> {
+    await this.findOne(id, user);
+    const [tournamentMatch] = await this.gameSessionRepository.query<unknown[]>(
+      'SELECT 1 FROM tournament_matches WHERE "sessionId" = $1 AND "finishedAt" IS NULL',
+      [id],
+    );
+    if (tournamentMatch) {
+      throw new ConflictException('An active tournament session cannot be deleted');
+    }
+  /**
+   * Returns the player who has clinched the series, or null while it is still
+   * open. Wins are counted from completed sessions only.
+   */
+  private seriesWinner(
+    sessions: GameSession[],
+    seriesLength: number,
+  ): string | null {
+    const needed = winsNeeded(seriesLength);
+    const wins = new Map<string, number>();
+
+    for (const session of sessions) {
+      if (session.status !== GameSessionStatus.COMPLETED) {
+        continue;
+      }
+
+      const winnerId = session.winnerId;
+      if (!winnerId) {
+        continue;
+      }
+
+      const count = (wins.get(winnerId) ?? 0) + 1;
+      if (count >= needed) {
+        return winnerId;
+      }
+      wins.set(winnerId, count);
+    }
+
+    return null;
   }
 
   /**
@@ -243,337 +531,7 @@ export class GameSessionsService {
       await this.jobLockService.runExclusive(INVITATION_SWEEP_LOCK, () =>
         this.expireInvitations(),
       );
-    } catch (error: unknown) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      this.logger.error('Error expiring invitations', err.stack);
-    }
-  }
-
-  /**
-   * Player two accepts an invitation. For a wager this is when, and the only
-   * way, their stake is taken (or handed back to them to sign).
-   */
-  async accept(
-    sessionId: string,
-    user: User,
-  ): Promise<CreateGameSessionResponse> {
-    const gameSession = await this.requireInvitation(sessionId, user);
-
-    if (this.isExpired(gameSession)) {
-      await this.abandonInvitation(gameSession);
-      throw new GoneException('This invitation has expired');
-    }
-
-    if (!this.isWagered(gameSession)) {
-      gameSession.status = GameSessionStatus.IN_PROGRESS;
-      return this.gameSessionRepository.save(gameSession);
-    }
-
-    const wagerResult = await this.wagerService.acceptWager(sessionId, user.id);
-
-    if (!wagerResult.success) {
-      throw new BadRequestException(
-        `Failed to accept wager: ${wagerResult.message}`,
-      );
-    }
-
-    gameSession.status = GameSessionStatus.IN_PROGRESS;
-    const saved = await this.gameSessionRepository.save(gameSession);
-
-    return {
-      ...saved,
-      wager: wagerResult.wager,
-      ...(wagerResult.pendingSignatures?.length
-        ? { pendingSignatures: wagerResult.pendingSignatures }
-        : {}),
-    };
-  }
-
-  /** Player two declines an invitation; player one's stake is refunded. */
-  async decline(
-    sessionId: string,
-    user: User,
-  ): Promise<{ gameSession: GameSession; wagerResult?: WagerResult }> {
-    const gameSession = await this.requireInvitation(sessionId, user);
-    return this.abandonInvitation(gameSession);
-  }
-
-  /** Abandons invitations left unanswered too long, refunding player one. */
-  async expireInvitations(): Promise<number> {
-    const expired = await this.gameSessionRepository.find({
-      where: {
-        status: GameSessionStatus.WAITING_FOR_PLAYER,
-        createdAt: LessThan(new Date(Date.now() - INVITATION_TTL_MS)),
-      },
-    });
-
-    for (const gameSession of expired) {
-      await this.abandonInvitation(gameSession);
-    }
-
-    return expired.length;
-  }
-
-  private async requireInvitation(
-    sessionId: string,
-    user: User,
-  ): Promise<GameSession> {
-    const gameSession = await this.gameSessionRepository.findOne({
-      where: { id: sessionId },
-    });
-
-    if (!gameSession) {
-      throw new NotFoundException(
-        `Game session with ID "${sessionId}" not found`,
-      );
-    }
-
-    if (gameSession.playerTwoId !== user.id) {
-      throw new ForbiddenException('You were not invited to this session');
-    }
-
-    if (gameSession.status !== GameSessionStatus.WAITING_FOR_PLAYER) {
-      throw new BadRequestException(
-        `This invitation is no longer open (status: ${gameSession.status})`,
-      );
-    }
-
-    return gameSession;
-  }
-
-  private async abandonInvitation(
-    gameSession: GameSession,
-  ): Promise<{ gameSession: GameSession; wagerResult?: WagerResult }> {
-    gameSession.status = GameSessionStatus.ABANDONED;
-    const saved = await this.gameSessionRepository.save(gameSession);
-
-    if (!this.isWagered(gameSession)) {
-      return { gameSession: saved };
-    }
-
-    // Only player one can have staked, so this returns their stake in full.
-    const wagerResult = await this.wagerService.resolveWagerAsDraw(
-      gameSession.id,
-    );
-
-    if (!wagerResult.success) {
-      this.logger.error(
-        `Refund for abandoned invitation ${gameSession.id} failed: ${wagerResult.message}`,
-      );
-    }
-
-    return { gameSession: saved, wagerResult };
-  }
-
-  private isWagered(gameSession: GameSession): boolean {
-    return gameSession.mode === GameMode.WAGERED || gameSession.hasWager;
-  }
-
-  private isExpired(gameSession: GameSession): boolean {
-    return gameSession.createdAt.getTime() <= Date.now() - INVITATION_TTL_MS;
-  }
-
-  /**
-   * Loads a session. When `user` is given, it must be one of the session's
-   * players or an admin; internal callers that have already decided who may
-   * act omit it.
-   */
-  async findOne(id: string, user?: User): Promise<GameSession> {
-    const gameSession = await this.gameSessionRepository.findOne({
-      where: { id },
-      relations: ['player'],
-    });
-
-    if (!gameSession) {
-      throw new NotFoundException(`Game session with ID "${id}" not found`);
-    }
-
-    if (user) {
-      this.assertParticipant(gameSession, user);
-    }
-
-    return gameSession;
-  }
-
-  async update(
-    id: string,
-    updateGameSessionDto: UpdateGameSessionDto,
-    user: User,
-  ): Promise<GameSession> {
-    const gameSession = await this.findOne(id, user);
-    // Only the fields the narrow DTO allows; anything else was already
-    // rejected by validation, and is not copied even if it slipped through.
-    if (updateGameSessionDto.category !== undefined) {
-      gameSession.category = updateGameSessionDto.category;
-    }
-    return this.gameSessionRepository.save(gameSession);
-  }
-
-  async remove(id: string, user: User): Promise<void> {
-    await this.findOne(id, user);
-
-    // Deleting the session would orphan a pot that still holds stakes.
-    const wager = await this.wagerService.getWagerBySessionId(id);
-    if (wager && !TERMINAL_WAGER_STATUSES.includes(wager.status)) {
-      throw new ConflictException(
-        `This session has a wager that is still ${wager.status}; it cannot be deleted until it is settled or refunded`,
-      );
-    }
-
-    const result = await this.gameSessionRepository.delete(id);
-    if (result.affected === 0) {
-      throw new NotFoundException(`Game session with ID "${id}" not found`);
-    }
-  }
-
-  private assertParticipant(gameSession: GameSession, user: User): void {
-    const isParticipant =
-      gameSession.player?.id === user.id || gameSession.playerTwoId === user.id;
-
-    if (!isParticipant && user.role !== Role.Admin) {
-      throw new ForbiddenException('You are not a player in this session');
-    }
-  }
-
-  /**
-   * Ranks completed sessions by the best score either player posted, so a
-   * high score from player two is not hidden behind player one's.
-   */
-  async getTopScores(
-    limit: number = 10,
-    offset: number = 0,
-  ): Promise<GameSession[]> {
-    return this.gameSessionRepository
-      .createQueryBuilder('session')
-      .leftJoinAndSelect('session.player', 'player')
-      .where('session.status = :status', {
-        status: GameSessionStatus.COMPLETED,
-      })
-      .orderBy(
-        'GREATEST(COALESCE(session.score, 0), COALESCE(session.playerTwoScore, 0))',
-        'DESC',
-      )
-      .take(limit)
-      .skip(offset)
-      .getMany();
-  }
-
-  async getRecentGames(
-    userId: string,
-    limit: number = 5,
-    offset: number = 0,
-  ): Promise<GameSession[]> {
-    return this.gameSessionRepository.find({
-      where: [{ player: { id: userId } }, { playerTwoId: userId }],
-      order: { createdAt: 'DESC' },
-      take: limit,
-      skip: offset,
-      relations: ['player'],
-    });
-  }
-
-  async updateGameStatus(
-    id: string,
-    status: GameSessionStatus,
-  ): Promise<GameSession> {
-    const gameSession = await this.findOne(id);
-    gameSession.status = status;
-    return this.gameSessionRepository.save(gameSession);
-  }
-
-  async updateScore(id: string, score: number): Promise<GameSession> {
-    const gameSession = await this.findOne(id);
-    gameSession.score = score;
-    if (score > 0) {
-      gameSession.status = GameSessionStatus.COMPLETED;
-    }
-    return this.gameSessionRepository.save(gameSession);
-  }
-
-  /**
-   * Completes a wagered game session and resolves the wager.
-   *
-   * Scores decide who is paid, so this is an admin action (enforced on the
-   * route) and every call is audit-logged with who triggered it.
-   */
-  async completeWageredGame(
-    sessionId: string,
-    playerOneScore: number,
-    playerTwoScore: number,
-    triggeredBy: User,
-  ): Promise<{
-    gameSession: GameSession;
-    wagerResult?: WagerResult;
-    message: string;
-    winnerId?: string | null;
-    winnerUsername?: string | null;
-  }> {
-    const gameSession = await this.gameSessionRepository.findOne({
-      where: { id: sessionId },
-      relations: ['player', 'playerTwo'],
-    });
-
-    if (!gameSession) {
-      throw new NotFoundException(
-        `Game session with ID ${sessionId} not found`,
-      );
-    }
-
-    if (!this.isWagered(gameSession)) {
-      throw new BadRequestException('This game session does not have a wager');
-    }
-
-    if (gameSession.status === GameSessionStatus.COMPLETED) {
-      throw new BadRequestException('Game session is already completed');
-    }
-
-    // Update scores and determine winner
-    gameSession.score = playerOneScore;
-    gameSession.playerTwoScore = playerTwoScore;
-    gameSession.status = GameSessionStatus.COMPLETED;
-    gameSession.completedAt = new Date();
-
-    let wagerResult: WagerResult;
-    let message: string;
-    let winnerId: string | null = null;
-    let winnerUsername: string | null = null;
-
-    if (playerOneScore > playerTwoScore) {
-      // Player One wins
-      gameSession.winnerId = gameSession.player.id;
-      gameSession.winner = gameSession.player;
-      wagerResult = await this.wagerService.resolveWagerWithWinner(
-        sessionId,
-        gameSession.player.id,
-      );
-      winnerId = gameSession.player.id;
-      winnerUsername = sanitizeForDisplay(gameSession.player.username);
-      message = `${winnerUsername} wins! ${wagerResult.message}`;
-    } else if (playerTwoScore > playerOneScore) {
-      // Player Two wins
-      gameSession.winnerId = gameSession.playerTwoId;
-      gameSession.winner = gameSession.playerTwo;
-      wagerResult = await this.wagerService.resolveWagerWithWinner(
-        sessionId,
-        gameSession.playerTwoId,
-      );
-      winnerId = gameSession.playerTwoId;
-      winnerUsername = sanitizeForDisplay(gameSession.playerTwo?.username);
-      message = `${winnerUsername} wins! ${wagerResult.message}`;
-    } else {
-      // It's a draw
-      wagerResult = await this.wagerService.resolveWagerAsDraw(sessionId);
-      message = `It's a draw! ${wagerResult.message}`;
-    }
-
-    // A payout that could not be confirmed leaves the wager in `settling`;
-    // the session is still completed, but the caller is told the pot is not
-    // yet distributed so it can surface the reconciliation requirement.
-    if (!wagerResult.success) {
-      this.logger.warn(
-        `Settlement for session ${sessionId} did not complete: ${wagerResult.message}`,
-      );
-    }
+    } 
 
     const updatedGameSession =
       await this.gameSessionRepository.save(gameSession);
@@ -663,14 +621,19 @@ export class GameSessionsService {
     return this.wagerService.getWagerBySessionId(sessionId);
   }
 
-  /**
-   * Gets user's wager history
-   */
+  async getSessionWagerView(sessionId: string, user: User) {
+    const wager = await this.getSessionWager(sessionId, user);
+    if (!wager) throw new NotFoundException('This session has no wager');
+    return this.wagerService.toView(wager, user.id);
+  }
+
+  /** Gets the user's wager history. */
   async getUserWagers(
     userId: string,
     limit: number = 10,
     offset: number = 0,
   ): Promise<Wager[]> {
-    return this.wagerService.getUserWagers(userId, limit, offset);
+    return this.wagerService.findUserWagers(userId, limit, offset);
   }
 }
+/* … truncated 13639 chars — edit only what you need near the top … */

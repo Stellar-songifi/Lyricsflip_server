@@ -74,7 +74,7 @@ export class AuthService {
     signupDto: SignupDto,
     context: ClientContext = {},
   ): Promise<AuthResult> {
-    const { username, email, password } = signupDto;
+    const { username, email, password, referralCode } = signupDto;
 
     // Check if user already exists
     const existingUser = await this.userRepository
@@ -92,6 +92,18 @@ export class AuthService {
       }
     }
 
+    let referredBy: string | null = null;
+    if (referralCode) {
+      const referrer = await this.userRepository.findOne({
+        where: { referralCode: referralCode.toLowerCase(), isActive: true },
+        select: { id: true },
+      });
+      if (!referrer) {
+        throw new BadRequestException('Invalid referral code');
+      }
+      referredBy = referrer.id;
+    }
+
     // Hash password using helper
     let passwordHash: string;
     try {
@@ -105,6 +117,7 @@ export class AuthService {
       username,
       email,
       passwordHash,
+      referredBy,
     });
 
     try {
@@ -112,6 +125,14 @@ export class AuthService {
     } catch {
       throw new BadRequestException('Failed to create user');
     }
+
+    // Fire-and-forget: a mail outage must not block or fail signup. The user
+    // can always ask again via /auth/resend-verification.
+    this.emailVerificationService.issue(user).catch((error: Error) => {
+      this.logger.warn(
+        `Could not send verification email to user ${user.id}: ${error.message}`,
+      );
+    });
 
     return this.issueAuthResult(user, context);
   }

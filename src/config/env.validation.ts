@@ -191,6 +191,11 @@ export const envValidationSchema = Joi.object({
   STELLAR_WEB_AUTH_DOMAIN: Joi.string().default('localhost'),
   STELLAR_WEB_AUTH_SECRET: Joi.string().optional().allow(''),
 
+  // When true, unverified accounts cannot wager or appear on the leaderboard.
+  AUTH_REQUIRE_VERIFIED_EMAIL: Joi.string()
+    .valid('true', 'false')
+    .default('false'),
+
   // KMS / Vault key store (STELLAR_KEY_STORE=kms|vault). Optional because
   // they are only required when that store is selected; KmsKeyStore itself
   // throws a specific error naming whichever of these is missing.
@@ -207,6 +212,15 @@ export const envValidationSchema = Joi.object({
   SETTLEMENT_DRAIN_TIMEOUT_MS: Joi.number().integer().min(1).default(30000),
   CACHE_MAX_ITEMS: Joi.number().integer().min(1).default(5000),
   CALIBRATION_ENABLED: Joi.string().valid('true', 'false').default('false'),
+  /**
+   * Server secret mixed into the daily seed so future sets cannot be computed
+   * from public lyric ids alone. Required in production (R3-15, R3-51).
+   */
+  DAILY_CHALLENGE_SALT: Joi.string().when('NODE_ENV', {
+    is: 'production',
+    then: Joi.string().min(16).required(),
+    otherwise: Joi.string().optional().allow(''),
+  }),
   // Salt for the daily challenge derivation (R3-51). Required in production
   // (see ProductionSafetyCheck).
   DAILY_CHALLENGE_SALT: Joi.string().optional().allow(''),

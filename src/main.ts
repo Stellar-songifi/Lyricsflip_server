@@ -1,4 +1,5 @@
 import './tracing';
+import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import helmet from 'helmet';
@@ -96,11 +97,11 @@ async function bootstrap() {
 
   // Realtime events fan out through Redis when REDIS_URL is set, so every
   // instance can reach every connected player.
-  if (process.env.REDIS_URL) {
-    const ioAdapter = new RedisIoAdapter(app);
-    await ioAdapter.connectToRedis(process.env.REDIS_URL);
-    app.useWebSocketAdapter(ioAdapter);
-  }
+  const config = app.get(ConfigService);
+  const ioAdapter = new RedisIoAdapter(app, config);
+  const redisUrl = config.get<string>('REDIS_URL');
+  if (redisUrl) await ioAdapter.connectToRedis(redisUrl);
+  app.useWebSocketAdapter(ioAdapter);
 
   // HTTP metrics for every response, including guard and pipe rejections
   // and 404s, labelled by route template (#361). Registered before any route

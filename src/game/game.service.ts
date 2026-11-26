@@ -1,7 +1,12 @@
+import { recordReferralRound } from '../referrals/referral-rewards.service';
 import {
+  DomainException,
+  ErrorCode,
+} from '../common/exceptions/domain.exception';
+import {
+  HttpStatus,
   BadRequestException,
   ConflictException,
-  GoneException,
   Injectable,
   Logger,
   NotFoundException,
@@ -12,7 +17,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import { JobLockService } from '../jobs/job-lock.service';
 import { Lyrics } from '../lyrics/entities/lyrics.entity';
-import { matchGuess, normalizeAnswer } from './guess-matcher';
+import { matchGuess } from './guess-matcher';
 import { Genre, isGenre, toGenre } from '../lyrics/entities/genre.enum';
 import {
   In,
@@ -190,11 +195,16 @@ export class GameLogicService {
    *
    * `issuedAt` is set here, from the server clock, and is what the answer
    * window is measured against when the guess arrives.
+   *
+   * Pass `dailyDate` (a `YYYY-MM-DD` string) to tag the round as belonging to
+   * the daily challenge for that date. Daily rounds are looked up by
+   * `(userId, dailyDate, lyricId)` so they can be reused across requests.
    */
   async issueRound(
     userId: string,
     lyricId: number,
     sessionId?: string,
+    dailyDate?: string,
   ): Promise<GameRound> {
     if (sessionId) {
       await this.assertActiveParticipant(userId, sessionId);
@@ -210,6 +220,7 @@ export class GameLogicService {
         userId,
         lyricId,
         sessionId: sessionId ?? null,
+        dailyDate: dailyDate ?? null,
         issuedAt,
         expiresAt,
         answerWindowSeconds: this.answerWindowSeconds,
@@ -315,8 +326,8 @@ export class GameLogicService {
   /**
    * Scores a guess against a round served to this player, and closes it.
    *
-   * The round is closed with a conditional update before the answer is looked
-   * at, so two concurrent guesses cannot both be scored and the answer the
+   * The round is closed with a conditional update before the answer is revealed,
+   * so two concurrent guesses cannot both be scored and the answer the
    * first one reveals cannot be replayed.
    *
    * A guess that arrives after the answer window is still evaluated, but earns
@@ -334,7 +345,11 @@ export class GameLogicService {
     }
 
     if (round.closedAt) {
-      throw new ConflictException('This round has already been guessed');
+      throw new DomainException(
+        ErrorCode.ROUND_ALREADY_GUESSED,
+        HttpStatus.CONFLICT,
+        'This round has already been guessed',
+      );
     }
 
     const now = new Date();
@@ -350,7 +365,11 @@ export class GameLogicService {
         speedBonus: 0,
         timedOut: true,
       });
-      throw new GoneException('This round has expired');
+      throw new DomainException(
+        ErrorCode.ROUND_EXPIRED,
+        HttpStatus.GONE,
+        'This round has expired',
+      );
     }
 
     const closed = await this.roundRepository.update(
@@ -359,7 +378,11 @@ export class GameLogicService {
     );
 
     if (!closed.affected) {
-      throw new ConflictException('This round has already been guessed');
+      throw new DomainException(
+        ErrorCode.ROUND_ALREADY_GUESSED,
+        HttpStatus.CONFLICT,
+        'This round has already been guessed',
+      );
     }
 
     const result = await this.checkGuess({
@@ -376,6 +399,27 @@ export class GameLogicService {
       windowMs: round.answerWindowSeconds * 1000,
       hintsUsed: round.hintsUsed,
       difficulty: lyric?.difficulty ?? 1,
+    });
+
+    await this.roundRepository.manager.transaction(async (manager) => {
+      const closed = await manager.update(
+        GameRound,
+        { id: round.id, closedAt: IsNull() },
+        { closedAt: now },
+      );
+      if (!closed.affected) {
+        throw new ConflictException('This round has already been guessed');
+      }
+      if (lyric) {
+        await recordReferralRound(manager, {
+          roundId: round.id,
+          userId,
+          lyricId: round.lyricId,
+          correctInTime: result.isCorrect && !score.timedOut,
+          elapsedMs: now.getTime() - round.issuedAt.getTime(),
+          snippet: lyric.lyricSnippet,
+        });
+      }
     });
 
     const scored: GuessResult = {
@@ -421,11 +465,19 @@ export class GameLogicService {
     }
 
     if (round.closedAt) {
-      throw new ConflictException('This round has already been guessed');
+      throw new DomainException(
+        ErrorCode.ROUND_ALREADY_GUESSED,
+        HttpStatus.CONFLICT,
+        'This round has already been guessed',
+      );
     }
 
     if (round.expiresAt.getTime() <= Date.now()) {
-      throw new GoneException('This round has expired');
+      throw new DomainException(
+        ErrorCode.ROUND_EXPIRED,
+        HttpStatus.GONE,
+        'This round has expired',
+      );
     }
 
     const maxHints = GAME_CONSTANTS.LIMITS.MAX_HINTS_PER_ROUND;
@@ -495,7 +547,7 @@ export class GameLogicService {
 
     const correctAnswer =
       dto.guessType === 'artist' ? lyric.artist : lyric.songTitle;
-    const isCorrect = matchGuess(dto.guessValue, correctAnswer);
+    const { isCorrect, points } = matchGuess(dto.guessValue, correctAnswer);
 
     return {
       isCorrect,
@@ -503,7 +555,7 @@ export class GameLogicService {
       explanation: isCorrect
         ? 'Correct!'
         : `The correct answer was "${correctAnswer}".`,
-      points: isCorrect ? GAME_CONSTANTS.SCORING.BASE_POINTS : 0,
+      points,
     };
   }
 
