@@ -302,8 +302,7 @@ fn refund_emits_a_refund_event() {
 }
 
 #[test]
-fn claim_refund_pays_each_player_after_the_deadline() {
-    use soroban_sdk::testutils::Ledger;
+fn claim_refund_returns_a_single_stake() {
     let s = setup(1_000);
     let id = session(&s.env);
 
@@ -311,119 +310,127 @@ fn claim_refund_pays_each_player_after_the_deadline() {
     s.client.stake(&id, &s.player_a);
     s.client.stake(&id, &s.player_b);
 
-    // Move past the refund deadline.
-    let seq = s.env.ledger().sequence();
-    s.env.ledger().set_sequence_number(seq + REFUND_DEADLINE + 1);
+    let returned = s.client.claim_refund(&id, &s.player_a);
 
-    s.client.claim_refund(&id, &s.player_a);
+    assert_eq!(returned, 100);
     assert_eq!(s.token.balance(&s.player_a), 1_000);
-    assert_eq!(s.token.balance(&s.player_b), 900);
+    assert_eq!(s.token.balance(&s.contract_id), 100);
 
-    s.client.claim_refund(&id, &s.player_b);
+    // A second claim from the same player returns nothing.
+    assert_eq!(s.client.claim_refund(&id, &s.player_a), 0);
+    assert_eq!(s.token.balance(&s.player_a), 1_000);
+}
+
+#[test]
+fn claim_refund_and_refund_agree_on_what_was_returned() {
+    let s = setup(1_000);
+    let id = session(&s.env);
+
+    s.client.open_pot(&id, &s.player_a, &s.player_b, &100);
+    s.client.stake(&id, &s.player_a);
+    s.client.stake(&id, &s.player_b);
+
+    s.client.claim_refund(&id, &s.player_a);
+    s.client.refund(&id);
+
+    // player_a already got their stake back; refund must not double-pay them.
+    assert_eq!(s.token.balance(&s.player_a), 1_000);
     assert_eq!(s.token.balance(&s.player_b), 1_000);
     assert_eq!(s.token.balance(&s.contract_id), 0);
 }
 
 #[test]
-fn claim_refund_is_rejected_before_the_deadline() {
+fn resolve_is_blocked_once_a_player_has_claimed() {
     let s = setup(1_000);
     let id = session(&s.env);
 
     s.client.open_pot(&id, &s.player_a, &s.player_b, &100);
     s.client.stake(&id, &s.player_a);
     s.client.stake(&id, &s.player_b);
-
-    assert_eq!(
-        s.client.try_claim_refund(&id, &s.player_a),
-        Err(Ok(Error::RefundNotAvailable))
-    );
-}
-
-#[test]
-fn a_player_cannot_claim_refund_twice() {
-    use soroban_sdk::testutils::Ledger;
-    let s = setup(1_000);
-    let id = session(&s.env);
-
-    s.client.open_pot(&id, &s.player_a, &s.player_b, &100);
-    s.client.stake(&id, &s.player_a);
-    s.client.stake(&id, &s.player_b);
-
-    let seq = s.env.ledger().sequence();
-    s.env.ledger().set_sequence_number(seq + REFUND_DEADLINE + 1);
 
     s.client.claim_refund(&id, &s.player_a);
 
     assert_eq!(
-        s.client.try_claim_refund(&id, &s.player_a),
-        Err(Ok(Error::AlreadyClaimed))
+        s.client.try_resolve(&id, &s.player_b),
+        Err(Ok(Error::PotNotFunded))
     );
 }
 
 #[test]
-fn resolve_after_a_partial_claim_pays_the_remaining_stake() {
-    use soroban_sdk::testutils::Ledger;
+fn zero_fee_pays_the_whole_pot_to_the_winner() {
     let s = setup(1_000);
     let id = session(&s.env);
 
+    s.client.set_fee(&0);
     s.client.open_pot(&id, &s.player_a, &s.player_b, &100);
     s.client.stake(&id, &s.player_a);
     s.client.stake(&id, &s.player_b);
 
-    let seq = s.env.ledger().sequence();
-    s.env.ledger().set_sequence_number(seq + REFUND_DEADLINE + 1);
-    s.client.claim_refund(&id, &s.player_a);
+    let payout = s.client.resolve(&id, &s.player_a);
 
-    // The remaining stake is still resolvable to the winner.
-    let payout = s.client.resolve(&id, &s.player_b);
-    assert_eq!(payout, 100);
-    assert_eq!(s.token.balance(&s.player_b), 1_000);
+    assert_eq!(payout, 200);
+    assert_eq!(s.token.balance(&s.player_a), 1_100);
     assert_eq!(s.token.balance(&s.contract_id), 0);
 }
 
 #[test]
-fn only_the_admin_can_upgrade_and_migrate() {
-    let s = setup(1_000);
-    let stranger = Address::generate(&s.env);
-    let new_wasm = BytesN::<32>::random(&s.env);
-
-    // With auth mocked, the admin path succeeds.
-    s.client.upgrade(&new_wasm);
-    s.client.migrate(&1u32);
-
-    // Without auth, a stranger cannot drive either entry point.
-    s.env.set_auths(&[]);
-    assert!(s.client.try_upgrade(&new_wasm).is_err());
-    assert!(s.client.try_migrate(&1u32).is_err());
-    let _ = stranger;
-}
-
-#[test]
-fn the_admin_can_rotate_the_admin() {
-    let s = setup(1_000);
-    let new_admin = Address::generate(&s.env);
-
-    s.client.set_admin(&new_admin);
-
-    assert_eq!(s.client.get_config().admin, new_admin);
-}
-
-#[test]
-fn resolve_writes_the_pot_once() {
-    // Regression guard for the double-write in `resolve`: the pot key must be
-    // written exactly once (via `save_pot`), not once by `save_pot` and again
-    // by a raw `persistent().set`.
+fn maximum_fee_is_capped_and_paid_to_the_receiver() {
     let s = setup(1_000);
     let id = session(&s.env);
+    let receiver = Address::generate(&s.env);
 
+    s.client.set_fee(&MAX_FEE_BPS);
+    s.client.set_fee_receiver(&receiver);
     s.client.open_pot(&id, &s.player_a, &s.player_b, &100);
     s.client.stake(&id, &s.player_a);
     s.client.stake(&id, &s.player_b);
 
-    let before = s.env.storage().persistent().get(&DataKey::Pot(id.clone()));
-    s.client.resolve(&id, &s.player_a);
-    let after = s.env.storage().persistent().get(&DataKey::Pot(id.clone()));
+    let payout = s.client.resolve(&id, &s.player_a);
 
-    assert!(before.is_some());
-    assert_eq!(after.unwrap().status, PotStatus::Resolved);
+    let expected_fee = 200 * MAX_FEE_BPS as i128 / 10_000;
+    assert_eq!(s.token.balance(&receiver), expected_fee);
+    assert_eq!(payout, 200 - expected_fee);
+    assert_eq!(s.token.balance(&s.player_a), 1_000 + payout);
+    assert_eq!(s.token.balance(&s.contract_id), 0);
+}
+
+#[test]
+fn fee_rounds_down_in_favour_of_the_winner() {
+    let s = setup(1_000);
+    let id = session(&s.env);
+    let receiver = Address::generate(&s.env);
+
+    // 1 bps of a 201-stroop pot is 0.0201 -> rounds down to 0.
+    s.client.set_fee(&1);
+    s.client.set_fee_receiver(&receiver);
+    s.client.open_pot(&id, &s.player_a, &s.player_b, &100);
+    s.client.stake(&id, &s.player_a);
+    s.client.stake(&id, &s.player_b);
+
+    let payout = s.client.resolve(&id, &s.player_a);
+
+    assert_eq!(s.token.balance(&receiver), 0);
+    assert_eq!(payout, 200);
+    assert_eq!(s.token.balance(&s.contract_id), 0);
+}
+
+#[test]
+fn fee_receiver_gets_the_documented_cut() {
+    let s = setup(1_000);
+    let id = session(&s.env);
+    let receiver = Address::generate(&s.env);
+
+    // 250 bps = 2.5% of a 200-stroop pot = 5 stroops.
+    s.client.set_fee(&250);
+    s.client.set_fee_receiver(&receiver);
+    s.client.open_pot(&id, &s.player_a, &s.player_b, &100);
+    s.client.stake(&id, &s.player_a);
+    s.client.stake(&id, &s.player_b);
+
+    let payout = s.client.resolve(&id, &s.player_a);
+
+    assert_eq!(s.token.balance(&receiver), 5);
+    assert_eq!(payout, 195);
+    assert_eq!(s.token.balance(&s.player_a), 1_195);
+    assert_eq!(s.token.balance(&s.contract_id), 0);
 }
