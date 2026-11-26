@@ -5,7 +5,6 @@ import {
   ConflictException,
   ForbiddenException,
   Logger,
-  GoneException,
   NotFoundException,
 } from '@nestjs/common';
 import { GameSessionsService } from './game-sessions.service';
@@ -797,7 +796,7 @@ describe('GameSessionsService', () => {
 
       await expect(
         service.accept('session-123', mockPlayerTwo),
-      ).rejects.toThrow(GoneException);
+      ).rejects.toMatchObject({ code: 'INVITATION_EXPIRED' });
       expect(mockWagerService.acceptWager).not.toHaveBeenCalled();
       expect(mockWagerService.resolveWagerAsDraw).toHaveBeenCalledWith(
         'session-123',

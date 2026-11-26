@@ -1,3 +1,4 @@
+import { ErrorCode } from './common/exceptions/domain.exception';
 import { INestApplication, VersioningType } from '@nestjs/common';
 import { DocumentBuilder, OpenAPIObject, SwaggerModule } from '@nestjs/swagger';
 
@@ -73,6 +74,23 @@ export function buildOpenApiDocument(app: INestApplication): OpenAPIObject {
     )
     .build();
   const document = SwaggerModule.createDocument(app, config);
+  const components = (document.components ??= {});
+  const schemas = (components.schemas ??= {});
+  schemas.ErrorCode = { type: 'string', enum: Object.values(ErrorCode) };
+  schemas.ErrorResponse = {
+    type: 'object',
+    required: [
+      'code',
+      'statusCode',
+      'message',
+      'error',
+      'timestamp',
+      'path',
+      'method',
+    ],
+    properties: {
+      code: { $ref: '#/components/schemas/ErrorCode' },
+      statusCode: { type: 'integer' },
   registerSharedResponseSchemas(document);
   return document;
 }
@@ -97,6 +115,37 @@ function registerSharedResponseSchemas(document: OpenAPIObject): void {
           { type: 'array', items: { type: 'string' } },
         ],
       },
+      error: { type: 'string' },
+      timestamp: { type: 'string', format: 'date-time' },
+      path: { type: 'string' },
+      method: { type: 'string' },
+      requestId: { type: 'string' },
+      details: {},
+    },
+  };
+  for (const path of Object.values(document.paths)) {
+    for (const operation of [
+      path.get,
+      path.post,
+      path.put,
+      path.patch,
+      path.delete,
+      path.head,
+      path.options,
+    ]) {
+      if (operation)
+        operation.responses.default ??= {
+          description:
+            'Error response. See ErrorCode for the stable machine-readable codes.',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        };
+    }
+  }
+  return document;
       error: { type: 'string', example: 'Bad Request' },
     },
   };

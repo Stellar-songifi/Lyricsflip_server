@@ -1,4 +1,8 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  DomainException,
+  ErrorCode,
+} from '../../common/exceptions/domain.exception';
+import { HttpStatus, Injectable, UnauthorizedException } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { ConfigService } from '@nestjs/config';
@@ -30,7 +34,11 @@ export async function validateUserToken(
   // change, or a future "log out everywhere") is rejected even though it
   // has not expired yet.
   if ((payload.tokenVersion ?? 0) !== user.tokenVersion) {
-    throw new UnauthorizedException('Token has been revoked');
+    throw new DomainException(
+      ErrorCode.TOKEN_REVOKED,
+      HttpStatus.UNAUTHORIZED,
+      'Token has been revoked',
+    );
   }
 
   return user;

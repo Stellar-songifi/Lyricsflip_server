@@ -140,7 +140,7 @@ describe('Enhancers in a WebSocket gateway (#362)', () => {
     socket.emit('adminOnly', {});
     await expect(error).resolves.toMatchObject({
       event: 'error',
-      data: { code: 403 },
+      data: { code: 'FORBIDDEN', statusCode: 403 },
     });
   });
 
@@ -156,7 +156,9 @@ describe('Enhancers in a WebSocket gateway (#362)', () => {
     const error = nextError(socket);
     socket.emit('boom', {});
 
-    await expect(error).resolves.toMatchObject({ data: { code: 500 } });
+    await expect(error).resolves.toMatchObject({
+      data: { code: 'INTERNAL_ERROR', statusCode: 500 },
+    });
     const logged = errorLog.mock.calls.map((args) => String(args[0]));
     expect(logged.some((line) => line.includes('kaboom: the real error'))).toBe(
       true,

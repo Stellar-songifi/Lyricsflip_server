@@ -1,4 +1,8 @@
 import {
+  DomainException,
+  ErrorCode,
+} from '../common/exceptions/domain.exception';
+import {
   ConnectedSocket,
   MessageBody,
   OnGatewayConnection,
@@ -43,7 +47,7 @@ export interface SubscribeRequest {
 
 export type SubscribeAck =
   | { ok: true; room: string }
-  | { ok: false; error: string };
+  | { ok: false; error: string; code: ErrorCode };
 
 export type SpectateAck =
   | { ok: true; room: string; spectators: number }
@@ -97,16 +101,22 @@ export class RealtimeGateway
       client.data.userId = user.id;
       // Read by @GetUser, RolesGuard and JwtAuthGuard in handlers (#362).
       client.data.user = user;
-    } catch {
+    } catch (error) {
       this.logger.warn(`Rejected unauthenticated connection: ${client.id}`);
-      client.emit('error', { message: 'Unauthorized' });
+      client.emit('error', {
+        code:
+          error instanceof DomainException
+            ? error.code
+            : ErrorCode.UNAUTHORIZED,
+        message: 'Unauthorized',
+      });
       client.disconnect(true);
       return;
     }
 
     if (!(await this.connectionLimiter.acquire(client.data.userId, client.id))) {
       client.emit('error', {
-        code: 'RATE_LIMITED',
+        code: ErrorCode.RATE_LIMITED,
         message: 'Too many concurrent connections',
       });
       client.disconnect(true);
@@ -137,7 +147,10 @@ export class RealtimeGateway
     try {
       const sockets = await this.server.in(room).fetchSockets();
       for (const socket of sockets) {
-        socket.emit('error', { message: 'Session revoked' });
+        socket.emit('error', {
+          code: ErrorCode.TOKEN_REVOKED,
+          message: 'Session revoked',
+        });
       }
       this.server.in(room).disconnectSockets(true);
       if (sockets.length > 0) {
@@ -162,10 +175,10 @@ export class RealtimeGateway
   ): Promise<SubscribeAck> {
     if (!this.rateLimiter.consume(client, 'subscribe')) {
       client.emit('error', {
-        code: 'RATE_LIMITED',
+        code: ErrorCode.RATE_LIMITED,
         message: 'Rate limited',
       });
-      return { ok: false, error: 'RATE_LIMITED' };
+      return { ok: false, error: 'RATE_LIMITED', code: ErrorCode.RATE_LIMITED };
     }
 
     const userId: string | undefined = client.data?.userId;
@@ -176,7 +189,11 @@ export class RealtimeGateway
       !['session', 'room'].includes(body.type) ||
       !isUUID(body.id)
     ) {
-      return { ok: false, error: 'Invalid subscription' };
+      return {
+        ok: false,
+        error: 'Invalid subscription',
+        code: ErrorCode.VALIDATION_ERROR,
+      };
     }
 
     const allowed =
@@ -186,7 +203,7 @@ export class RealtimeGateway
 
     // Not a member and does not exist look the same, so ids cannot be probed.
     if (!allowed) {
-      return { ok: false, error: 'Not found' };
+      return { ok: false, error: 'Not found', code: ErrorCode.NOT_FOUND };
     }
 
     const room =
@@ -253,14 +270,18 @@ export class RealtimeGateway
   ): Promise<SubscribeAck> {
     if (!this.rateLimiter.consume(client, 'unsubscribe')) {
       client.emit('error', {
-        code: 'RATE_LIMITED',
+        code: ErrorCode.RATE_LIMITED,
         message: 'Rate limited',
       });
-      return { ok: false, error: 'RATE_LIMITED' };
+      return { ok: false, error: 'RATE_LIMITED', code: ErrorCode.RATE_LIMITED };
     }
 
     if (!body || !['session', 'room'].includes(body.type) || !isUUID(body.id)) {
-      return { ok: false, error: 'Invalid subscription' };
+      return {
+        ok: false,
+        error: 'Invalid subscription',
+        code: ErrorCode.VALIDATION_ERROR,
+      };
     }
 
     const room =

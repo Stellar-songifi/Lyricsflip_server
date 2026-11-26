@@ -1,3 +1,4 @@
+import { ErrorCode } from '../../common/exceptions/domain.exception';
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
@@ -39,6 +40,28 @@ import {
   WagerStakedPayload,
 } from '../../realtime/realtime.events';
 
+export interface CreateWagerDto {
+  sessionId: string;
+  playerAId: string;
+  playerBId: string;
+  /** Amount each player stakes, in token base units (stroops). */
+  stake: Stroops;
+}
+
+export interface WagerResult {
+  success: boolean;
+  code?: ErrorCode;
+  wager?: Wager;
+  message?: string;
+  /**
+   * Transactions the players must sign in their wallets, present when the
+   * wager is waiting on non-custodial signatures.
+   */
+  pendingSignatures?: Array<{
+    userId: string;
+    transaction: UnsignedTransaction;
+  }>;
+}
 export type WagerTransitionResult =
   | { ok: true; wager: Wager }
   | { ok: false; reason: 'not_found' | 'conflict' };
@@ -60,6 +83,169 @@ export class WagerService {
     @Optional() private readonly eventEmitter?: EventEmitter2,
   ) {}
 
+  /**
+   * How long a wager may sit `AWAITING_STAKES` before {@link WagerRefundJob}
+   * refunds it. Configurable via `WAGER_STAKE_DEADLINE_MINUTES`, default 15.
+   */
+  private get stakeDeadlineMs(): number {
+    const minutes =
+      this.configService.get<number>('WAGER_STAKE_DEADLINE_MINUTES') ?? 15;
+    return minutes * 60_000;
+  }
+
+  /**
+   * Opens an escrow pot for a session and stakes player one into it.
+   *
+   * Player two is only staked once they accept, through {@link acceptWager};
+   * until then the wager stays in `AWAITING_STAKES`. In non-custodial mode the
+   * result carries player one's unsigned transaction instead of a stake.
+   */
+  async createWager(createWagerDto: CreateWagerDto): Promise<WagerResult> {
+    const { sessionId, playerAId, playerBId } = createWagerDto;
+
+    let stake: Stroops;
+    try {
+      stake = assertPositiveStroops(createWagerDto.stake, 'Stake');
+    } catch (error) {
+      return { success: false, message: (error as Error).message };
+    }
+
+    this.logger.debug(
+      `Creating wager for session ${sessionId}: ${playerAId} vs ${playerBId} at ${fromStroops(stake)} LYRIC each`,
+    );
+
+    const context: EscrowContext = { sessionId, playerAId, playerBId, stake };
+
+    try {
+      const [playerA, playerB] = await Promise.all([
+        this.requireUser(playerAId, 'Player A'),
+        this.requireUser(playerBId, 'Player B'),
+      ]);
+
+      if (playerAId === playerBId) {
+        return {
+          success: false,
+          message: 'A player cannot wager against themselves',
+        };
+      }
+
+      const existingWager = await this.wagerRepository.findOne({
+        where: { sessionId },
+      });
+
+      if (existingWager) {
+        return {
+          success: false,
+          message: 'Wager already exists for this session',
+        };
+      }
+
+      const [playerAFunded, playerBFunded] = await Promise.all([
+        this.tokenService.hasSufficientTokens(playerAId, stake),
+        this.tokenService.hasSufficientTokens(playerBId, stake),
+      ]);
+
+      if (!playerAFunded) {
+        return {
+          success: false,
+          code: ErrorCode.INSUFFICIENT_BALANCE,
+          message: `${sanitizeForDisplay(playerA.username)} has insufficient LYRIC for this wager (${fromStroops(stake)} required)`,
+        };
+      }
+
+      if (!playerBFunded) {
+        return {
+          success: false,
+          code: ErrorCode.INSUFFICIENT_BALANCE,
+          message: `${sanitizeForDisplay(playerB.username)} has insufficient LYRIC for this wager (${fromStroops(stake)} required)`,
+        };
+      }
+
+      // Step 1 — record the intent. Committed before anything touches the
+      // network, so a pot that is opened on-chain always has a row pointing at
+      // it even if the process dies immediately afterwards.
+      let wager = this.wagerRepository.create({
+        sessionId,
+        playerA,
+        playerAId,
+        playerB,
+        playerBId,
+        stakeStroops: stake,
+        totalPotStroops: multiplyStroops(stake, 2),
+        status: WagerStatus.PENDING,
+        settlementMode: this.tokenService.settlementMode,
+      });
+      wager = await this.wagerRepository.save(wager);
+
+      // Step 2 — open the pot on-chain.
+      const escrowResult = await this.tokenService.openEscrow(context);
+
+      if (!escrowResult.success) {
+        await this.markFailed(
+          wager,
+          `Could not open escrow: ${escrowResult.message}`,
+        );
+        return { success: false, message: escrowResult.message };
+      }
+
+      wager.escrowTxHash = escrowResult.txHash ?? null;
+      wager.status = WagerStatus.AWAITING_STAKES;
+      wager = await this.wagerRepository.save(wager);
+
+      // Step 3 — stake player one only. Player two has not agreed to anything
+      // yet, so their funds are not touched until they accept (acceptWager).
+      const stakeA = await this.tokenService.stakeTokens(playerAId, context);
+
+      if (stakeA.status === SettlementStatus.PENDING_SIGNATURE) {
+        // The stake has not landed yet: remember which transaction we handed
+        // out so confirmStake only accepts a signature over this one, and set
+        // the deadline so WagerRefundJob can sweep a player who never signs.
+        wager.playerALatestStakeHash =
+          stakeA.unsignedTransaction?.hash ?? null;
+        wager.stakeDeadline = new Date(Date.now() + this.stakeDeadlineMs);
+        wager.resultMessage =
+          'Sign your stake transaction in your wallet. Player two stakes when they accept.';
+        wager = await this.wagerRepository.save(wager);
+
+        return {
+          success: true,
+          wager,
+          message: wager.resultMessage,
+          pendingSignatures: [
+            {
+              userId: playerAId,
+              transaction: stakeA.unsignedTransaction as UnsignedTransaction,
+            },
+          ],
+        };
+      }
+
+      if (!stakeA.success) {
+        const refund = await this.tokenService.refundEscrow(context);
+
+        await this.markFailed(
+          wager,
+          `Staking failed (${stakeA.message}). ` +
+            (refund.success
+              ? 'Any stake that landed has been refunded.'
+              : `Refund also failed: ${refund.message}. Needs operator attention.`),
+        );
+
+        return { success: false, wager, message: wager.resultMessage };
+      }
+
+      wager.playerAStakeTxHash = stakeA.txHash ?? null;
+      wager.resultMessage = `You staked ${fromStroops(stake)} LYRIC. Waiting for your opponent to accept.`;
+      wager = await this.wagerRepository.save(wager);
+
+      return { success: true, wager, message: wager.resultMessage };
+    } catch (error) {
+      this.logger.error('Error creating wager', (error as Error).stack);
+      return {
+        success: false,
+        message: `Failed to create wager: ${(error as Error).message}`,
+      };
+    }
   async create(dto: CreateWagerDto): Promise<Wager> {
     const wager = this.wagerRepository.create(dto);
     return this.wagerRepository.save(wager);

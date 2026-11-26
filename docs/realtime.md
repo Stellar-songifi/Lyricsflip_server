@@ -49,22 +49,24 @@ A head-to-head match is created when a head-to-head session is accepted. The ser
 
 ## Error contract
 
-All errors emitted over the socket share a single shape:
+The socket exception filter returns this envelope:
 
 ```json
 {
   "event": "error",
   "data": {
-    "code": 400,
+    "code": "VALIDATION_ERROR",
+    "statusCode": 400,
     "message": "Validation failed",
     "details": [
-      { "field": "guess", "message": "guess must be a string" }
+      { "field": "guess", "messages": ["guess must be a string"] }
     ]
   }
 }
 ```
 
-- `code` — numeric status code (HTTP-style, e.g. `400`, `403`, `500`).
+- `code` is a stable string such as `VALIDATION_ERROR`, `ROUND_EXPIRED` or `RATE_LIMITED`. The API Swagger document lists all supported codes.
+- `statusCode` is the numeric HTTP-style status for errors handled by the exception filter.
 - `message` — human-readable summary.
 - `details` — optional array of field-level messages (present for validation
   failures).
@@ -186,3 +188,57 @@ sequenceDiagram
     S-->>A: session.completed (scores, winnerId)
     S-->>B: session.completed (scores, winnerId)
 ```
+
+### Disconnect / forfeit
+
+```mermaid
+sequenceDiagram
+    participant A as Player A
+    participant S as Server
+    participant B as Player B
+
+    B--xS: disconnect
+    S-->>A: opponent.disconnected (graceDeadline)
+    alt reconnects in time
+        B->>S: reconnect
+        S-->>A: opponent.reconnected
+    else grace expires
+        S-->>A: match.forfeited (userId=B)
+        S-->>A: session.completed (winnerId=A)
+    end
+```
+### Ack callbacks
+
+When a client sends an event with an acknowledgement callback, the same
+`{ code, statusCode, message, details }` object is passed to the ack instead of (or in
+addition to) the `error` event, so callers can handle failures inline.
+
+### Validation failures
+
+Gateway handlers validate payloads with a `ValidationPipe` configured with an
+exception factory that throws `DomainException`. An invalid payload (for example an
+invalid `submitGuess` body) therefore returns a `400`-style error with
+field-level messages over the socket rather than a generic
+`Internal server error`.
+
+## Guards, interceptors, filters and `@GetUser` in gateways
+
+The app's HTTP enhancers check the execution context type, so they can be
+applied to a gateway with `@UseGuards`, `@UseInterceptors` and `@UseFilters`
+(#362). Before, each called `switchToHttp()` and read `headers` from the
+socket, so a handler failed with a `TypeError` that hid the real error.
+
+| Enhancer | In a WebSocket handler |
+| --- | --- |
+| `JwtAuthGuard` | Passes when the socket has `client.data.user`, set when the gateway verified the handshake token; otherwise `401`. The token is not re-checked per message. |
+| `RolesGuard` / `@Roles(...)` | Checks `client.data.user.role`. |
+| `@GetUser()` | Returns `client.data.user`: `{ id, username, role }` from the token, not a full `User`. |
+| `AppThrottlerGuard` | Limits messages per user (or handshake address). |
+| `LoggingInterceptor` | Logs the event name and socket ID, and the real error message on failure. |
+| `AllExceptionsFilter` | Logs the real error with the event and socket ID, then emits the error contract above. |
+| `AuditInterceptor` | Records the socket user as the actor and the message body as the payload. |
+
+Each passes other context types (scheduled jobs, RPC) straight through.
+`GameGateway` and `RealtimeGateway` store `client.data.user` (and
+`client.data.userId`) in `handleConnection`. A new gateway must do the same
+before relying on these enhancers.
