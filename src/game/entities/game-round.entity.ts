@@ -46,6 +46,14 @@ export class GameRound {
   @Column({ type: 'uuid', nullable: true })
   sessionId: string | null;
 
+  /**
+   * When set, this round belongs to the daily challenge for that UTC day
+   * (`YYYY-MM-DD`). Used to reuse the same round across the day and to
+   * distinguish daily rounds from solo ones in queries.
+   */
+  @Column({ type: 'date', nullable: true })
+  dailyDate: string | null;
+
   /** Set when the round's guess is taken; a closed round accepts no more. */
   @Column({ type: 'timestamptz', nullable: true })
   closedAt: Date | null;

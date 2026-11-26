@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Header,
   Get,
   HttpCode,
   HttpStatus,
@@ -29,6 +30,12 @@ export class ChallengesController {
   @HttpCode(HttpStatus.OK)
   guess(@Body() dto: DailyGuessDto, @GetUser() user: User) {
     return this.challengesService.guess(user.id, dto);
+  }
+
+  @Get('share')
+  @Header('Content-Type', 'text/plain; charset=utf-8')
+  getShare(@GetUser() user: User) {
+    return this.challengesService.getShare(user.id);
   }
 
   /** GET /challenges/daily/leaderboard - today's ranking. */

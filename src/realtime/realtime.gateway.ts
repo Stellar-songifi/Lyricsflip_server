@@ -15,6 +15,8 @@ import { Server, Socket } from 'socket.io';
 import { Repository } from 'typeorm';
 import { GameSession } from '../game-sessions/entities/game-session.entity';
 import { RoomUser } from '../rooms/entities/room-user.entity';
+import { Room } from '../rooms/entities/room.entity';
+import { User } from '../users/entities/user.entity';
 import { WsExceptionFilter } from '../common/filters/ws-exception.filter';
 import {
   SocketAuthenticator,
@@ -43,6 +45,10 @@ export type SubscribeAck =
   | { ok: true; room: string }
   | { ok: false; error: string };
 
+export type SpectateAck =
+  | { ok: true; room: string; spectators: number }
+  | { ok: false; error: string };
+
 /**
  * Pushes game events to connected players in real time.
  *
@@ -52,6 +58,9 @@ export type SubscribeAck =
  * bus; the handlers below fan them out to the right rooms. With the Redis
  * adapter enabled (see RedisIoAdapter) an event raised on one instance reaches
  * sockets connected to any other.
+ *
+ * Spectators join a separate `spectate:<type>:<id>` room so they receive
+ * scoreboard and round events but never gameplay-only payloads (answers).
  */
 @UseFilters(WsExceptionFilter)
 @WebSocketGateway({
@@ -73,6 +82,10 @@ export class RealtimeGateway
     private readonly sessionRepository: Repository<GameSession>,
     @InjectRepository(RoomUser)
     private readonly roomUserRepository: Repository<RoomUser>,
+    @InjectRepository(Room)
+    private readonly roomRepository: Repository<Room>,
+    @InjectRepository(User)
+    private readonly userRepository: Repository<User>,
   ) {
     this.rateLimiter = new WsRateLimiter(this.configService);
     this.connectionLimiter = new WsConnectionLimiter(this.configService);
@@ -185,6 +198,54 @@ export class RealtimeGateway
     return { ok: true, room };
   }
 
+  /**
+   * Joins the spectator channel of a public room or of a head-to-head match
+   * whose players have opted in to spectators. Spectators only receive
+   * scoreboard and round events, never gameplay payloads.
+   */
+  @SubscribeMessage('spectate')
+  async handleSpectate(
+    @MessageBody() body: SubscribeRequest,
+    @ConnectedSocket() client: Socket,
+  ): Promise<SpectateAck> {
+    if (!this.rateLimiter.consume(client, 'spectate')) {
+      client.emit('error', {
+        code: 'RATE_LIMITED',
+        message: 'Rate limited',
+      });
+      return { ok: false, error: 'RATE_LIMITED' };
+    }
+
+    const userId: string | undefined = client.data?.userId;
+
+    if (
+      !userId ||
+      !body ||
+      !['session', 'room'].includes(body.type) ||
+      !isUUID(body.id)
+    ) {
+      return { ok: false, error: 'Invalid spectate request' };
+    }
+
+    const allowed =
+      body.type === 'session'
+        ? await this.canSpectateSession(userId, body.id)
+        : await this.canSpectateRoom(userId, body.id);
+
+    // Not allowed and does not exist look the same, so ids cannot be probed.
+    if (!allowed) {
+      return { ok: false, error: 'Not found' };
+    }
+
+    const room = realtimeRooms.spectate(body.type, body.id);
+    await client.join(room);
+
+    const spectators = await this.countSpectators(room);
+    this.broadcastSpectatorCount(body.type, body.id, spectators);
+
+    return { ok: true, room, spectators };
+  }
+
   @SubscribeMessage('unsubscribe')
   async handleUnsubscribe(
     @MessageBody() body: SubscribeRequest,
@@ -208,6 +269,15 @@ export class RealtimeGateway
         : realtimeRooms.room(body.id);
 
     await client.leave(room);
+
+    // Leaving a spectator channel updates the count shown to the players.
+    const spectateRoom = realtimeRooms.spectate(body.type, body.id);
+    if (client.rooms.has(spectateRoom)) {
+      await client.leave(spectateRoom);
+      const spectators = await this.countSpectators(spectateRoom);
+      this.broadcastSpectatorCount(body.type, body.id, spectators);
+    }
+
     return { ok: true, room };
   }
 
@@ -232,6 +302,136 @@ export class RealtimeGateway
     }));
   }
 
+  /** Public rooms are open to spectators; private rooms are not. */
+  private async canSpectateRoom(
+    userId: string,
+    roomId: string,
+  ): Promise<boolean> {
+    const room = await this.roomRepository.findOne({ where: { id: roomId } });
+    if (!room) return false;
+    if (room.isPrivate) return false;
+    // Members already receive the full channel; spectating is for outsiders.
+    return !(await this.isRoomMember(userId, roomId));
+  }
+
+  /**
+   * A head-to-head match is spectatable only when both players have enabled
+   * the `allowSpectators` preference.
+   */
+  private async canSpectateSession(
+    userId: string,
+    sessionId: string,
+  ): Promise<boolean> {
+    const session = await this.sessionRepository.findOne({
+      where: { id: sessionId },
+      relations: { player: true },
+    });
+    if (!session) return false;
+
+    const playerIds = [session.player?.id, session.playerTwoId].filter(
+      (id): id is string => !!id,
+    );
+    if (playerIds.length === 0) return false;
+    // Players already receive the full channel; spectating is for outsiders.
+    if (playerIds.includes(userId)) return false;
+
+    const players = await this.userRepository.find({
+      where: playerIds.map((id) => ({ id })),
+    });
+    if (players.length !== playerIds.length) return false;
+
+    return players.every((player) => player.allowSpectators === true);
+  }
+
+  private async countSpectators(room: string): Promise<number> {
+    if (!this.server) return 0;
+    try {
+      const sockets = await this.server.in(room).fetchSockets();
+      return sockets.length;
+    } catch {
+      return 0;
+    }
+  }
+
+  /** Tells the players of a room/match how many people are watching. */
+  private broadcastSpectatorCount(
+    type: 'session' | 'room',
+    id: string,
+    spectators: number,
+  ): void {
+    if (!this.server) return;
+    const target =
+      type === 'session'
+        ? realtimeRooms.session(id)
+        : realtimeRooms.room(id);
+    this.server.to(target).emit('spectator_count', { type, id, spectators });
+  /**
+   * Removes every socket of `userId` from `channel` across all instances.
+   * Used when a subscription is no longer valid (room leave, session end,
+   * account deactivation) so stale channels stop delivering events.
+   */
+  private async revokeChannel(
+    userId: string,
+    channel: string,
+  ): Promise<void> {
+    if (!this.server || !userId || !channel) return;
+    try {
+      this.server.in(realtimeRooms.user(userId)).socketsLeave(channel);
+    } catch (error) {
+      this.logger.error(
+        `Failed to revoke ${channel} for user ${userId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  /** Revokes a user's sockets from a room channel (e.g. on room leave). */
+  async revokeRoomSubscription(userId: string, roomId: string): Promise<void> {
+    await this.revokeChannel(userId, realtimeRooms.room(roomId));
+  }
+
+  /** Revokes a user's sockets from a session channel (e.g. on session end). */
+  async revokeSessionSubscription(
+    userId: string,
+    sessionId: string,
+  ): Promise<void> {
+    await this.revokeChannel(userId, realtimeRooms.session(sessionId));
+  }
+
+  /**
+   * Rechecks membership for a sensitive channel before delivery. Sockets that
+   * are no longer members are removed from the channel so they stop receiving
+   * its events.
+   */
+  private async pruneStaleSubscribers(
+    channel: string,
+    type: 'session' | 'room',
+    id: string,
+  ): Promise<void> {
+    if (!this.server) return;
+    try {
+      const sockets = await this.server.in(channel).fetchSockets();
+      for (const socket of sockets) {
+        const userId: string | undefined = socket.data?.userId;
+        if (!userId) continue;
+        const allowed =
+          type === 'session'
+            ? await this.isSessionPlayer(userId, id)
+            : await this.isRoomMember(userId, id);
+        if (!allowed) {
+          socket.leave(channel);
+        }
+      }
+    } catch (error) {
+      this.logger.error(
+        `Failed to prune ${channel}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
   /** Delivers `event` to every room in `rooms`, once per socket. */
   private deliver(
     rooms: string[],
@@ -241,85 +441,140 @@ export class RealtimeGateway
     if (!this.server || rooms.length === 0) return;
     this.server
       .to(rooms)
-      .emit(event, { ...payload, at: new Date().toISOString() });
+      .emit(event, { ...payload });
   }
 
-  @OnEvent(RealtimeEvent.PLAYER_JOINED)
-  onPlayerJoined(payload: PlayerJoinedPayload): void {
-    const rooms =
-      payload.scope === 'room' && payload.roomId
-        ? [realtimeRooms.room(payload.roomId)]
-        : payload.sessionId
-          ? [realtimeRooms.session(payload.sessionId)]
-          : [];
-    // The joining player may not have subscribed yet.
-    this.deliver(
-      [...rooms, realtimeRooms.user(payload.userId)],
-      RealtimeEvent.PLAYER_JOINED,
-      payload,
-    );
+  /**
+   * Delivers a scoreboard/round event to players and, when the channel is
+   * spectatable, to its spectators too. Never used for answer payloads.
+   */
+  private deliverWithSpectators(
+    type: 'session' | 'room',
+    id: string,
+    event: RealtimeEvent,
+    payload: object,
+  ): void {
+    if (!this.server) return;
+    const playerRoom =
+      type === 'session'
+        ? realtimeRooms.session(id)
+        : realtimeRooms.room(id);
+    this.server
+      .to([playerRoom, realtimeRooms.spectate(type, id)])
+      .emit(event, { ...payload });
   }
 
-  @OnEvent(RealtimeEvent.ROUND_STARTED)
+  @OnEvent('round.started')
   onRoundStarted(payload: RoundStartedPayload): void {
+    this.deliverWithSpectators(
+      'session',
+      payload.sessionId,
+      'round_started',
+      .emit(event, payload);
+  }
+
+  @OnEvent('player.joined')
+  handlePlayerJoined(payload: PlayerJoinedPayload): void {
+    this.deliver([realtimeRooms.room(payload.roomId)], 'player.joined', payload);
+  }
+
+  @OnEvent('round.started')
+  handleRoundStarted(payload: RoundStartedPayload): void {
     this.deliver(
-      this.roundRooms(payload),
-      RealtimeEvent.ROUND_STARTED,
+      [realtimeRooms.session(payload.sessionId)],
+      'round.started',
       payload,
     );
   }
 
-  @OnEvent(RealtimeEvent.ROUND_ENDED)
+  @OnEvent('round.ended')
+  handleRoundEnded(payload: RoundEndedPayload): void {
+    this.deliver(
+      [realtimeRooms.session(payload.sessionId)],
+      'round.ended',
+      payload,
+    );
+  }
+
+  @OnEvent('round.ended')
   onRoundEnded(payload: RoundEndedPayload): void {
-    this.deliver(this.roundRooms(payload), RealtimeEvent.ROUND_ENDED, payload);
+    this.deliverWithSpectators(
+      'session',
+      payload.sessionId,
+      'round_ended',
+      payload,
+    );
   }
 
-  @OnEvent(RealtimeEvent.SESSION_COMPLETED)
+  @OnEvent('session.completed')
   onSessionCompleted(payload: SessionCompletedPayload): void {
-    const players = [payload.playerId, payload.playerTwoId].filter(
-      (id): id is string => !!id,
-    );
-    this.deliver(
-      [
-        realtimeRooms.session(payload.sessionId),
-        ...players.map(realtimeRooms.user),
-      ],
-      RealtimeEvent.SESSION_COMPLETED,
+    this.deliverWithSpectators(
+      'session',
+      payload.sessionId,
+      'session_completed',
       payload,
     );
   }
 
-  @OnEvent(RealtimeEvent.WAGER_STAKED)
+  @OnEvent('player.joined')
+  onPlayerJoined(payload: PlayerJoinedPayload): void {
+    this.deliverWithSpectators(
+      'room',
+      payload.roomId,
+      'player_joined',
+  @OnEvent('wager.staked')
+  handleWagerStaked(payload: WagerStakedPayload): void {
+    this.deliver(
+      [realtimeRooms.session(payload.sessionId)],
+      'wager.staked',
+      payload,
+    );
+  }
+
+  @OnEvent('wager.staked')
   onWagerStaked(payload: WagerStakedPayload): void {
-    this.deliver(this.wagerRooms(payload), RealtimeEvent.WAGER_STAKED, payload);
-  }
-
-  @OnEvent(RealtimeEvent.WAGER_SETTLED)
-  onWagerSettled(payload: WagerSettledPayload): void {
-    this.deliver(
-      this.wagerRooms(payload),
-      RealtimeEvent.WAGER_SETTLED,
+    this.deliverWithSpectators(
+      'session',
+      payload.sessionId,
+      'wager_staked',
       payload,
     );
   }
 
-  private roundRooms(payload: {
-    sessionId: string | null;
-    userId: string;
-  }): string[] {
-    return [
-      realtimeRooms.user(payload.userId),
-      ...(payload.sessionId ? [realtimeRooms.session(payload.sessionId)] : []),
-    ];
+  @OnEvent('wager.settled')
+  onWagerSettled(payload: WagerSettledPayload): void {
+    this.deliverWithSpectators(
+      'session',
+      payload.sessionId,
+      'wager_settled',
+      payload,
+    );
+  }
+  @OnEvent('wager.settled')
+  handleWagerSettled(payload: WagerSettledPayload): void {
+    this.deliver(
+      [realtimeRooms.session(payload.sessionId)],
+      'wager.settled',
+      payload,
+    );
   }
 
-  private wagerRooms(payload: {
-    sessionId: string | null;
-    userId: string;
-  }): string[] {
-    return [
-      realtimeRooms.user(payload.userId),
-      ...(payload.sessionId ? [realtimeRooms.session(payload.sessionId)] : []),
-    ];
+  @OnEvent('session.completed')
+  async handleSessionCompleted(
+    payload: SessionCompletedPayload,
+  ): Promise<void> {
+    const channel = realtimeRooms.session(payload.sessionId);
+    this.deliver([channel], 'session.completed', payload);
+    // Session is over: drop every socket from the channel across instances.
+    if (!this.server) return;
+    try {
+      this.server.in(channel).socketsLeave(channel);
+    } catch (error) {
+      this.logger.error(
+        `Failed to clear ${channel}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
   }
 }

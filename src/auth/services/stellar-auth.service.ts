@@ -203,6 +203,122 @@ export class StellarAuthService {
   }
 
   /**
+   * Creates a wallet-only account from a signed SEP-10 challenge.
+   *
+   * The account has a verified `stellarAddress` and no password, so a player
+   * can sign up, play and wager with a wallet alone. An email and password can
+   * be added later via {@link addCredentials}.
+   */
+  async signupWithWallet(
+    signedTransaction: string,
+    username: string,
+  ): Promise<AuthResult> {
+    const trimmed = username?.trim();
+    if (!trimmed) {
+      throw new BadRequestException('A username is required');
+    }
+
+    const address = this.verifyChallenge(signedTransaction);
+    await this.consumeChallenge(signedTransaction);
+
+    const existingWallet = await this.userRepository.findOne({
+      where: { stellarAddress: address },
+    });
+    if (existingWallet) {
+      throw new ConflictException(
+        'That Stellar address is already linked to an account',
+      );
+    }
+
+    const existingUsername = await this.userRepository.findOne({
+      where: { username: trimmed },
+    });
+    if (existingUsername) {
+      throw new ConflictException('That username is already taken');
+    }
+
+    const user = this.userRepository.create({
+      username: trimmed,
+      stellarAddress: address,
+      stellarAddressVerifiedAt: new Date(),
+      passwordHash: null,
+      roles: [Role.PLAYER],
+    });
+
+    const saved = await this.userRepository.save(user);
+    this.logger.log(`Wallet-only account created for ${address}`);
+
+    return this.authTokenService.issueTokens(saved, {
+      method: 'stellar',
+    } as TokenIssueContext);
+  }
+
+  /**
+   * Lets a wallet-only account add an email and password later.
+   *
+   * Requires a fresh SEP-10 signature so that possession of the wallet — not
+   * merely a session token — authorises the change.
+   */
+  async addCredentials(
+    userId: string,
+    signedTransaction: string,
+    email: string,
+    passwordHash: string,
+  ): Promise<User> {
+    const user = await this.userRepository.findOne({ where: { id: userId } });
+    if (!user) {
+      throw new UnauthorizedException('Account not found');
+    }
+    if (user.passwordHash) {
+      throw new ConflictException('This account already has a password');
+    }
+
+    const address = this.verifyChallenge(signedTransaction);
+    await this.consumeChallenge(signedTransaction);
+
+    if (address !== user.stellarAddress) {
+      throw new UnauthorizedException(
+        'The signed wallet does not match this account',
+      );
+    }
+
+    const existingEmail = await this.userRepository.findOne({
+      where: { email },
+    });
+    if (existingEmail && existingEmail.id !== userId) {
+      throw new ConflictException('That email is already registered');
+    }
+
+    user.email = email;
+    user.passwordHash = passwordHash;
+    return this.userRepository.save(user);
+  }
+
+  /**
+   * Verifies a fresh SEP-10 signature for a password-dependent flow (account
+   * deletion, R3-40) so wallet-only accounts can authorise it without a
+   * password.
+   */
+  async verifyWalletSignature(
+    userId: string,
+    signedTransaction: string,
+  ): Promise<void> {
+    const user = await this.userRepository.findOne({ where: { id: userId } });
+    if (!user || !user.stellarAddress) {
+      throw new UnauthorizedException('No Stellar wallet linked to this account');
+    }
+
+    const address = this.verifyChallenge(signedTransaction);
+    await this.consumeChallenge(signedTransaction);
+
+    if (address !== user.stellarAddress) {
+      throw new UnauthorizedException(
+        'The signed wallet does not match this account',
+      );
+    }
+  }
+
+  /**
    * Links a verified wallet to an existing account.
    *
    * An address can back only one account: allowing two would make a payout
@@ -231,16 +347,13 @@ export class StellarAuthService {
     }
 
     const user = await this.userRepository.findOne({ where: { id: userId } });
-
     if (!user) {
-      throw new BadRequestException(`User with ID ${userId} not found`);
+      throw new UnauthorizedException('Account not found');
     }
 
     user.stellarAddress = address;
     user.stellarAddressVerifiedAt = new Date();
     await this.userRepository.save(user);
-
-    this.logger.log(`Linked ${address} to user ${userId}`);
 
     return {
       stellarAddress: address,
@@ -249,74 +362,22 @@ export class StellarAuthService {
   }
 
   /**
-   * Authenticates with a wallet alone and issues the same token pair the
-   * password flow does, so every downstream guard behaves identically and the
-   * session shows up in the device list.
-   */
-  async loginWithWallet(
-    signedTransaction: string,
-    context: TokenIssueContext = {},
-  ): Promise<AuthResult> {
-    const address = this.verifyChallenge(signedTransaction);
-    await this.consumeChallenge(signedTransaction);
-
-    const user = await this.userRepository.findOne({
-      where: { stellarAddress: address },
-    });
-
-    if (!user) {
-      throw new UnauthorizedException(
-        `No LyricsFlip account is linked to ${address}. ` +
-          'Sign in with your password once and link the wallet first.',
-      );
-    }
-
-    this.authTokenService.assertActive(user);
-
-    user.lastLoginAt = new Date();
-    user.stellarAddressVerifiedAt = new Date();
-    await this.userRepository.save(user);
-
-    return this.authTokenService.issueTokenPair(user, context);
-  }
-
-  /** Removes the wallet link, e.g. when a player rotates keys. */
-  async unlinkWallet(userId: string): Promise<void> {
-    await this.assertNoActiveWager(
-      userId,
-      'Cannot unlink your Stellar wallet while you have an active wager',
-    );
-
-    await this.userRepository.update(
-      { id: userId },
-      { stellarAddress: null, stellarAddressVerifiedAt: null },
-    );
-  }
-
-  /**
-   * Refuses to touch the wallet link while a pot is open.
-   *
-   * A payout goes to whichever address staked the pot (see
-   * {@link StellarTokenService.releaseToWinner}), so unlinking mid-match only
-   * strands the payout; relinking a different address would move where it
-   * goes. Blocking both while a wager is in flight keeps the address the
-   * contract pays lined up with the address the player controls.
+   * Rejects a wallet change while the user has an active wager, since the
+   * payout address would otherwise change mid-pot.
    */
   private async assertNoActiveWager(
     userId: string,
     message: string,
   ): Promise<void> {
-    const activeWager = await this.wagerRepository.findOne({
-      where: [
-        { playerAId: userId, status: In(StellarAuthService.ACTIVE_WAGER_STATUSES) },
-        { playerBId: userId, status: In(StellarAuthService.ACTIVE_WAGER_STATUSES) },
-      ],
+    const active = await this.wagerRepository.count({
+      where: {
+        status: In(StellarAuthService.ACTIVE_WAGER_STATUSES),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ...({ creatorId: userId } as any),
+      },
     });
-
-    if (activeWager) {
-      throw new ConflictException(
-        `${message} (wager ${activeWager.id} is ${activeWager.status})`,
-      );
+    if (active > 0) {
+      throw new ConflictException(message);
     }
   }
 }
