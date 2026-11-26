@@ -1,3 +1,4 @@
+import { runtimeEnv } from '../../config/runtime-env';
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Redis } from 'ioredis';
@@ -13,7 +14,7 @@ export const DEFAULT_WS_MAX_HTTP_BUFFER_SIZE = 16 * 1024;
 export function wsMaxSocketsPerUser(config?: ConfigService): number {
   const raw =
     config?.get<string | number>('WS_MAX_SOCKETS_PER_USER') ??
-    process.env.WS_MAX_SOCKETS_PER_USER;
+    runtimeEnv().WS_MAX_SOCKETS_PER_USER;
 
   const parsed = typeof raw === 'number' ? raw : Number.parseInt(String(raw ?? ''), 10);
 
@@ -32,7 +33,7 @@ export function wsMaxSocketsPerUser(config?: ConfigService): number {
 export function wsMaxHttpBufferSize(config?: ConfigService): number {
   const raw =
     config?.get<string | number>('WS_MAX_HTTP_BUFFER_SIZE') ??
-    process.env.WS_MAX_HTTP_BUFFER_SIZE;
+    runtimeEnv().WS_MAX_HTTP_BUFFER_SIZE;
 
   const parsed = typeof raw === 'number' ? raw : Number.parseInt(String(raw ?? ''), 10);
 
@@ -42,12 +43,6 @@ export function wsMaxHttpBufferSize(config?: ConfigService): number {
 
   return Math.floor(parsed);
 }
-
-/**
- * Maximum HTTP buffer size for WebSocket messages, configurable through the
- * environment (`WS_MAX_HTTP_BUFFER_SIZE`, default 16 KB).
- */
-export const WS_MAX_HTTP_BUFFER_SIZE = wsMaxHttpBufferSize();
 
 export interface WsConnectionLimiterOptions {
   /** Maximum concurrent sockets per user. Defaults to `wsMaxSocketsPerUser()`. */

@@ -113,6 +113,14 @@ export class AuthService {
       throw new BadRequestException('Failed to create user');
     }
 
+    // Fire-and-forget: a mail outage must not block or fail signup. The user
+    // can always ask again via /auth/resend-verification.
+    this.emailVerificationService.issue(user).catch((error: Error) => {
+      this.logger.warn(
+        `Could not send verification email to user ${user.id}: ${error.message}`,
+      );
+    });
+
     return this.issueAuthResult(user, context);
   }
 

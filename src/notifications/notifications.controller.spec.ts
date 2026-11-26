@@ -1,3 +1,4 @@
+import { runtimeEnv } from '../config/runtime-env';
 import { Test, TestingModule } from '@nestjs/testing';
 import { ExecutionContext, ForbiddenException } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
@@ -161,27 +162,39 @@ describe('NotificationsController', () => {
   });
 
   describe('module registration', () => {
-    const controllersFor = (nodeEnv: string) => {
-      const previous = process.env.NODE_ENV;
-      process.env.NODE_ENV = nodeEnv;
+    const hasDevController = async (nodeEnv: string) => {
+      const previous = runtimeEnv().NODE_ENV;
+      runtimeEnv().NODE_ENV = nodeEnv;
       try {
-        let controllers: Function[] = [];
-        jest.isolateModules(() => {
-          const { NotificationsModule } = require('./notifications.module');
-          controllers = Reflect.getMetadata('controllers', NotificationsModule);
+        let hasController = false;
+        await jest.isolateModulesAsync(async () => {
+          const { ConfigModule } = await import('@nestjs/config');
+          const { NotificationsModule } = await import(
+            './notifications.module'
+          );
+          await ConfigModule.forRoot({ ignoreEnvFile: true });
+          const imports = Reflect.getMetadata(
+            'imports',
+            NotificationsModule,
+          ) as Array<unknown>;
+          const conditional = await (imports.find(
+            (entry) => entry instanceof Promise,
+          ) as Promise<{ imports: unknown[] }>);
+          hasController = conditional.imports.length > 0;
         });
-        return controllers.map((c) => c.name);
+        return hasController;
       } finally {
-        process.env.NODE_ENV = previous;
+        if (previous === undefined) delete runtimeEnv().NODE_ENV;
+        else runtimeEnv().NODE_ENV = previous;
       }
     };
 
-    it('does not register the mock endpoints in production', () => {
-      expect(controllersFor('production')).toEqual(['NotificationsController']);
+    it('does not register the mock endpoints in production', async () => {
+      await expect(hasDevController('production')).resolves.toBe(false);
     });
 
-    it('registers the mock endpoints outside production', () => {
-      expect(controllersFor('development')).toContain('NotificationsDevController');
+    it('registers the mock endpoints outside production', async () => {
+      await expect(hasDevController('development')).resolves.toBe(true);
     });
   });
 

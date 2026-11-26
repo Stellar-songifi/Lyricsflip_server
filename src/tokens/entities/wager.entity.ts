@@ -156,6 +156,17 @@ export class Wager {
   playerBStakeTxHash?: string | null;
 
   /**
+   * Hash of a stake transaction player A submitted that did not (yet)
+   * confirm. Kept only for reconciliation — it does not count as a stake.
+   */
+  @Column({ type: 'varchar', length: 128, nullable: true })
+  playerAPendingStakeHash?: string | null;
+
+  /** Hash of player B's submitted but unconfirmed stake transaction. */
+  @Column({ type: 'varchar', length: 128, nullable: true })
+  playerBPendingStakeHash?: string | null;
+
+  /**
    * Hash of the most recently built (but not necessarily signed) stake
    * transaction offered to player A.
    *

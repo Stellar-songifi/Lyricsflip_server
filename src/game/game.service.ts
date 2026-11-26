@@ -1,7 +1,11 @@
 import {
+  DomainException,
+  ErrorCode,
+} from '../common/exceptions/domain.exception';
+import {
+  HttpStatus,
   BadRequestException,
   ConflictException,
-  GoneException,
   Injectable,
   Logger,
   NotFoundException,
@@ -190,11 +194,16 @@ export class GameLogicService {
    *
    * `issuedAt` is set here, from the server clock, and is what the answer
    * window is measured against when the guess arrives.
+   *
+   * Pass `dailyDate` (a `YYYY-MM-DD` string) to tag the round as belonging to
+   * the daily challenge for that date. Daily rounds are looked up by
+   * `(userId, dailyDate, lyricId)` so they can be reused across requests.
    */
   async issueRound(
     userId: string,
     lyricId: number,
     sessionId?: string,
+    dailyDate?: string,
   ): Promise<GameRound> {
     if (sessionId) {
       await this.assertActiveParticipant(userId, sessionId);
@@ -210,6 +219,7 @@ export class GameLogicService {
         userId,
         lyricId,
         sessionId: sessionId ?? null,
+        dailyDate: dailyDate ?? null,
         issuedAt,
         expiresAt,
         answerWindowSeconds: this.answerWindowSeconds,
@@ -334,7 +344,11 @@ export class GameLogicService {
     }
 
     if (round.closedAt) {
-      throw new ConflictException('This round has already been guessed');
+      throw new DomainException(
+        ErrorCode.ROUND_ALREADY_GUESSED,
+        HttpStatus.CONFLICT,
+        'This round has already been guessed',
+      );
     }
 
     const now = new Date();
@@ -350,7 +364,11 @@ export class GameLogicService {
         speedBonus: 0,
         timedOut: true,
       });
-      throw new GoneException('This round has expired');
+      throw new DomainException(
+        ErrorCode.ROUND_EXPIRED,
+        HttpStatus.GONE,
+        'This round has expired',
+      );
     }
 
     const closed = await this.roundRepository.update(
@@ -359,7 +377,11 @@ export class GameLogicService {
     );
 
     if (!closed.affected) {
-      throw new ConflictException('This round has already been guessed');
+      throw new DomainException(
+        ErrorCode.ROUND_ALREADY_GUESSED,
+        HttpStatus.CONFLICT,
+        'This round has already been guessed',
+      );
     }
 
     const result = await this.checkGuess({
@@ -421,11 +443,19 @@ export class GameLogicService {
     }
 
     if (round.closedAt) {
-      throw new ConflictException('This round has already been guessed');
+      throw new DomainException(
+        ErrorCode.ROUND_ALREADY_GUESSED,
+        HttpStatus.CONFLICT,
+        'This round has already been guessed',
+      );
     }
 
     if (round.expiresAt.getTime() <= Date.now()) {
-      throw new GoneException('This round has expired');
+      throw new DomainException(
+        ErrorCode.ROUND_EXPIRED,
+        HttpStatus.GONE,
+        'This round has expired',
+      );
     }
 
     const maxHints = GAME_CONSTANTS.LIMITS.MAX_HINTS_PER_ROUND;

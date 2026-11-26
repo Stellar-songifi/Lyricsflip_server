@@ -1,5 +1,6 @@
+import { runtimeEnv } from '../../config/runtime-env';
 const num = (key: string, fallback: number): number => {
-  const value = parseInt(process.env[key] ?? '', 10);
+  const value = parseInt(runtimeEnv()[key] ?? '', 10);
   return Number.isFinite(value) && value > 0 ? value : fallback;
 };
 

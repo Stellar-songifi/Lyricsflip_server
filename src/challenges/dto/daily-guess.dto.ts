@@ -1,20 +1,21 @@
-import { Transform, Type } from 'class-transformer';
+import { Transform } from 'class-transformer';
 import {
   IsEnum,
-  IsInt,
   IsNotEmpty,
   IsString,
+  IsUUID,
   MaxLength,
-  Min,
 } from 'class-validator';
 import { GuessType } from '../../game/dto/guess.dto';
 
 export class DailyGuessDto {
-  /** A lyric from today's set, as returned by `GET /challenges/daily`. */
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  lyricId: number;
+  /**
+   * The round id returned for this lyric by `GET /challenges/daily`. The
+   * server uses it to look up the server-issued timestamp and enforce the
+   * answer window without trusting anything from the client.
+   */
+  @IsUUID()
+  roundId: string;
 
   @IsEnum(GuessType)
   guessType: GuessType;

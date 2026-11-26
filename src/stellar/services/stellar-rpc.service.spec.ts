@@ -1,3 +1,4 @@
+import { runtimeEnv } from '../../config/runtime-env';
 import { Logger, ServiceUnavailableException } from '@nestjs/common';
 import {
   Account,
@@ -166,7 +167,7 @@ describe('StellarRpcService', () => {
     });
 
     it('gives up without polling when TRY_AGAIN_LATER persists', async () => {
-      process.env.STELLAR_TRY_AGAIN_MAX_ATTEMPTS = '2';
+      runtimeEnv().STELLAR_TRY_AGAIN_MAX_ATTEMPTS = '2';
       const send = jest
         .spyOn(rpc.Server.prototype, 'sendTransaction')
         .mockResolvedValue({
@@ -177,7 +178,7 @@ describe('StellarRpcService', () => {
       const wait = jest.spyOn(service, 'waitForConfirmation');
 
       const result = await service.submit(transaction);
-      delete process.env.STELLAR_TRY_AGAIN_MAX_ATTEMPTS;
+      delete runtimeEnv().STELLAR_TRY_AGAIN_MAX_ATTEMPTS;
 
       expect(send).toHaveBeenCalledTimes(3);
       expect(wait).not.toHaveBeenCalled();
@@ -421,7 +422,7 @@ describe('StellarRpcService', () => {
   });
 
   describe('resolveInclusionFee', () => {
-    afterEach(() => delete process.env.STELLAR_MAX_FEE);
+    afterEach(() => delete runtimeEnv().STELLAR_MAX_FEE);
 
     it('uses observed p90 fee below the ceiling', async () => {
       jest.spyOn(rpc.Server.prototype, 'getFeeStats').mockResolvedValue({
@@ -431,7 +432,7 @@ describe('StellarRpcService', () => {
     });
 
     it('caps the fee at STELLAR_MAX_FEE', async () => {
-      process.env.STELLAR_MAX_FEE = '300';
+      runtimeEnv().STELLAR_MAX_FEE = '300';
       jest.spyOn(rpc.Server.prototype, 'getFeeStats').mockResolvedValue({
         sorobanInclusionFee: { p90: '500' },
       } as unknown as rpc.Api.GetFeeStatsResponse);
@@ -439,7 +440,7 @@ describe('StellarRpcService', () => {
     });
 
     it('falls back to the ceiling when fee stats fail', async () => {
-      process.env.STELLAR_MAX_FEE = '700';
+      runtimeEnv().STELLAR_MAX_FEE = '700';
       jest
         .spyOn(rpc.Server.prototype, 'getFeeStats')
         .mockRejectedValue(new Error('down'));
