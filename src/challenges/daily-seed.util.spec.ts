@@ -1,4 +1,8 @@
-import { pickDeterministic, utcDay } from './daily-seed.util';
+import {
+  currentDailyStreak,
+  pickDeterministic,
+  utcDay,
+} from './daily-seed.util';
 
 describe('daily seed', () => {
   const pool = Array.from({ length: 100 }, (_, i) => i + 1);
@@ -26,5 +30,19 @@ describe('daily seed', () => {
   it('names the day in UTC', () => {
     expect(utcDay(new Date('2026-09-26T23:59:59.000Z'))).toBe('2026-09-26');
     expect(utcDay(new Date('2026-09-27T00:00:00.000Z'))).toBe('2026-09-27');
+  });
+});
+
+describe('currentDailyStreak', () => {
+  const now = new Date('2026-09-26T00:15:00Z');
+
+  it('keeps the streak through the following UTC day', () => {
+    expect(currentDailyStreak(7, '2026-09-25', now)).toBe(7);
+    expect(currentDailyStreak(8, '2026-09-26', now)).toBe(8);
+  });
+
+  it('shows zero when a UTC day has passed without play', () => {
+    expect(currentDailyStreak(7, '2026-09-24', now)).toBe(0);
+    expect(currentDailyStreak(0, null, now)).toBe(0);
   });
 });

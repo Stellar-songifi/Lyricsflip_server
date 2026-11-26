@@ -14,7 +14,16 @@ export type AchievementCode =
   | 'perfect_guess'
   | 'streak_5'
   | 'streak_10'
-  | 'speed_demon';
+  | 'speed_demon'
+  | 'daily_streak_7'
+  | 'daily_streak_30'
+  | 'daily_streak_100';
+
+const DAILY_STREAK_MILESTONES = [
+  { days: 7, code: 'daily_streak_7' },
+  { days: 30, code: 'daily_streak_30' },
+  { days: 100, code: 'daily_streak_100' },
+] as const;
 
 export interface AchievementDefinition {
   code: AchievementCode;
@@ -52,6 +61,11 @@ export const ACHIEVEMENT_DEFINITIONS: AchievementDefinition[] = [
     name: 'Speed Demon',
     description: 'Answer correctly in under 3 seconds.',
   },
+  ...DAILY_STREAK_MILESTONES.map(({ days, code }) => ({
+    code,
+    name: `${days}-Day Daily Challenge Streak`,
+    description: `Play the daily challenge on ${days} consecutive UTC days.`,
+  })),
 ];
 
 /** Threshold (ms) under which a correct answer counts as a fast answer. */
@@ -106,6 +120,7 @@ export interface GameplayEvent {
   correctAnswer?: boolean;
   /** Current consecutive-correct-answer streak after this event. */
   streak?: number;
+  bestDailyStreak?: number;
   /** A wager was won. */
   wagerWon?: boolean;
   /** Time taken to answer, in milliseconds. */
@@ -169,8 +184,9 @@ export class TypeOrmAchievementsRepository implements AchievementsRepository {
       .into(UserAchievement)
       .values({ userId, achievementCode: code })
       .orIgnore()
+      .returning(['achievementCode'])
       .execute();
-    return (result.identifiers?.length ?? 0) > 0;
+    return (result.raw as unknown[]).length > 0;
   }
 }
 
@@ -210,6 +226,14 @@ export class AchievementsService {
       streak: event.streak,
       answerTimeMs: event.answerTimeMs,
     });
+  }
+
+  @OnEvent('user.daily_streak', { async: true })
+  async onDailyStreak(event: {
+    userId: string;
+    bestDailyStreak: number;
+  }): Promise<void> {
+    await this.handleGameplayEvent(event);
   }
 
   /** Subscribe to `wager.settled` gameplay events. */
@@ -253,6 +277,12 @@ export class AchievementsService {
         if (event.streak >= milestone) {
           codes.push(code);
         }
+      }
+    }
+
+    for (const { days, code } of DAILY_STREAK_MILESTONES) {
+      if ((event.bestDailyStreak ?? 0) >= days) {
+        codes.push(code);
       }
     }
 

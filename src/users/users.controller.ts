@@ -1,6 +1,7 @@
 import {
   Controller,
   Get,
+  Post,
   Body,
   Patch,
   Param,
@@ -30,12 +31,17 @@ import { Role } from '../auth/roles/role.enum';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { AuditInterceptor } from '../audit/audit.interceptor';
 import { Audited } from '../audit/decorators/audited.decorator';
+import { PushService } from '../push/push.service';
+import { CreatePushSubscriptionDto } from '../push/dto/create-push-subscription.dto';
 
 // Accounts are created through POST /auth/signup; there is no POST /users.
 @ApiTags('users')
 @Controller('users')
 export class UsersController {
-  constructor(private readonly usersService: UsersService) {}
+  constructor(
+    private readonly usersService: UsersService,
+    private readonly pushService: PushService,
+  ) {}
 
   @Get()
   @Roles(Role.Admin)
@@ -90,6 +96,21 @@ export class UsersController {
   })
   getRank(@GetUser() user: User) {
     return this.usersService.getMyRank(user.id);
+  /**
+   * POST /users/me/push-subscriptions - Register a Web Push subscription
+   * (VAPID) and/or an FCM/APNs device token for mobile push. Declared before
+   * `:id` so `me` is not treated as an ID.
+   */
+  @Post('me/push-subscriptions')
+  @ApiOperation({ summary: 'Register a push subscription' })
+  @ApiResponse({ status: 201, description: 'Subscription registered.' })
+  @ApiResponse({ status: 400, description: 'Invalid subscription payload.' })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  registerPushSubscription(
+    @GetUser() user: User,
+    @Body() dto: CreatePushSubscriptionDto,
+  ) {
+    return this.pushService.registerSubscription(user.id, dto);
   }
 
   @Get('profile')
@@ -244,55 +265,4 @@ export class UsersController {
   })
   @ApiResponse({
     status: 404,
-    description: 'No active user with that username (case-insensitive).',
-  })
-  findPublicByUsername(
-    @Param('username') username: string,
-  ): Promise<PublicUserDto> {
-    return this.usersService.getPublicProfile(username);
-  }
-
-  @Get(':id')
-  @Roles(Role.Admin)
-  @ApiOperation({ summary: 'Get a user by ID (admin only)' })
-  @ApiResponse({ status: 200, description: 'Full user data.' })
-  @ApiResponse({ status: 403, description: 'Not an admin.' })
-  async findOne(@Param('id', ParseUUIDPipe) id: string): Promise<User> {
-    return this.usersService.findOne(id);
-  }
-
-  @Patch(':id')
-  @Roles(Role.Admin)
-  @UseInterceptors(AuditInterceptor)
-  @SerializeOptions({ groups: [UserGroup.ADMIN] })
-  @ApiOperation({ summary: 'Update any user by ID (admin only)' })
-  @ApiResponse({ status: 200, description: 'User updated.' })
-  @ApiResponse({ status: 403, description: 'Not an admin.' })
-  @ApiResponse({
-    status: 409,
-    description: 'The last active admin cannot be demoted or deactivated.',
-  })
-  @Audited({ action: 'admin.user.update', targetType: 'user' })
-  update(
-    @Param('id', ParseUUIDPipe) id: string,
-    @Body() updateUserDto: AdminUpdateUserDto,
-  ) {
-    return this.usersService.update(id, updateUserDto);
-  }
-
-  @Delete(':id')
-  @Roles(Role.Admin)
-  @UseInterceptors(AuditInterceptor)
-  @ApiOperation({ summary: 'Delete any user by ID (admin only)' })
-  @ApiResponse({ status: 200, description: 'User deleted.' })
-  @ApiResponse({ status: 403, description: 'Not an admin.' })
-  @ApiResponse({
-    status: 409,
-    description:
-      'The last active admin cannot be deleted or has an active wager.',
-  })
-  @Audited({ action: 'admin.user.delete', targetType: 'user' })
-  remove(@Param('id', ParseUUIDPipe) id: string) {
-    return this.usersService.remove(id);
-  }
-}
+    description: 'No active user with that username (case-insensit

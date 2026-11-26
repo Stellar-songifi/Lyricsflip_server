@@ -1,3 +1,4 @@
+import { runtimeEnv } from '../src/config/runtime-env';
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
 import * as request from 'supertest';
@@ -28,9 +29,11 @@ describe('AppController (e2e)', () => {
     const disallowedOrigin = 'http://evil.example.com';
 
     beforeEach(() => {
-      process.env.FRONTEND_URL = allowedOrigin;
+      runtimeEnv().FRONTEND_URL = allowedOrigin;
       app.enableCors({
-        origin: process.env.FRONTEND_URL.split(',').map((o) => o.trim()),
+        origin: runtimeEnv()
+          .FRONTEND_URL.split(',')
+          .map((o) => o.trim()),
         credentials: true,
       });
     });
