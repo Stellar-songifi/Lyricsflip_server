@@ -26,6 +26,12 @@ import { AdminLyricSortBy, SortOrder } from '../admin/dto/admin-query.dto';
 export const MAX_LYRIC_SNIPPET_LENGTH = 150;
 
 /**
+ * Maximum number of random lyrics a player may request in one call.
+ * Smaller than MAX_PAGE_SIZE to limit the query cost.
+ */
+export const MAX_RANDOM_COUNT = 20;
+
+/**
  * Cache key holding the current lyrics namespace version. Every lyric cache
  * key embeds this version, so bumping it invalidates all lyric entries at
  * once — atomically, without a scan, and across every instance sharing the
@@ -71,6 +77,13 @@ export class LyricsService {
    * the shared namespace version key.
    */
   private cacheGeneration = 0;
+
+  /**
+   * All cache keys this instance has written, with the wall-clock time they
+   * expire. Used by getCacheStats and the public clearCache to enumerate and
+   * delete entries without a full-store scan.
+   */
+  private readonly trackedKeys = new Map<string, number>();
 
   constructor(
     @InjectRepository(Lyrics)
@@ -139,13 +152,42 @@ export class LyricsService {
   }
 
   /**
+   * Store a value under `key`, recording the key so clearCache and
+   * getCacheStats can enumerate it without a full-store scan.
+   */
+  private async setTracked(
+    key: string,
+    value: unknown,
+    ttlMs: number,
+  ): Promise<void> {
+    await this.cacheManager.set(key, value, ttlMs);
+    this.trackedKeys.set(key, Date.now() + ttlMs);
+  }
+
+  /** Live keys: those whose recorded expiry is in the future. */
+  private liveKeys(): string[] {
+    const now = Date.now();
+    return [...this.trackedKeys.entries()]
+      .filter(([, exp]) => exp > now)
+      .map(([k]) => k);
+  }
+
+  /**
    * Invalidate every lyric cache entry across all instances by advancing the
    * shared namespace version. Old keys become unreachable and expire via TTL.
+   * Also deletes all tracked keys from the store so getCacheStats stays
+   * accurate and the public clearCache can confirm an empty store.
+   *
+   * Returns `{ cleared: number }` when called publicly (via the controller).
    */
-  private async clearCache(): Promise<void> {
-    // In-process race guard: reads that started before this bump must not
-    // repopulate the cache with stale data.
+  async clearCache(): Promise<{ cleared: number }> {
     this.cacheGeneration += 1;
+
+    const live = this.liveKeys();
+    for (const key of live) {
+      await this.cacheManager.del(key);
+    }
+    this.trackedKeys.clear();
 
     const current = await this.getNamespaceVersion();
     await this.cacheManager.set(
@@ -153,6 +195,112 @@ export class LyricsService {
       current + 1,
       this.cacheTtlMs,
     );
+
+    return { cleared: live.length };
+  }
+
+  /**
+   * Alias for the controller's `POST /lyrics/cache/clear` endpoint.
+   * Delegates to clearCache and discards the return value.
+   */
+  async invalidateCache(): Promise<void> {
+    await this.clearCache();
+  }
+
+  /**
+   * Cache statistics for the admin dashboard: how many live entries remain,
+   * broken down by type.
+   */
+  async getCacheStats(): Promise<LyricsCacheStats> {
+    const live = this.liveKeys();
+    const keysByType = {
+      lyrics: 0,
+      random: 0,
+      category: 0,
+      search: 0,
+    };
+    for (const key of live) {
+      if (key.startsWith(cacheConfig.keys.lyrics) || key.includes(':lyrics:')) {
+        keysByType.lyrics += 1;
+      } else if (key.startsWith(cacheConfig.keys.randomLyrics)) {
+        keysByType.random += 1;
+      } else if (key.startsWith(cacheConfig.keys.lyricsByCategory)) {
+        keysByType.category += 1;
+      } else if (key.startsWith(cacheConfig.keys.search)) {
+        keysByType.search += 1;
+      }
+    }
+    return { keys: live.length, keysByType, ttlMs: this.cacheTtlMs };
+  }
+
+  /**
+   * Load a value from cache or run `loader` to populate it. The generation
+   * check ensures a read that started before an invalidation does not
+   * repopulate the cache with stale data.
+   */
+  private async getOrLoad<T>(
+    key: string,
+    ttlMs: number,
+    loader: () => Promise<T>,
+  ): Promise<T> {
+    const cached = await this.cacheManager.get<T>(key);
+    if (cached !== null && cached !== undefined) {
+      return cached;
+    }
+
+    const generationBefore = this.cacheGeneration;
+    const value = await loader();
+
+    if (this.cacheGeneration === generationBefore) {
+      await this.setTracked(key, value, ttlMs);
+    }
+
+    return value;
+  }
+
+  /**
+   * Public alias for {@link clearCache}. Exposed so admin flows and tests can
+   * drop every lyric cache entry without reaching into a private method.
+   */
+  async invalidateCache(): Promise<void> {
+    await this.clearCache();
+  }
+
+  /**
+   * Report how many lyric cache entries exist and their TTL. Keys are counted
+   * by type so operators can see which caches dominate the store.
+   */
+  async getCacheStats(): Promise<LyricsCacheStats> {
+    const version = await this.getNamespaceVersion();
+    const prefix = `lyrics:v${version}:`;
+    const keysByType = { lyrics: 0, random: 0, category: 0, search: 0 };
+
+    const store = this.cacheManager as unknown as {
+      store?: { keys?: (pattern?: string) => Promise<string[]> };
+    };
+    const allKeys =
+      typeof store.store?.keys === 'function'
+        ? await store.store.keys(`${prefix}*`)
+        : [];
+
+    for (const key of allKeys) {
+      const suffix = key.slice(prefix.length);
+      if (suffix.startsWith(cacheConfig.keys.lyrics)) {
+        keysByType.lyrics += 1;
+      } else if (suffix.startsWith(cacheConfig.keys.random)) {
+        keysByType.random += 1;
+      } else if (suffix.startsWith(cacheConfig.keys.category)) {
+        keysByType.category += 1;
+      } else if (suffix.startsWith(cacheConfig.keys.search)) {
+        keysByType.search += 1;
+      }
+    }
+
+    return {
+      keys: allKeys.length,
+      keysByType,
+      ttlMs: this.cacheTtlMs,
+    };
   }
 
   /**
@@ -221,24 +369,27 @@ export class LyricsService {
 
     const lyrics = this.lyricsRepository.create({
       ...fields,
-      content: null,
+      content: null as unknown as string,
       lyricSnippet,
       addedBy: user?.id ?? null,
       // Store decades in the canonical "1990s" format used by the seed and
       // the MusicDecade preference enum.
       decade: createLyricsDto.decade
-        ? normalizeDecade(createLyricsDto.decade.toString())
-        : createLyricsDto.decade,
+        ? normalizeDecade(createLyricsDto.decade.toString()) ?? undefined
+        : undefined,
       createdBy: user,
     });
-    const savedLyrics = await this.lyricsRepository.save(lyrics);
+    const savedLyrics = (await this.lyricsRepository.save(lyrics)) as Lyrics;
 
-    // Clear relevant caches when new lyrics are added
     await this.clearCache();
 
     return savedLyrics;
   }
 
+  /**
+   * Paginated list of active lyrics, optionally filtered by genre and decade.
+   * `limit` is capped at MAX_PAGE_SIZE so no caller can dump the whole table.
+   */
   async findAll(
     genre?: string,
     decade?: number | string,
@@ -249,9 +400,7 @@ export class LyricsService {
       .createQueryBuilder('lyrics')
       .leftJoinAndSelect('lyrics.createdBy', 'user');
 
-    // Apply genre filter if provided
     if (genre) {
-      // Validate genre against enum values
       const validGenres = Object.values(Genre);
       if (!validGenres.includes(genre as Genre)) {
         throw new BadRequestException(
@@ -261,8 +410,6 @@ export class LyricsService {
       query.andWhere('lyrics.genre = :genre', { genre });
     }
 
-    // Apply decade filter if provided. Accept both "1990" and "1990s" and
-    // normalise to the stored "1990s" format before querying.
     if (decade !== undefined && decade !== null && decade !== '') {
       const decadeStr = normalizeDecade(decade.toString());
       if (!decadeStr) {
@@ -270,22 +417,151 @@ export class LyricsService {
           'Invalid decade. Please provide a decade such as 1990 or 1990s',
         );
       }
-
       query.andWhere('lyrics.decade = :decade', { decade: decadeStr });
     }
 
-    // Only return active lyrics
     query.andWhere('lyrics.isActive = :isActive', { isActive: true });
 
-    // Always capped, so no caller can pull the whole table in one request
-    const results = await query
-      .orderBy('lyrics.id', 'ASC')
-      .take(limit)
-      .skip(offset)
-      .getMany();
+    // Always capped: no caller can pull the whole table in one request.
+    const safeLimit = Math.min(Math.max(limit, 1), MAX_PAGE_SIZE);
+    const safeOffset = Math.max(offset, 0);
 
-    // Return empty array instead of throwing exception for no results
-    return results;
+    return query
+      .orderBy('lyrics.id', 'ASC')
+      .take(safeLimit)
+      .skip(safeOffset)
+      .getMany();
+  }
+
+  /**
+   * Up to `count` random active lyrics, optionally filtered by genre and
+   * decade. `count` is validated at the controller (1–20); the service also
+   * clamps it as a defence-in-depth measure.
+   */
+  async getRandomLyrics(
+    count: number = 1,
+    genre?: string,
+    decade?: number | string,
+  ): Promise<Lyrics[]> {
+    const safeCount = Math.min(Math.max(count, 1), MAX_RANDOM_COUNT);
+    const genreKey = genre ?? 'all';
+    const decadeKey = decade !== undefined && decade !== null && decade !== ''
+      ? decade.toString()
+      : 'all';
+    const cacheKey = `${cacheConfig.keys.randomLyrics}${safeCount}:${genreKey}:${decadeKey}`;
+
+    return this.getOrLoad(cacheKey, cacheConfig.randomLyricsTtlMs, async () => {
+      const query = this.lyricsRepository.createQueryBuilder('lyrics');
+
+      if (genre) {
+        query.andWhere('lyrics.genre = :genre', { genre });
+      }
+      if (decade !== undefined && decade !== null && decade !== '') {
+        const decadeStr = normalizeDecade(decade.toString());
+        if (decadeStr) {
+          query.andWhere('lyrics.decade = :decade', { decade: decadeStr });
+        }
+      }
+
+      query
+        .andWhere('lyrics.isActive = :isActive', { isActive: true })
+        .orderBy('RANDOM()')
+        .limit(safeCount);
+
+      return query.getMany();
+    });
+  }
+
+  /**
+   * Active lyrics matching a category filter. `type` is either `'genre'` or
+   * `'decade'`; `value` is the filter value.
+   *
+   * Results are paginated: at most MAX_PAGE_SIZE rows.
+   */
+  async getLyricsByCategory(
+    type: string,
+    value?: string,
+    limit: number = MAX_PAGE_SIZE,
+    offset: number = 0,
+  ): Promise<Lyrics[]> {
+    const filterValue = value ?? type;
+    const cacheKey = `${cacheConfig.keys.lyricsByCategory}${type}:${filterValue}`;
+
+    return this.getOrLoad(cacheKey, this.cacheTtlMs, async () => {
+      const where: Record<string, unknown> = { isActive: true };
+
+      if (type === 'decade') {
+        const decadeStr = normalizeDecade(filterValue);
+        if (!decadeStr) {
+          throw new BadRequestException(
+            'Invalid decade. Please provide a decade such as 1990 or 1990s',
+          );
+        }
+        where['decade'] = decadeStr;
+      } else {
+        // Default: filter by genre field.
+        where['genre'] = filterValue;
+      }
+
+      const safeLimit = Math.min(Math.max(limit, 1), MAX_PAGE_SIZE);
+      const safeOffset = Math.max(offset, 0);
+
+      return this.lyricsRepository.find({
+        where,
+        relations: ['createdBy'],
+        take: safeLimit,
+        skip: safeOffset,
+      });
+    });
+  }
+
+  /**
+   * Admin-only: returns every lyric by an artist regardless of active state.
+   * Searching by artist is searching by answer, so it must never be player-
+   * accessible.
+   */
+  async findByArtist(artist: string): Promise<Lyrics[]> {
+    if (!artist?.trim()) {
+      throw new BadRequestException('artist is required');
+    }
+
+    return this.lyricsRepository.find({
+      where: { artist: artist.trim() },
+      relations: ['createdBy'],
+      take: MAX_PAGE_SIZE,
+    });
+  }
+
+  /**
+   * Admin-only full-text search across lyric fields (snippet, title, artist).
+   * Results are paginated with limit/offset.
+   */
+  async searchLyrics(
+    q: string,
+    offset: number = 0,
+    limit: number = 20,
+  ): Promise<Lyrics[]> {
+    if (!q?.trim()) {
+      throw new BadRequestException('Search query is required');
+    }
+
+    const safeLimit = Math.min(Math.max(limit, 1), MAX_PAGE_SIZE);
+    const safeOffset = Math.max(offset, 0);
+    const cacheKey = `${cacheConfig.keys.search}${q}:${safeOffset}:${safeLimit}`;
+
+    return this.getOrLoad(cacheKey, cacheConfig.searchTtlMs, async () => {
+      const term = `%${q.trim()}%`;
+      return this.lyricsRepository
+        .createQueryBuilder('lyrics')
+        .leftJoinAndSelect('lyrics.createdBy', 'user')
+        .where('lyrics.lyricSnippet ILIKE :term', { term })
+        .orWhere('lyrics.songTitle ILIKE :term', { term })
+        .orWhere('lyrics.artist ILIKE :term', { term })
+        .orderBy('lyrics.id', 'ASC')
+        .take(safeLimit)
+        .skip(safeOffset)
+        .getMany();
+    });
   }
 
   /**
@@ -368,7 +644,6 @@ export class LyricsService {
   }
 
   async findOne(id: number): Promise<Lyrics> {
-    // Validate ID
     if (!id || id <= 0) {
       throw new BadRequestException('Invalid lyrics ID');
     }
@@ -429,19 +704,16 @@ export class LyricsService {
     lyrics.isActive = true;
     const restored = await this.lyricsRepository.save(lyrics);
 
-    // The restored lyric must reappear in lists, categories, random and
-    // search results, so drop every lyrics cache entry.
     await this.clearCache();
 
     return restored;
   }
 
   async update(
-    id: number, // Fixed: should be number, not string
+    id: number,
     updateLyricsDto: UpdateLyricsDto,
     user: User,
   ): Promise<Lyrics> {
-    // Validate ID
     if (!id || id <= 0) {
       throw new BadRequestException('Invalid lyrics ID');
     }
@@ -455,12 +727,15 @@ export class LyricsService {
       throw new NotFoundException('Lyrics not found');
     }
 
-    // Soft delete by setting isActive to false instead of hard delete
-    lyrics.isActive = false;
-    await this.lyricsRepository.save(lyrics);
+    Object.assign(lyrics, updateLyricsDto);
+    if ('updatedAt' in lyrics) {
+      (lyrics as unknown as { updatedAt: Date }).updatedAt = new Date();
+    }
 
-    // Drop every lyrics cache entry that could still contain this lyric
+    const saved = await this.lyricsRepository.save(lyrics);
     await this.clearCache();
+
+    return saved;
   }
 
   /**
@@ -725,6 +1000,7 @@ export class LyricsService {
       throw new NotFoundException('Lyrics not found');
     }
 
+
     // Optional: Check if user is admin or creator
     // if (lyrics.createdBy.id !== user.id && !user.isAdmin) {
     //   throw new ForbiddenException('You can only update your own lyrics');
@@ -744,3 +1020,4 @@ export class LyricsService {
 
     return updated;
   }
+}

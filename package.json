@@ -45,7 +45,7 @@
   },
   "dependencies": {
     "@keyv/redis": "^5.1.6",
-    "@nest-lab/throttler-storage-redis": "^0.6.0",
+    "@nest-lab/throttler-storage-redis": "^1.2.0",
     "@nestjs/cache-manager": "^3.0.1",
     "@nestjs/common": "^11.0.1",
     "@nestjs/config": "^4.0.2",
@@ -122,7 +122,7 @@
     "globals": "^16.0.0",
     "husky": "^9.1.7",
     "jest": "^29.7.0",
-    "knip": "5.46.0",
+    "knip": "5.88.1",
     "lint-staged": "^15.4.3",
     "prettier": "^3.4.2",
     "socket.io-client": "^4.8.4",
