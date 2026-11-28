@@ -94,13 +94,13 @@ describe('LyricsService', () => {
 
   describe('create', () => {
     it('should create lyrics and clear cache', async () => {
-      const createDto: CreateLyricsDto = {
+      const createDto = {
         content: 'New lyrics',
         artist: 'New Artist',
         songTitle: 'New Song',
         genre: 'Hip-Hop' as any,
         decade: 2023,
-      };
+      } as unknown as CreateLyricsDto;
 
       mockRepository.create.mockReturnValue(mockLyrics);
       mockRepository.save.mockResolvedValue(mockLyrics);
@@ -108,11 +108,16 @@ describe('LyricsService', () => {
       const result = await service.create(createDto, mockUser);
 
       expect(result).toEqual(mockLyrics);
-      expect(mockRepository.create).toHaveBeenCalledWith({
-        ...createDto,
-        decade: '2023',
-        createdBy: mockUser,
-      });
+      // lyricSnippet is derived from content; content is then nulled out.
+      expect(mockRepository.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          artist: 'New Artist',
+          songTitle: 'New Song',
+          content: null,
+          decade: '2023s',
+          createdBy: mockUser,
+        }),
+      );
       expect(mockRepository.save).toHaveBeenCalled();
     });
   });
@@ -124,7 +129,10 @@ describe('LyricsService', () => {
       const result = await service.findOne(1);
 
       expect(result).toEqual(mockLyrics);
-      expect(mockCacheManager.get).toHaveBeenCalledWith('lyrics:1');
+      // The key is namespaced with the current version (0 when unset).
+      expect(mockCacheManager.get).toHaveBeenCalledWith(
+        expect.stringContaining('lyrics:1'),
+      );
       expect(mockRepository.findOne).not.toHaveBeenCalled();
     });
 
@@ -135,12 +143,18 @@ describe('LyricsService', () => {
       const result = await service.findOne(1);
 
       expect(result).toEqual(mockLyrics);
-      expect(mockCacheManager.get).toHaveBeenCalledWith('lyrics:1');
+      expect(mockCacheManager.get).toHaveBeenCalledWith(
+        expect.stringContaining('lyrics:1'),
+      );
       expect(mockRepository.findOne).toHaveBeenCalledWith({
         where: { id: 1, isActive: true },
         relations: ['createdBy'],
       });
-      expect(mockCacheManager.set).toHaveBeenCalledWith('lyrics:1', mockLyrics, cacheConfig.lyricsTtlMs);
+      expect(mockCacheManager.set).toHaveBeenCalledWith(
+        expect.stringContaining('lyrics:1'),
+        mockLyrics,
+        cacheConfig.lyricsTtlMs,
+      );
     });
   });
 
